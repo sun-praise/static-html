@@ -18,7 +18,7 @@ bash scripts/bootstrap-repo.sh
 This script:
 - uses `STATIC_HTML_REPO_DIR` if it already points at a checkout
 - otherwise clones or updates `sun-praise/static-html`
-- installs dependencies with `npm ci`
+- builds `dist/html-server` when the Go source fingerprint changes
 
 2. Start the preview server:
 
@@ -49,6 +49,6 @@ The command prints a session URL like `http://127.0.0.1:3939/s/<id>/`.
 
 ## Notes
 
-- This skill expects `git`, `npm`, and Node.js 22+.
+- This skill expects `git`, `go`, and a working Go toolchain.
 - The GitHub repo is private; authenticated `gh` or `git` access is required.
 - The server renders the HTML as-is and serves relative assets from the source file directory.

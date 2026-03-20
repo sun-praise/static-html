@@ -8,4 +8,4 @@ host="${STATIC_HTML_HOST:-127.0.0.1}"
 port="${1:-${STATIC_HTML_PORT:-3939}}"
 
 cd "$repo_dir"
-exec node ./bin/html-server.js start --host "$host" --port "$port"
+exec "$repo_dir/dist/html-server" start --host "$host" --port "$port"

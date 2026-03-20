@@ -4,12 +4,12 @@ A local HTML preview server with a CLI for registering HTML files as browser-vie
 
 ## Requirements
 
-- Node.js 22+
+- Go 1.24+
 
-## Install
+## Build
 
 ```bash
-npm install
+go build -o dist/html-server ./cmd/html-server
 ```
 
 ## Usage
@@ -17,13 +17,13 @@ npm install
 Start the local server:
 
 ```bash
-npx html-server start
+./dist/html-server start
 ```
 
 Register an HTML file:
 
 ```bash
-npx html-server send ./fixtures/basic/index.html
+./dist/html-server send ./fixtures/basic/index.html
 ```
 
 The `send` command prints a session URL. Open that URL in a browser to view the HTML file with relative assets served from the source directory.
@@ -33,6 +33,12 @@ The `send` command prints a session URL. Open that URL in a browser to view the 
 ```bash
 html-server start [--host 127.0.0.1] [--port 3939]
 html-server send <file.html> [--server http://127.0.0.1:3939]
+```
+
+## Test
+
+```bash
+go test ./...
 ```
 
 ## Codex Skill
