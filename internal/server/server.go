@@ -106,7 +106,7 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
   <body>
     <main>
       <h1>HTML Preview Server</h1>
-      <p>Register a file with <code>html-server send path/to/file.html</code> and open the returned session URL.</p>
+      <p>Register a file with <code>sth send path/to/file.html</code> and open the returned session URL.</p>
       <ul>
       {{- if .Sessions }}
         {{- range .Sessions }}

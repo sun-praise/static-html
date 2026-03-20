@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Simple Report</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4efe6;
+        --card: rgba(255, 255, 255, 0.9);
+        --text: #182025;
+        --muted: #5d6a72;
+        --accent: #b45f2f;
+        --ok: #2f7d5d;
+        --warn: #b8860b;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Noto Serif SC", "Source Han Serif SC", serif;
+        background:
+          radial-gradient(circle at top right, rgba(180, 95, 47, 0.15), transparent 28%),
+          linear-gradient(180deg, #f7f2e9 0%, var(--bg) 100%);
+        color: var(--text);
+      }
+
+      main {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 40px 20px 72px;
+      }
+
+      .hero,
+      .panel {
+        background: var(--card);
+        border: 1px solid rgba(24, 32, 37, 0.08);
+        border-radius: 20px;
+        box-shadow: 0 18px 45px rgba(24, 32, 37, 0.08);
+      }
+
+      .hero {
+        padding: 32px;
+        margin-bottom: 20px;
+      }
+
+      .eyebrow {
+        margin: 0 0 12px;
+        color: var(--accent);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-size: 12px;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: clamp(32px, 5vw, 52px);
+        line-height: 1.02;
+      }
+
+      .subtitle {
+        margin: 0;
+        color: var(--muted);
+        font-size: 18px;
+        line-height: 1.6;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+        margin-bottom: 20px;
+      }
+
+      .panel {
+        padding: 24px;
+      }
+
+      .metric {
+        font-size: 40px;
+        line-height: 1;
+        margin: 8px 0;
+      }
+
+      .label {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .delta {
+        font-size: 14px;
+      }
+
+      .delta.ok {
+        color: var(--ok);
+      }
+
+      .delta.warn {
+        color: var(--warn);
+      }
+
+      .section-title {
+        margin: 0 0 14px;
+        font-size: 22px;
+      }
+
+      .timeline {
+        display: grid;
+        gap: 12px;
+      }
+
+      .timeline-item {
+        padding: 14px 16px;
+        border-radius: 14px;
+        background: rgba(24, 32, 37, 0.04);
+      }
+
+      .timeline-item strong {
+        display: block;
+        margin-bottom: 4px;
+      }
+
+      footer {
+        margin-top: 20px;
+        color: var(--muted);
+        font-size: 13px;
+        text-align: right;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <p class="eyebrow">Demo Report</p>
+        <h1>North Region Weekly Snapshot</h1>
+        <p class="subtitle">
+          这是一个用于预览链路的示例报告页面，包含关键指标、风险提示和本周动作项。
+        </p>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="label">Revenue</div>
+          <div class="metric">¥ 128,400</div>
+          <div class="delta ok">+12.8% vs last week</div>
+        </article>
+        <article class="panel">
+          <div class="label">Active Accounts</div>
+          <div class="metric">342</div>
+          <div class="delta ok">+18 net new accounts</div>
+        </article>
+        <article class="panel">
+          <div class="label">Support Backlog</div>
+          <div class="metric">27</div>
+          <div class="delta warn">3 tickets over SLA</div>
+        </article>
+      </section>
+
+      <section class="panel">
+        <h2 class="section-title">Highlights</h2>
+        <div class="timeline">
+          <div class="timeline-item">
+            <strong>Channel campaign outperformed baseline</strong>
+            CTR reached 4.9%, mainly driven by returning users on mobile.
+          </div>
+          <div class="timeline-item">
+            <strong>Customer success churn risk narrowed</strong>
+            Two previously red accounts moved back to amber after follow-up calls.
+          </div>
+          <div class="timeline-item">
+            <strong>Warehouse handoff needs attention</strong>
+            Average dispatch delay increased from 1.2 to 1.8 days this week.
+          </div>
+        </div>
+      </section>
+
+      <footer>Generated for preview testing on static-html.</footer>
+    </main>
+  </body>
+</html>

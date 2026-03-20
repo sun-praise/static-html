@@ -40,8 +40,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
-  html-server start [--host 127.0.0.1] [--port 3939]
-  html-server send <file.html> [--server http://127.0.0.1:3939]`)
+  sth start [--host 127.0.0.1] [--port 3939]
+  sth send <file.html> [--server http://127.0.0.1:3939]`)
 }
 
 func runStart(args []string, stdout io.Writer) error {
@@ -127,7 +127,7 @@ func runSend(args []string, stdout io.Writer) error {
 	client := &http.Client{Timeout: 5 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf(`could not reach %s. Start the server with "html-server start" first.`, parsedURL.Scheme+"://"+parsedURL.Host)
+		return fmt.Errorf(`could not reach %s. Start the server with "sth start" first.`, parsedURL.Scheme+"://"+parsedURL.Host)
 	}
 	defer response.Body.Close()
 

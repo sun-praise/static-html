@@ -5,7 +5,7 @@ set -euo pipefail
 repo_dir="${STATIC_HTML_REPO_DIR:-$HOME/.cache/static-html/repo}"
 repo_ref="${STATIC_HTML_REPO_REF:-main}"
 repo_https_url="${STATIC_HTML_REPO_URL:-https://github.com/sun-praise/static-html.git}"
-binary_path="$repo_dir/dist/html-server"
+binary_path="$repo_dir/dist/sth"
 build_stamp="$repo_dir/dist/.static-html-go-build"
 
 ensure_checkout() {

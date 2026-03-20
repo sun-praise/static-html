@@ -13,4 +13,4 @@ target_file="$1"
 server_url="${2:-${STATIC_HTML_SERVER_URL:-http://127.0.0.1:3939}}"
 
 cd "$repo_dir"
-exec "$repo_dir/dist/html-server" send "$target_file" --server "$server_url"
+exec "$repo_dir/dist/sth" send "$target_file" --server "$server_url"

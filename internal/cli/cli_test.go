@@ -56,7 +56,7 @@ func TestSendFailsClearlyWhenServerUnavailable(t *testing.T) {
 		t.Fatal("expected send to fail")
 	}
 
-	if !strings.Contains(err.Error(), `Start the server with "html-server start" first.`) {
+	if !strings.Contains(err.Error(), `Start the server with "sth start" first.`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
