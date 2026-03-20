@@ -1,0 +1,24 @@
+{
+  "name": "static-html",
+  "version": "1.0.0",
+  "description": "Local HTML preview server with CLI session registration",
+  "main": "src/server.js",
+  "bin": {
+    "html-server": "./bin/html-server.js"
+  },
+  "scripts": {
+    "start": "node ./bin/html-server.js start",
+    "test": "node --test"
+  },
+  "keywords": [
+    "html",
+    "preview",
+    "server",
+    "cli"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1"
+  }
+}

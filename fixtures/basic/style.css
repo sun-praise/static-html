@@ -1,0 +1,16 @@
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(180deg, #efe9dc 0%, #ddd3bf 100%);
+  color: #1d1d1d;
+  font-family: Georgia, serif;
+}
+
+main {
+  padding: 2rem 2.5rem;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 14px 30px rgba(0, 0, 0, 0.1);
+}
