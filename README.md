@@ -34,3 +34,17 @@ The `send` command prints a session URL. Open that URL in a browser to view the 
 html-server start [--host 127.0.0.1] [--port 3939]
 html-server send <file.html> [--server http://127.0.0.1:3939]
 ```
+
+## Codex Skill
+
+This repo also ships an installable Codex skill at `skills/static-html-preview`.
+
+Install it from GitHub with the local installer helper:
+
+```bash
+~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
+  --repo sun-praise/static-html \
+  --path skills/static-html-preview
+```
+
+After installing the skill, restart Codex to pick it up.
