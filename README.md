@@ -9,7 +9,7 @@ A local HTML preview server with a CLI for registering HTML files as browser-vie
 ## Build
 
 ```bash
-go build -o dist/html-server ./cmd/html-server
+go build -o dist/sth ./cmd/html-server
 ```
 
 ## Usage
@@ -17,13 +17,13 @@ go build -o dist/html-server ./cmd/html-server
 Start the local server:
 
 ```bash
-./dist/html-server start
+./dist/sth start
 ```
 
 Register an HTML file:
 
 ```bash
-./dist/html-server send ./fixtures/basic/index.html
+./dist/sth send ./fixtures/basic/index.html
 ```
 
 The `send` command prints a session URL. Open that URL in a browser to view the HTML file with relative assets served from the source directory.
@@ -31,8 +31,8 @@ The `send` command prints a session URL. Open that URL in a browser to view the 
 ## Commands
 
 ```bash
-html-server start [--host 127.0.0.1] [--port 3939]
-html-server send <file.html> [--server http://127.0.0.1:3939]
+sth start [--host 127.0.0.1] [--port 3939]
+sth send <file.html> [--server http://127.0.0.1:3939]
 ```
 
 ## Test

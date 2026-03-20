@@ -1,11 +1,11 @@
 ---
-name: static-html-preview
-description: Start or use the local HTML preview server from sun-praise/static-html. Use when you need to preview a local HTML file in a browser, serve relative CSS/JS/assets for that file, or register preview sessions from the CLI.
+name: sth
+description: Start or use the `sth` local HTML preview server from sun-praise/static-html. Use when the user mentions `sth`, wants `sth start` or `sth send`, needs to preview a local HTML file in a browser, serve relative CSS/JS/assets for that file, or register preview sessions from the CLI.
 ---
 
-# Static HTML Preview
+# STH Preview
 
-Use this skill when a user wants a quick local preview for an HTML file and its relative assets.
+Use this skill when a user wants a quick local preview for an HTML file and its relative assets, especially if they refer to the tool as `sth`.
 
 ## Workflow
 
@@ -18,7 +18,7 @@ bash scripts/bootstrap-repo.sh
 This script:
 - uses `STATIC_HTML_REPO_DIR` if it already points at a checkout
 - otherwise clones or updates `sun-praise/static-html`
-- builds `dist/html-server` when the Go source fingerprint changes
+- builds `dist/sth` when the Go source fingerprint changes
 
 2. Start the preview server:
 
