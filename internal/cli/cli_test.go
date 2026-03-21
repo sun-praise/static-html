@@ -9,12 +9,17 @@ import (
 	"time"
 
 	"github.com/sun-praise/static-html/internal/server"
+	"github.com/sun-praise/static-html/internal/session"
 )
 
 func TestSendPrintsSessionURL(t *testing.T) {
 	t.Parallel()
 
-	srv := server.New("127.0.0.1", 0, nil)
+	store := newTestStore(t)
+	srv, err := server.New("127.0.0.1", 0, store)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -59,4 +64,21 @@ func TestSendFailsClearlyWhenServerUnavailable(t *testing.T) {
 	if !strings.Contains(err.Error(), `Start the server with "sth start" first.`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func newTestStore(t *testing.T) *session.Store {
+	t.Helper()
+
+	store, err := session.NewSQLiteStore(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
+
+	return store
 }

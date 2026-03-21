@@ -124,13 +124,13 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
   </body>
 </html>`))
 
-func New(host string, port int, store *session.Store) *Server {
+func New(host string, port int, store *session.Store) (*Server, error) {
 	if host == "" {
 		host = DefaultHost
 	}
 
 	if store == nil {
-		store = session.NewStore()
+		return nil, errors.New("server: store must not be nil")
 	}
 
 	srv := &Server{
@@ -143,7 +143,7 @@ func New(host string, port int, store *session.Store) *Server {
 		Handler: srv.routes(),
 	}
 
-	return srv
+	return srv, nil
 }
 
 func (s *Server) Start() error {
@@ -216,7 +216,12 @@ func (s *Server) routes() http.Handler {
 }
 
 func (s *Server) handleHome(w http.ResponseWriter, _ *http.Request) {
-	sessions := s.store.ListRecent(20)
+	sessions, err := s.store.ListRecent(20)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	items := make([]homePageSession, 0, len(sessions))
 	for _, session := range sessions {
 		items = append(items, homePageSession{
@@ -304,7 +309,12 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, found := s.store.Get(sessionID)
+	session, found, err := s.store.Get(sessionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	if !found {
 		http.Error(w, "Session not found.", http.StatusNotFound)
 		return

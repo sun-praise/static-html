@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sun-praise/static-html/internal/server"
+	"github.com/sun-praise/static-html/internal/session"
 )
 
 func Run(args []string, stdout io.Writer, stderr io.Writer) error {
@@ -40,7 +41,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
-  sth start [--host 127.0.0.1] [--port 3939]
+  sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
   sth send <file.html> [--server http://127.0.0.1:3939]`)
 }
 
@@ -67,9 +68,18 @@ func runStart(args []string, stdout io.Writer) error {
 		return errors.New("port must be a positive integer")
 	}
 
-	srv := server.New(host, port, nil)
-	if err := srv.Start(); err != nil {
+	store, err := openStore(flags)
+	if err != nil {
 		return err
+	}
+
+	srv, err := server.New(host, port, store)
+	if err != nil {
+		return errors.Join(err, store.Close())
+	}
+
+	if err := srv.Start(); err != nil {
+		return errors.Join(err, store.Close())
 	}
 
 	fmt.Fprintf(stdout, "HTML server listening on %s\n", srv.Origin())
@@ -81,7 +91,18 @@ func runStart(args []string, stdout io.Writer) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Stop(shutdownCtx)
+
+	stopErr := srv.Stop(shutdownCtx)
+	closeErr := store.Close()
+	return errors.Join(stopErr, closeErr)
+}
+
+func openStore(flags map[string]string) (*session.Store, error) {
+	if value, ok := flags["db"]; ok {
+		return session.NewSQLiteStore(value)
+	}
+
+	return session.NewStore()
 }
 
 func runSend(args []string, stdout io.Writer) error {
