@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/sun-praise/static-html/internal/session"
 )
 
 func TestCreateSessionAndServeAssets(t *testing.T) {
@@ -21,7 +23,11 @@ func TestCreateSessionAndServeAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := New("127.0.0.1", 0, nil)
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +112,11 @@ func TestTraversalIsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := New("127.0.0.1", 0, nil)
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -143,4 +153,22 @@ func TestTraversalIsRejected(t *testing.T) {
 	if traversalResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", traversalResp.StatusCode)
 	}
+}
+
+func newTestStore(t *testing.T) *session.Store {
+	t.Helper()
+
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	return store
 }

@@ -20,6 +20,8 @@ Start the local server:
 ./dist/sth start
 ```
 
+By default, sessions are stored in SQLite at `$XDG_STATE_HOME/sth/sessions.db` or `~/.local/state/sth/sessions.db`.
+
 Register an HTML file:
 
 ```bash
@@ -31,7 +33,7 @@ The `send` command prints a session URL. Open that URL in a browser to view the 
 ## Commands
 
 ```bash
-sth start [--host 127.0.0.1] [--port 3939]
+sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
 sth send <file.html> [--server http://127.0.0.1:3939]
 ```
 

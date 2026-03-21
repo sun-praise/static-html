@@ -2,11 +2,14 @@ package session
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
+	"errors"
+	"os"
 	"path/filepath"
-	"sort"
-	"sync"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 type Session struct {
@@ -21,14 +24,66 @@ func (s Session) CreatedAtISO() string {
 }
 
 type Store struct {
-	mu       sync.RWMutex
-	sessions map[string]Session
+	db *sql.DB
 }
 
-func NewStore() *Store {
-	return &Store{
-		sessions: make(map[string]Session),
+func DefaultDBPath() (string, error) {
+	if stateHome := os.Getenv("XDG_STATE_HOME"); stateHome != "" {
+		return filepath.Join(stateHome, "sth", "sessions.db"), nil
 	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(homeDir, ".local", "state", "sth", "sessions.db"), nil
+}
+
+func NewStore() (*Store, error) {
+	dbPath, err := DefaultDBPath()
+	if err != nil {
+		return nil, err
+	}
+
+	return NewSQLiteStore(dbPath)
+}
+
+func NewInMemoryStore() (*Store, error) {
+	return NewSQLiteStore(":memory:")
+}
+
+func NewSQLiteStore(dbPath string) (*Store, error) {
+	if dbPath == "" {
+		return nil, errors.New("database path is required")
+	}
+
+	if dbPath != ":memory:" {
+		if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+			return nil, err
+		}
+	}
+
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	store := &Store{db: db}
+	if err := store.init(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	return store, nil
+}
+
+func (s *Store) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+
+	return s.db.Close()
 }
 
 func (s *Store) Create(entryFile string) (Session, error) {
@@ -44,37 +99,92 @@ func (s *Store) Create(entryFile string) (Session, error) {
 		CreatedAt: time.Now().UTC(),
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.sessions[session.ID] = session
+	_, err = s.db.Exec(
+		`INSERT INTO sessions (session_id, entry_file, root_dir, created_at_unix) VALUES (?, ?, ?, ?)`,
+		session.ID,
+		session.EntryFile,
+		session.RootDir,
+		session.CreatedAt.UnixNano(),
+	)
+	if err != nil {
+		return Session{}, err
+	}
+
 	return session, nil
 }
 
-func (s *Store) Get(id string) (Session, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	session, ok := s.sessions[id]
-	return session, ok
+func (s *Store) Get(id string) (Session, bool, error) {
+	row := s.db.QueryRow(
+		`SELECT session_id, entry_file, root_dir, created_at_unix FROM sessions WHERE session_id = ?`,
+		id,
+	)
+
+	var (
+		session       Session
+		createdAtUnix int64
+	)
+	if err := row.Scan(&session.ID, &session.EntryFile, &session.RootDir, &createdAtUnix); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Session{}, false, nil
+		}
+		return Session{}, false, err
+	}
+
+	session.CreatedAt = time.Unix(0, createdAtUnix).UTC()
+	return session, true, nil
 }
 
-func (s *Store) ListRecent(limit int) []Session {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) ListRecent(limit int) ([]Session, error) {
+	query := `SELECT session_id, entry_file, root_dir, created_at_unix FROM sessions ORDER BY created_at_unix DESC`
+	args := make([]any, 0, 1)
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
 
-	sessions := make([]Session, 0, len(s.sessions))
-	for _, session := range s.sessions {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	sessions := make([]Session, 0)
+	for rows.Next() {
+		var (
+			session       Session
+			createdAtUnix int64
+		)
+		if err := rows.Scan(&session.ID, &session.EntryFile, &session.RootDir, &createdAtUnix); err != nil {
+			return nil, err
+		}
+
+		session.CreatedAt = time.Unix(0, createdAtUnix).UTC()
 		sessions = append(sessions, session)
 	}
 
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].CreatedAt.After(sessions[j].CreatedAt)
-	})
-
-	if limit > 0 && len(sessions) > limit {
-		sessions = sessions[:limit]
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	return sessions
+	return sessions, nil
+}
+
+func (s *Store) init() error {
+	if _, err := s.db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
+		return err
+	}
+
+	_, err := s.db.Exec(`
+		CREATE TABLE IF NOT EXISTS sessions (
+			session_id TEXT PRIMARY KEY,
+			entry_file TEXT NOT NULL,
+			root_dir TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_sessions_created_at_unix
+		ON sessions(created_at_unix DESC);
+	`)
+	return err
 }
 
 func generateID() (string, error) {
