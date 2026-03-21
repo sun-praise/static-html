@@ -15,6 +15,13 @@ func TestStorePersistsSessionsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if store != nil {
+			if err := store.Close(); err != nil {
+				t.Errorf("close store: %v", err)
+			}
+		}
+	})
 
 	created, err := store.Create(entryFile)
 	if err != nil {
@@ -32,6 +39,7 @@ func TestStorePersistsSessionsAcrossReopen(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
+	store = nil
 
 	reopened, err := NewSQLiteStore(dbPath)
 	if err != nil {
@@ -39,7 +47,7 @@ func TestStorePersistsSessionsAcrossReopen(t *testing.T) {
 	}
 	defer func() {
 		if err := reopened.Close(); err != nil {
-			t.Fatal(err)
+			t.Errorf("close reopened store: %v", err)
 		}
 	}()
 

@@ -14,6 +14,15 @@ import (
 	"github.com/sun-praise/static-html/internal/session"
 )
 
+func TestNewRequiresStore(t *testing.T) {
+	t.Parallel()
+
+	_, err := New("127.0.0.1", 0, nil)
+	if err == nil {
+		t.Fatal("expected nil store to be rejected")
+	}
+}
+
 func TestCreateSessionAndServeAssets(t *testing.T) {
 	t.Parallel()
 
@@ -166,7 +175,7 @@ func newTestStore(t *testing.T) *session.Store {
 
 	t.Cleanup(func() {
 		if err := store.Close(); err != nil {
-			t.Fatal(err)
+			t.Errorf("store.Close failed: %v", err)
 		}
 	})
 

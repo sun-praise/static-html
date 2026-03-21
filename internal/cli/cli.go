@@ -72,15 +72,14 @@ func runStart(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	defer store.Close()
 
 	srv, err := server.New(host, port, store)
 	if err != nil {
-		return err
+		return errors.Join(err, store.Close())
 	}
 
 	if err := srv.Start(); err != nil {
-		return err
+		return errors.Join(err, store.Close())
 	}
 
 	fmt.Fprintf(stdout, "HTML server listening on %s\n", srv.Origin())
@@ -92,7 +91,10 @@ func runStart(args []string, stdout io.Writer) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Stop(shutdownCtx)
+
+	stopErr := srv.Stop(shutdownCtx)
+	closeErr := store.Close()
+	return errors.Join(stopErr, closeErr)
 }
 
 func openStore(flags map[string]string) (*session.Store, error) {

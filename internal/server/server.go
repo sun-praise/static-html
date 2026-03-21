@@ -130,11 +130,7 @@ func New(host string, port int, store *session.Store) (*Server, error) {
 	}
 
 	if store == nil {
-		var err error
-		store, err = session.NewInMemoryStore()
-		if err != nil {
-			return nil, err
-		}
+		return nil, errors.New("server: store must not be nil")
 	}
 
 	srv := &Server{
