@@ -27,7 +27,7 @@ bash scripts/start-server.sh [port]
 ```
 
 Defaults:
-- host: `127.0.0.1`
+- host: `192.168.2.14`
 - port: `3939`
 
 3. Register an HTML file:
@@ -36,14 +36,14 @@ Defaults:
 bash scripts/send-file.sh /absolute/or/relative/file.html [server_url]
 ```
 
-The command prints a session URL like `http://127.0.0.1:3939/s/<id>/`.
+The command uploads the HTML file and sibling assets from the same directory, then prints a session URL like `http://192.168.2.14:3939/s/<id>/`.
 
 ## Environment overrides
 
 - `STATIC_HTML_REPO_DIR`: existing checkout to reuse
 - `STATIC_HTML_REPO_REF`: branch or ref to clone/update, default `main`
 - `STATIC_HTML_SKIP_UPDATE=1`: skip fetch/pull when reusing an existing checkout
-- `STATIC_HTML_HOST`: server host, default `127.0.0.1`
+- `STATIC_HTML_HOST`: server host, default `192.168.2.14`
 - `STATIC_HTML_PORT`: default port for `start-server.sh`
 - `STATIC_HTML_SERVER_URL`: default server URL for `send-file.sh`
 
@@ -51,4 +51,4 @@ The command prints a session URL like `http://127.0.0.1:3939/s/<id>/`.
 
 - This skill expects `git`, `go`, and a working Go toolchain.
 - The GitHub repo is private; authenticated `gh` or `git` access is required.
-- The server renders the HTML as-is and serves relative assets from the source file directory.
+- The server renders the HTML as-is and serves relative assets from the uploaded directory snapshot for that file.

@@ -1,12 +1,13 @@
 package cli
 
 import (
-	"bytes"
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,8 +42,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
-  sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
-  sth send <file.html> [--server http://127.0.0.1:3939]`)
+  sth start [--host 192.168.2.14] [--port 3939] [--db /path/to/sessions.db]
+  sth send <file.html> [--server http://192.168.2.14:3939]`)
 }
 
 func runStart(args []string, stdout io.Writer) error {
@@ -123,6 +124,12 @@ func runSend(args []string, stdout io.Writer) error {
 	if !server.IsHTMLFile(entryFile) {
 		return errors.New("only .html and .htm files are supported")
 	}
+	if err := ensureLocalFile(entryFile); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("HTML file does not exist on this machine: %q", entryFile)
+		}
+		return err
+	}
 
 	serverURL := server.DefaultServerURL
 	if value, ok := flags["server"]; ok {
@@ -134,16 +141,15 @@ func runSend(args []string, stdout io.Writer) error {
 		return fmt.Errorf("invalid server URL: %w", err)
 	}
 
-	payload, err := json.Marshal(map[string]string{"filePath": entryFile})
+	requestBody, contentType, err := newUploadRequestBody(entryFile)
 	if err != nil {
 		return err
 	}
-
-	request, err := http.NewRequest(http.MethodPost, parsedURL.ResolveReference(&url.URL{Path: "/api/sessions"}).String(), bytes.NewReader(payload))
+	request, err := http.NewRequest(http.MethodPost, parsedURL.ResolveReference(&url.URL{Path: "/api/sessions"}).String(), requestBody)
 	if err != nil {
 		return err
 	}
-	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Content-Type", contentType)
 
 	client := &http.Client{Timeout: 5 * time.Second}
 	response, err := client.Do(request)
@@ -173,6 +179,107 @@ func runSend(args []string, stdout io.Writer) error {
 	}
 
 	fmt.Fprintln(stdout, resp.URL)
+	return nil
+}
+
+func newUploadRequestBody(entryFile string) (io.Reader, string, error) {
+	rootDir := filepath.Dir(entryFile)
+	entryPath := filepath.Base(entryFile)
+
+	reader, writer := io.Pipe()
+	formWriter := multipart.NewWriter(writer)
+
+	go func() {
+		defer writer.Close()
+
+		if err := formWriter.WriteField("entryFile", entryFile); err != nil {
+			_ = writer.CloseWithError(err)
+			return
+		}
+		if err := formWriter.WriteField("entryPath", filepath.ToSlash(entryPath)); err != nil {
+			_ = writer.CloseWithError(err)
+			return
+		}
+
+		archiveWriter, err := formWriter.CreateFormFile("archive", "site.zip")
+		if err != nil {
+			_ = writer.CloseWithError(err)
+			return
+		}
+
+		if err := writeZIPArchive(rootDir, archiveWriter); err != nil {
+			_ = writer.CloseWithError(err)
+			return
+		}
+
+		if err := formWriter.Close(); err != nil {
+			_ = writer.CloseWithError(err)
+			return
+		}
+	}()
+
+	return reader, formWriter.FormDataContentType(), nil
+}
+
+func writeZIPArchive(rootDir string, target io.Writer) error {
+	archive := zip.NewWriter(target)
+	err := filepath.WalkDir(rootDir, func(filePath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+
+		relativePath, err := filepath.Rel(rootDir, filePath)
+		if err != nil {
+			return err
+		}
+
+		sourceFile, err := os.Open(filePath)
+		if err != nil {
+			return err
+		}
+
+		archivedFile, err := archive.Create(filepath.ToSlash(relativePath))
+		if err != nil {
+			_ = sourceFile.Close()
+			return err
+		}
+
+		_, copyErr := io.Copy(archivedFile, sourceFile)
+		closeErr := sourceFile.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+
+		return closeErr
+	})
+	if err != nil {
+		_ = archive.Close()
+		return err
+	}
+
+	return archive.Close()
+}
+
+func ensureLocalFile(filePath string) error {
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("target path is not a file")
+	}
+
 	return nil
 }
 

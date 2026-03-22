@@ -1,12 +1,15 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -161,6 +164,132 @@ func TestTraversalIsRejected(t *testing.T) {
 
 	if traversalResp.StatusCode != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", traversalResp.StatusCode)
+	}
+}
+
+func TestCreateUploadedSessionAndServeAssets(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	entryFile := filepath.Join(rootDir, "index.html")
+	assetFile := filepath.Join(rootDir, "assets", "style.css")
+	if err := os.MkdirAll(filepath.Dir(assetFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entryFile, []byte("<!doctype html><link rel=\"stylesheet\" href=\"assets/style.css\"><h1>Uploaded Preview</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(assetFile, []byte("body{background:#f5f5f5}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	body := &bytes.Buffer{}
+	formWriter := multipart.NewWriter(body)
+	if err := formWriter.WriteField("entryFile", "/remote/work/index.html"); err != nil {
+		t.Fatal(err)
+	}
+	if err := formWriter.WriteField("entryPath", "index.html"); err != nil {
+		t.Fatal(err)
+	}
+	archivePart, err := formWriter.CreateFormFile("archive", "site.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveWriter := zip.NewWriter(archivePart)
+	for _, item := range []struct {
+		name    string
+		content string
+	}{
+		{name: "index.html", content: "<!doctype html><link rel=\"stylesheet\" href=\"assets/style.css\"><h1>Uploaded Preview</h1>"},
+		{name: "assets/style.css", content: "body{background:#f5f5f5}"},
+	} {
+		fileWriter, err := archiveWriter.Create(item.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(fileWriter, item.content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archiveWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := formWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	createResp, err := http.Post(srv.Origin()+"/api/sessions", formWriter.FormDataContentType(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+
+	if createResp.StatusCode != http.StatusCreated {
+		responseBody, _ := io.ReadAll(createResp.Body)
+		t.Fatalf("unexpected create status: %d body=%s", createResp.StatusCode, responseBody)
+	}
+
+	var payload struct {
+		URL       string `json:"url"`
+		EntryFile string `json:"entryFile"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.EntryFile != "/remote/work/index.html" {
+		t.Fatalf("unexpected entryFile: %q", payload.EntryFile)
+	}
+
+	htmlResp, err := http.Get(payload.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer htmlResp.Body.Close()
+
+	htmlBytes, err := io.ReadAll(htmlResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if htmlResp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected html status: %d", htmlResp.StatusCode)
+	}
+	if !bytes.Contains(htmlBytes, []byte("Uploaded Preview")) {
+		t.Fatalf("preview html missing expected content: %s", string(htmlBytes))
+	}
+
+	cssURL, err := url.JoinPath(payload.URL, "assets/style.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cssResp, err := http.Get(cssURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cssResp.Body.Close()
+
+	cssBytes, err := io.ReadAll(cssResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cssResp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected css status: %d", cssResp.StatusCode)
+	}
+	if !bytes.Contains(cssBytes, []byte("background")) {
+		t.Fatalf("css missing expected content: %s", string(cssBytes))
 	}
 }
 

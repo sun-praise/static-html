@@ -29,13 +29,13 @@ Register an HTML file:
 ./dist/sth send ./fixtures/basic/index.html
 ```
 
-The `send` command prints a session URL. Open that URL in a browser to view the HTML file with relative assets served from the source directory.
+The `send` command uploads the HTML file and all regular files under the same source directory as a zip archive, then prints a session URL. Open that URL in a browser to view the HTML file with its relative assets served from the uploaded snapshot on the server.
 
 ## Commands
 
 ```bash
-sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
-sth send <file.html> [--server http://127.0.0.1:3939]
+sth start [--host 192.168.2.14] [--port 3939] [--db /path/to/sessions.db]
+sth send <file.html> [--server http://192.168.2.14:3939]
 ```
 
 ## Test

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 )
@@ -64,6 +65,12 @@ func TestStorePersistsSessionsAcrossReopen(t *testing.T) {
 	if found.RootDir != created.RootDir {
 		t.Fatalf("expected root dir %q, got %q", created.RootDir, found.RootDir)
 	}
+	if found.StoredEntryFile != created.StoredEntryFile {
+		t.Fatalf("expected stored entry file %q, got %q", created.StoredEntryFile, found.StoredEntryFile)
+	}
+	if found.StoredRootDir != created.StoredRootDir {
+		t.Fatalf("expected stored root dir %q, got %q", created.StoredRootDir, found.StoredRootDir)
+	}
 
 	recentAfterReopen, err := reopened.ListRecent(10)
 	if err != nil {
@@ -71,5 +78,57 @@ func TestStorePersistsSessionsAcrossReopen(t *testing.T) {
 	}
 	if len(recentAfterReopen) != 1 {
 		t.Fatalf("expected 1 session after reopen, got %d", len(recentAfterReopen))
+	}
+}
+
+func TestStoreMigratesLegacyRows(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE sessions (
+			session_id TEXT PRIMARY KEY,
+			entry_file TEXT NOT NULL,
+			root_dir TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL
+		);
+		INSERT INTO sessions (session_id, entry_file, root_dir, created_at_unix)
+		VALUES ('legacy', '/tmp/index.html', '/tmp', 1);
+	`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	}()
+
+	found, ok, err := store.Get("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected migrated legacy session")
+	}
+	if found.StoredEntryFile != found.EntryFile {
+		t.Fatalf("expected stored entry file to fall back to entry file, got %q", found.StoredEntryFile)
+	}
+	if found.StoredRootDir != found.RootDir {
+		t.Fatalf("expected stored root dir to fall back to root dir, got %q", found.StoredRootDir)
 	}
 }

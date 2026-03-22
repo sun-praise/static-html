@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,9 +21,11 @@ import (
 )
 
 const (
-	DefaultHost      = "127.0.0.1"
+	DefaultHost      = "192.168.2.14"
 	DefaultPort      = 3939
-	DefaultServerURL = "http://127.0.0.1:3939"
+	DefaultServerURL = "http://192.168.2.14:3939"
+	maxUploadBytes   = 64 << 20
+	maxArchiveFiles  = 2048
 )
 
 type Server struct {
@@ -240,6 +244,16 @@ func (s *Server) handleHome(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
+	contentType := r.Header.Get("Content-Type")
+	if strings.HasPrefix(contentType, "multipart/form-data") {
+		s.handleCreateUploadedSession(w, r)
+		return
+	}
+
+	s.handleCreatePathSession(w, r)
+}
+
+func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -297,6 +311,98 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, response)
 }
 
+func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Failed to parse multipart form upload.")
+		return
+	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+
+	entryFile := strings.TrimSpace(r.FormValue("entryFile"))
+	entryPath, err := normalizeArchivePath(r.FormValue("entryPath"))
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "entryPath must be a relative path inside the archive.")
+		return
+	}
+	if !IsHTMLFile(entryPath) {
+		writeJSONError(w, http.StatusBadRequest, "Only .html and .htm files are supported.")
+		return
+	}
+	if entryFile == "" {
+		entryFile = entryPath
+	}
+
+	archiveFile, _, err := r.FormFile("archive")
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "archive file is required.")
+		return
+	}
+	defer archiveFile.Close()
+
+	uploadRoot, err := defaultUploadRoot()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := os.MkdirAll(uploadRoot, 0o755); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	sessionDir, err := os.MkdirTemp(uploadRoot, "session-*")
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	cleanupSessionDir := true
+	defer func() {
+		if cleanupSessionDir {
+			_ = os.RemoveAll(sessionDir)
+		}
+	}()
+
+	if err := extractZIPArchive(archiveFile, sessionDir); err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	storedEntryFile := filepath.Join(sessionDir, filepath.FromSlash(entryPath))
+	if !IsSubpath(sessionDir, storedEntryFile) {
+		writeJSONError(w, http.StatusBadRequest, "entryPath escapes the uploaded archive root.")
+		return
+	}
+	if err := ensureFile(storedEntryFile); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			writeJSONError(w, http.StatusBadRequest, "entryPath does not exist in the uploaded archive.")
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	session, err := s.store.CreateUploaded(entryFile, storedEntryFile)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	cleanupSessionDir = false
+
+	baseURL := baseURL(r)
+	response := createSessionResponse{
+		SessionID: session.ID,
+		URL:       baseURL + "/s/" + session.ID + "/",
+		EntryFile: session.EntryFile,
+		RootDir:   session.RootDir,
+	}
+
+	writeJSON(w, http.StatusCreated, response)
+}
+
 func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	sessionID, assetPath, redirectPath, err := parsePreviewPath(r)
 	if err != nil {
@@ -321,12 +427,12 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if assetPath == "" {
-		http.ServeFile(w, r, session.EntryFile)
+		http.ServeFile(w, r, session.StoredEntryFile)
 		return
 	}
 
-	targetPath := filepath.Clean(filepath.Join(session.RootDir, filepath.FromSlash(assetPath)))
-	if !IsSubpath(session.RootDir, targetPath) {
+	targetPath := filepath.Clean(filepath.Join(session.StoredRootDir, filepath.FromSlash(assetPath)))
+	if !IsSubpath(session.StoredRootDir, targetPath) {
 		http.Error(w, "Path escapes the session root.", http.StatusForbidden)
 		return
 	}
@@ -400,6 +506,128 @@ func ensureFile(filePath string) error {
 	}
 
 	return nil
+}
+
+func defaultUploadRoot() (string, error) {
+	stateDir, err := session.DefaultStateDir()
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.Join(stateDir, "sth", "uploads"), nil
+}
+
+func normalizeArchivePath(value string) (string, error) {
+	cleaned := path.Clean(strings.TrimSpace(value))
+	if cleaned == "." || cleaned == "" {
+		return "", errors.New("empty archive path")
+	}
+	if strings.HasPrefix(cleaned, "/") || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", errors.New("archive path escapes root")
+	}
+
+	return cleaned, nil
+}
+
+func extractZIPArchive(file multipartFile, destinationDir string) error {
+	size, err := fileSize(file)
+	if err != nil {
+		return fmt.Errorf("failed to inspect archive: %w", err)
+	}
+
+	reader, err := zip.NewReader(file, size)
+	if err != nil {
+		return errors.New("archive must be a valid zip file")
+	}
+
+	var totalUncompressed uint64
+	for _, archivedFile := range reader.File {
+		if archivedFile.FileInfo().IsDir() {
+			continue
+		}
+
+		totalUncompressed += archivedFile.UncompressedSize64
+		if totalUncompressed > maxUploadBytes {
+			return errors.New("uploaded archive is too large after extraction")
+		}
+	}
+
+	if len(reader.File) > maxArchiveFiles {
+		return errors.New("uploaded archive contains too many files")
+	}
+
+	for _, archivedFile := range reader.File {
+		archivePath, err := normalizeArchivePath(archivedFile.Name)
+		if err != nil {
+			return errors.New("archive contains an invalid file path")
+		}
+
+		targetPath := filepath.Join(destinationDir, filepath.FromSlash(archivePath))
+		if !IsSubpath(destinationDir, targetPath) {
+			return errors.New("archive contains a path that escapes the session root")
+		}
+
+		if archivedFile.FileInfo().IsDir() {
+			if err := os.MkdirAll(targetPath, 0o755); err != nil {
+				return err
+			}
+			continue
+		}
+
+		mode := archivedFile.Mode()
+		if mode&os.ModeSymlink != 0 || !mode.IsRegular() {
+			return errors.New("archive may only contain regular files")
+		}
+
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			return err
+		}
+
+		sourceFile, err := archivedFile.Open()
+		if err != nil {
+			return err
+		}
+
+		targetFile, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+		if err != nil {
+			sourceFile.Close()
+			return err
+		}
+
+		_, copyErr := io.Copy(targetFile, sourceFile)
+		closeErr := errors.Join(sourceFile.Close(), targetFile.Close())
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+
+	return nil
+}
+
+type multipartFile interface {
+	io.Reader
+	io.ReaderAt
+	io.Seeker
+	io.Closer
+}
+
+func fileSize(file io.Seeker) (int64, error) {
+	current, err := file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return 0, err
+	}
+	end, err := file.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := file.Seek(current, io.SeekStart); err != nil {
+		return 0, err
+	}
+
+	return end, nil
 }
 
 func writeJSONError(w http.ResponseWriter, status int, message string) {

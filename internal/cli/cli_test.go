@@ -1,8 +1,14 @@
 package cli
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,6 +69,128 @@ func TestSendFailsClearlyWhenServerUnavailable(t *testing.T) {
 
 	if !strings.Contains(err.Error(), `Start the server with "sth start" first.`) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendExplainsRemoteFileSystemRequirement(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	fixtureHTML := filepath.Join(tempDir, "index.html")
+	if err := os.WriteFile(fixtureHTML, []byte("<!doctype html><title>ok</title>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"HTML file does not exist."}`)
+	}))
+	defer srv.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run([]string{"send", fixtureHTML, "--server", srv.URL}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected send to fail")
+	}
+
+	if !strings.Contains(err.Error(), "HTML file does not exist.") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendUploadsMultipartArchive(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	entryFile := filepath.Join(rootDir, "index.html")
+	assetFile := filepath.Join(rootDir, "assets", "style.css")
+	if err := os.MkdirAll(filepath.Dir(assetFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entryFile, []byte("<link rel=\"stylesheet\" href=\"assets/style.css\">"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(assetFile, []byte("body{background:#fff}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+			t.Fatalf("unexpected content type: %s", r.Header.Get("Content-Type"))
+		}
+
+		reader, err := r.MultipartReader()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		fields := map[string]string{}
+		archiveEntries := map[string]string{}
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if part.FormName() == "archive" {
+				archiveBytes, err := io.ReadAll(part)
+				if err != nil {
+					t.Fatal(err)
+				}
+				zipReader, err := zip.NewReader(bytes.NewReader(archiveBytes), int64(len(archiveBytes)))
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, archivedFile := range zipReader.File {
+					fileReader, err := archivedFile.Open()
+					if err != nil {
+						t.Fatal(err)
+					}
+					content, err := io.ReadAll(fileReader)
+					_ = fileReader.Close()
+					if err != nil {
+						t.Fatal(err)
+					}
+					archiveEntries[archivedFile.Name] = string(content)
+				}
+				continue
+			}
+
+			value, err := io.ReadAll(part)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fields[part.FormName()] = string(value)
+		}
+
+		if fields["entryFile"] != entryFile {
+			t.Fatalf("unexpected entryFile: %q", fields["entryFile"])
+		}
+		if fields["entryPath"] != "index.html" {
+			t.Fatalf("unexpected entryPath: %q", fields["entryPath"])
+		}
+		if archiveEntries["index.html"] == "" || archiveEntries["assets/style.css"] == "" {
+			t.Fatalf("archive missing expected files: %#v", archiveEntries)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": "http://example.test/s/session/"})
+	}))
+	defer srv.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run([]string{"send", entryFile, "--server", srv.URL}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(stdout.String(), "http://example.test/s/session/") {
+		t.Fatalf("unexpected output: %q", stdout.String())
 	}
 }
 
