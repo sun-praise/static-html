@@ -27,7 +27,7 @@ bash scripts/start-server.sh [port]
 ```
 
 Defaults:
-- host: `192.168.2.14`
+- host: `127.0.0.1`
 - port: `3939`
 
 3. Register an HTML file:
@@ -36,14 +36,14 @@ Defaults:
 bash scripts/send-file.sh /absolute/or/relative/file.html [server_url]
 ```
 
-The command uploads the HTML file and sibling assets from the same directory, then prints a session URL like `http://192.168.2.14:3939/s/<id>/`.
+The command uploads the HTML file and sibling assets from the same directory, then prints a session URL like `http://127.0.0.1:3939/s/<id>/`.
 
 ## Environment overrides
 
 - `STATIC_HTML_REPO_DIR`: existing checkout to reuse
 - `STATIC_HTML_REPO_REF`: branch or ref to clone/update, default `main`
 - `STATIC_HTML_SKIP_UPDATE=1`: skip fetch/pull when reusing an existing checkout
-- `STATIC_HTML_HOST`: server host, default `192.168.2.14`
+- `STATIC_HTML_HOST`: server host, default `127.0.0.1` (set this to your LAN host when running on another machine)
 - `STATIC_HTML_PORT`: default port for `start-server.sh`
 - `STATIC_HTML_SERVER_URL`: default server URL for `send-file.sh`
 

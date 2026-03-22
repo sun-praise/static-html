@@ -42,8 +42,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
-  sth start [--host 192.168.2.14] [--port 3939] [--db /path/to/sessions.db]
-  sth send <file.html> [--server http://192.168.2.14:3939]`)
+  sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
+  sth send <file.html> [--server http://127.0.0.1:3939]`)
 }
 
 func runStart(args []string, stdout io.Writer) error {

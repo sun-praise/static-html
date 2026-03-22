@@ -72,7 +72,7 @@ func TestSendFailsClearlyWhenServerUnavailable(t *testing.T) {
 	}
 }
 
-func TestSendExplainsRemoteFileSystemRequirement(t *testing.T) {
+func TestSendSurfacesServerJSONError(t *testing.T) {
 	t.Parallel()
 
 	tempDir := t.TempDir()

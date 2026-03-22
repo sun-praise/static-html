@@ -21,9 +21,9 @@ import (
 )
 
 const (
-	DefaultHost      = "192.168.2.14"
+	DefaultHost      = "127.0.0.1"
 	DefaultPort      = 3939
-	DefaultServerURL = "http://192.168.2.14:3939"
+	DefaultServerURL = "http://127.0.0.1:3939"
 	maxUploadBytes   = 64 << 20
 	maxArchiveFiles  = 2048
 )
@@ -349,7 +349,7 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := os.MkdirAll(uploadRoot, 0o755); err != nil {
+	if err := os.MkdirAll(uploadRoot, 0o700); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -540,15 +540,9 @@ func extractZIPArchive(file multipartFile, destinationDir string) error {
 		return errors.New("archive must be a valid zip file")
 	}
 
-	var totalUncompressed uint64
 	for _, archivedFile := range reader.File {
 		if archivedFile.FileInfo().IsDir() {
 			continue
-		}
-
-		totalUncompressed += archivedFile.UncompressedSize64
-		if totalUncompressed > maxUploadBytes {
-			return errors.New("uploaded archive is too large after extraction")
 		}
 	}
 
@@ -556,6 +550,7 @@ func extractZIPArchive(file multipartFile, destinationDir string) error {
 		return errors.New("uploaded archive contains too many files")
 	}
 
+	var totalUncompressed int64
 	for _, archivedFile := range reader.File {
 		archivePath, err := normalizeArchivePath(archivedFile.Name)
 		if err != nil {
@@ -594,7 +589,8 @@ func extractZIPArchive(file multipartFile, destinationDir string) error {
 			return err
 		}
 
-		_, copyErr := io.Copy(targetFile, sourceFile)
+		written, copyErr := copyToLimit(sourceFile, targetFile, maxUploadBytes-totalUncompressed)
+		totalUncompressed += written
 		closeErr := errors.Join(sourceFile.Close(), targetFile.Close())
 		if copyErr != nil {
 			return copyErr
@@ -605,6 +601,46 @@ func extractZIPArchive(file multipartFile, destinationDir string) error {
 	}
 
 	return nil
+}
+
+func copyToLimit(source io.Reader, target io.Writer, limit int64) (int64, error) {
+	if limit < 0 {
+		return 0, errors.New("uploaded archive is too large after extraction")
+	}
+
+	buffer := make([]byte, 32*1024)
+	var copied int64
+
+	for {
+		readLimit := len(buffer)
+		nRead, err := source.Read(buffer[:readLimit])
+
+		if nRead > 0 {
+			if copied+int64(nRead) > limit {
+				excess := copied + int64(nRead) - limit
+				nReadWritable := nRead - int(excess)
+				if nReadWritable > 0 {
+					if _, writeErr := target.Write(buffer[:nReadWritable]); writeErr != nil {
+						return copied, writeErr
+					}
+					copied += int64(nReadWritable)
+				}
+				return copied, errors.New("uploaded archive is too large after extraction")
+			}
+
+			copied += int64(nRead)
+			if _, writeErr := target.Write(buffer[:nRead]); writeErr != nil {
+				return copied, writeErr
+			}
+		}
+
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return copied, nil
+			}
+			return copied, err
+		}
+	}
 }
 
 type multipartFile interface {
