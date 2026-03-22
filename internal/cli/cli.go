@@ -185,6 +185,7 @@ func runSend(args []string, stdout io.Writer) error {
 func newUploadRequestBody(entryFile string) (io.Reader, string, error) {
 	rootDir := filepath.Dir(entryFile)
 	entryPath := filepath.Base(entryFile)
+	uploadName := filepath.Base(entryPath)
 
 	reader, writer := io.Pipe()
 	formWriter := multipart.NewWriter(writer)
@@ -192,7 +193,7 @@ func newUploadRequestBody(entryFile string) (io.Reader, string, error) {
 	go func() {
 		defer writer.Close()
 
-		if err := formWriter.WriteField("entryFile", entryFile); err != nil {
+		if err := formWriter.WriteField("entryFile", uploadName); err != nil {
 			_ = writer.CloseWithError(err)
 			return
 		}

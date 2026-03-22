@@ -168,7 +168,7 @@ func TestSendUploadsMultipartArchive(t *testing.T) {
 			fields[part.FormName()] = string(value)
 		}
 
-		if fields["entryFile"] != entryFile {
+		if fields["entryFile"] != filepath.Base(entryFile) {
 			t.Fatalf("unexpected entryFile: %q", fields["entryFile"])
 		}
 		if fields["entryPath"] != "index.html" {

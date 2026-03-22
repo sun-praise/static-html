@@ -324,6 +324,12 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 	}()
 
 	entryFile := strings.TrimSpace(r.FormValue("entryFile"))
+	if entryFile != "" {
+		entryFile = filepath.Base(filepath.Clean(filepath.FromSlash(entryFile)))
+		if entryFile == "." || entryFile == "" || entryFile == ".." {
+			entryFile = ""
+		}
+	}
 	entryPath, err := normalizeArchivePath(r.FormValue("entryPath"))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "entryPath must be a relative path inside the archive.")

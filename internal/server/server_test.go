@@ -250,7 +250,7 @@ func TestCreateUploadedSessionAndServeAssets(t *testing.T) {
 	if err := json.NewDecoder(createResp.Body).Decode(&payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.EntryFile != "/remote/work/index.html" {
+	if payload.EntryFile != "index.html" {
 		t.Fatalf("unexpected entryFile: %q", payload.EntryFile)
 	}
 
