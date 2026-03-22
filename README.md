@@ -44,6 +44,31 @@ sth send <file.html> [--server http://127.0.0.1:3939]
 go test ./...
 ```
 
+## Troubleshooting
+
+### `sth send` says server can't access HTML file path
+
+This usually means the CLI on the machine running `send` is using a different `sth` version than the service host.
+
+Checklist:
+
+- Ensure the `send` command path on the client is the expected binary, e.g.:
+  ```bash
+  which sth
+  /path/to/sth send ...
+  ```
+- Make sure both client and server use the same versioned build.
+- After updating source or binaries, restart the systemd service on the server host:
+  ```bash
+  systemctl --user restart static-html.service
+  ```
+- Use `--server` explicitly when the client and server are on different machines:
+  ```bash
+  sth send /absolute/path/to/index.html --server http://192.168.2.14:3939
+  ```
+
+If the client is stale, replace it and retry; old clients can still send legacy `entryFile` metadata and trigger cross-host path errors even if the server is updated.
+
 ## Codex Skill
 
 This repo also ships an installable Codex skill at `skills/static-html-preview`.
