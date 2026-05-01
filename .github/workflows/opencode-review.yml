@@ -1,0 +1,36 @@
+name: OpenCode PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    name: AI Code Review
+    if: github.event.pull_request.draft == false
+    runs-on: self-hosted
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          clean: true
+          persist-credentials: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref || github.event.pull_request.head.sha }}
+
+      - uses: svtter/opencode-actions/review@v2
+        with:
+          model: ${{ vars.MODEL_NAME }}
+          
+          # Fallback to direct Zhipu provider when repo MODEL_NAME points at opencode-go/,
+          # so PR review is not blocked by OpenCode workspace billing state.
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          deepseek-api-key: ${{ secrets.DEEPSEEK_API_KEY }}
+          zhipu-api-key: ${{ secrets.ZHIPU_API_KEY }}
+          timeout-seconds: "1800"
+
