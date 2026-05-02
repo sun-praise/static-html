@@ -51,7 +51,7 @@ func doJSONRequest(method, serverURL, path string, body any) (map[string]any, er
 
 	var result map[string]any
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, errors.New("server returned an invalid response")
+		return nil, fmt.Errorf("server returned non-JSON response: %s", strings.TrimSpace(string(respBody)))
 	}
 
 	if resp.StatusCode >= 400 {

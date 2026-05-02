@@ -933,6 +933,8 @@ type projectRequest struct {
 }
 
 func (s *Server) handleAddTags(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	defer r.Body.Close()
 	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/tags")
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
@@ -950,7 +952,7 @@ func (s *Server) handleAddTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.AddTags(sessionID, req.Tags...); err != nil {
-		if err.Error() == "session not found" {
+		if errors.Is(err, session.ErrSessionNotFound) {
 			writeJSONError(w, http.StatusNotFound, "Session not found.")
 			return
 		}
@@ -964,6 +966,7 @@ func (s *Server) handleAddTags(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRemoveTags(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/tags")
+	defer r.Body.Close()
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
 		return
@@ -980,7 +983,7 @@ func (s *Server) handleRemoveTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.RemoveTags(sessionID, req.Tags...); err != nil {
-		if err.Error() == "session not found" {
+		if errors.Is(err, session.ErrSessionNotFound) {
 			writeJSONError(w, http.StatusNotFound, "Session not found.")
 			return
 		}
@@ -994,6 +997,7 @@ func (s *Server) handleRemoveTags(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSetCategory(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/category")
+	defer r.Body.Close()
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
 		return
@@ -1006,7 +1010,7 @@ func (s *Server) handleSetCategory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.SetCategory(sessionID, req.Category); err != nil {
-		if err.Error() == "session not found" {
+		if errors.Is(err, session.ErrSessionNotFound) {
 			writeJSONError(w, http.StatusNotFound, "Session not found.")
 			return
 		}
@@ -1020,12 +1024,16 @@ func (s *Server) handleSetCategory(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClearCategory(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/category")
+	defer r.Body.Close()
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
 		return
 	}
 
-	if _, found, _ := s.store.Get(sessionID); !found {
+	if _, found, err := s.store.Get(sessionID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	} else if !found {
 		writeJSONError(w, http.StatusNotFound, "Session not found.")
 		return
 	}
@@ -1041,6 +1049,7 @@ func (s *Server) handleClearCategory(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSetProject(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/project")
+	defer r.Body.Close()
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
 		return
@@ -1053,7 +1062,7 @@ func (s *Server) handleSetProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.store.SetProject(sessionID, req.Project); err != nil {
-		if err.Error() == "session not found" {
+		if errors.Is(err, session.ErrSessionNotFound) {
 			writeJSONError(w, http.StatusNotFound, "Session not found.")
 			return
 		}
@@ -1067,12 +1076,16 @@ func (s *Server) handleSetProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClearProject(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/project")
+	defer r.Body.Close()
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
 		return
 	}
 
-	if _, found, _ := s.store.Get(sessionID); !found {
+	if _, found, err := s.store.Get(sessionID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	} else if !found {
 		writeJSONError(w, http.StatusNotFound, "Session not found.")
 		return
 	}
@@ -1088,6 +1101,7 @@ func (s *Server) handleClearProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/metadata")
+	defer r.Body.Close()
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
 		return
