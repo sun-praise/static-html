@@ -1025,6 +1025,11 @@ func (s *Server) handleClearCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, found, _ := s.store.Get(sessionID); !found {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
+		return
+	}
+
 	if err := s.store.ClearCategory(sessionID); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1067,6 +1072,11 @@ func (s *Server) handleClearProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, found, _ := s.store.Get(sessionID); !found {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
+		return
+	}
+
 	if err := s.store.ClearProject(sessionID); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1080,6 +1090,11 @@ func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/metadata")
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	if _, found, _ := s.store.Get(sessionID); !found {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
 		return
 	}
 
