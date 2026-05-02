@@ -352,6 +352,20 @@ func (s *Server) routes() http.Handler {
 			s.handleCreateSession(w, r)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/s/"):
 			s.handlePreview(w, r)
+		case r.Method == http.MethodPut && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/tags"):
+			s.handleAddTags(w, r)
+		case r.Method == http.MethodDelete && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/tags"):
+			s.handleRemoveTags(w, r)
+		case r.Method == http.MethodPut && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/category"):
+			s.handleSetCategory(w, r)
+		case r.Method == http.MethodDelete && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/category"):
+			s.handleClearCategory(w, r)
+		case r.Method == http.MethodPut && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/project"):
+			s.handleSetProject(w, r)
+		case r.Method == http.MethodDelete && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/project"):
+			s.handleClearProject(w, r)
+		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/metadata"):
+			s.handleGetMetadata(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -891,4 +905,211 @@ func baseURL(r *http.Request) string {
 	}
 
 	return scheme + "://" + r.Host
+}
+
+func hasPrefixSuffix(path, prefix, suffix string) bool {
+	return strings.HasPrefix(path, prefix) && strings.HasSuffix(path, suffix)
+}
+
+func extractSessionIDFromMetaPath(urlPath, prefix, suffix string) (string, bool) {
+	trimmed := strings.TrimPrefix(urlPath, prefix)
+	trimmed = strings.TrimSuffix(trimmed, suffix)
+	if trimmed == "" || strings.Contains(trimmed, "/") {
+		return "", false
+	}
+	return trimmed, true
+}
+
+type tagsRequest struct {
+	Tags []string `json:"tags"`
+}
+
+type categoryRequest struct {
+	Category string `json:"category"`
+}
+
+type projectRequest struct {
+	Project string `json:"project"`
+}
+
+func (s *Server) requireSession(sessionID string) (session.Session, bool, error) {
+	return s.store.Get(sessionID)
+}
+
+func (s *Server) writeMetaOrError(w http.ResponseWriter, sessionID string, storeErr error) {
+	if storeErr != nil {
+		if errors.Is(storeErr, session.ErrSessionNotFound) {
+			writeJSONError(w, http.StatusNotFound, "Session not found.")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, storeErr.Error())
+		return
+	}
+	meta, err := s.store.GetMetadata(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) handleAddTags(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/tags")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	var req tagsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Request body must be valid JSON.")
+		return
+	}
+	if len(req.Tags) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "At least one tag is required.")
+		return
+	}
+
+	err := s.store.AddTags(sessionID, req.Tags...)
+	s.writeMetaOrError(w, sessionID, err)
+}
+
+func (s *Server) handleRemoveTags(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/tags")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	var req tagsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Request body must be valid JSON.")
+		return
+	}
+	if len(req.Tags) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "At least one tag is required.")
+		return
+	}
+
+	err := s.store.RemoveTags(sessionID, req.Tags...)
+	s.writeMetaOrError(w, sessionID, err)
+}
+
+func (s *Server) handleSetCategory(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/category")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	var req categoryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Request body must be valid JSON.")
+		return
+	}
+
+	err := s.store.SetCategory(sessionID, req.Category)
+	s.writeMetaOrError(w, sessionID, err)
+}
+
+func (s *Server) handleClearCategory(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/category")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	_, found, err := s.requireSession(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
+		return
+	}
+
+	if err := s.store.ClearCategory(sessionID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	meta, _ := s.store.GetMetadata(sessionID)
+	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) handleSetProject(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/project")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	var req projectRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Request body must be valid JSON.")
+		return
+	}
+
+	err := s.store.SetProject(sessionID, req.Project)
+	s.writeMetaOrError(w, sessionID, err)
+}
+
+func (s *Server) handleClearProject(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/project")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	_, found, err := s.requireSession(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
+		return
+	}
+
+	if err := s.store.ClearProject(sessionID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	meta, _ := s.store.GetMetadata(sessionID)
+	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/metadata")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	_, found, err := s.requireSession(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
+		return
+	}
+
+	meta, err := s.store.GetMetadata(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, meta)
 }

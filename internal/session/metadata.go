@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+var ErrSessionNotFound = errors.New("session not found")
+
 type DocumentMetadata struct {
 	SessionID string
 	Tags      []string
@@ -57,7 +59,7 @@ func (s *Store) AddTags(sessionID string, tags ...string) error {
 		return errors.New("at least one tag is required")
 	}
 	if !s.sessionExists(sessionID) {
-		return errors.New("session not found")
+		return ErrSessionNotFound
 	}
 
 	tx, err := s.db.Begin()
@@ -89,7 +91,7 @@ func (s *Store) RemoveTags(sessionID string, tags ...string) error {
 		return errors.New("at least one tag is required")
 	}
 	if !s.sessionExists(sessionID) {
-		return errors.New("session not found")
+		return ErrSessionNotFound
 	}
 
 	tx, err := s.db.Begin()
@@ -118,7 +120,7 @@ func (s *Store) SetCategory(sessionID, category string) error {
 		return s.ClearCategory(sessionID)
 	}
 	if !s.sessionExists(sessionID) {
-		return errors.New("session not found")
+		return ErrSessionNotFound
 	}
 
 	_, err := s.db.Exec(
@@ -139,7 +141,7 @@ func (s *Store) SetProject(sessionID, project string) error {
 		return s.ClearProject(sessionID)
 	}
 	if !s.sessionExists(sessionID) {
-		return errors.New("session not found")
+		return ErrSessionNotFound
 	}
 
 	_, err := s.db.Exec(
