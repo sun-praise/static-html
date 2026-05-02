@@ -45,11 +45,52 @@ sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 
 All commands accept `--db /path/to/sessions.db` to override the database path.
 
-- `sth tag` adds tags to a session; use `--rm` to remove tags.
-- `sth categorize` sets the session category. Omit `[category]` to clear it.
-- `sth project` sets the session project. Omit `[project]` to clear it.
-- `sth list` filters sessions by exact metadata values and prints matching results as JSON.
-- `sth search` does full-text matching across session metadata (tags, category, project, filename). Supports the same `--tag`, `--category`, and `--project` filters as `list` for narrowing results.
+### `sth tag` — manage session tags
+
+```bash
+sth tag <session-id> <tag...>
+sth tag --rm <session-id> <tag...>
+```
+
+Adds one or more tags to a session. Pass `--rm` before the session ID to remove the listed tags instead. Tags are free-form strings stored alongside the session record.
+
+### `sth categorize` — set or clear a session category
+
+```bash
+sth categorize <session-id> [category]
+```
+
+Sets a single category label on the session. Omit `[category]` to clear the existing category.
+
+### `sth project` — set or clear a session project
+
+```bash
+sth project <session-id> [project]
+```
+
+Sets a single project label on the session. Omit `[project]` to clear the existing project.
+
+### `sth list` — filter sessions by metadata
+
+```bash
+sth list [--tag <tag>] [--category <cat>] [--project <proj>]
+```
+
+Filters sessions by exact match on the given metadata fields and prints matching results as JSON. Combine multiple flags to narrow results (all flags must match). With no flags, all sessions are returned.
+
+### `sth search` — full-text search across sessions
+
+```bash
+sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
+```
+
+Performs full-text matching across session metadata (tags, category, project, filename). Supports the same `--tag`, `--category`, and `--project` filters as `list` for narrowing results, so search and metadata filters can be combined in a single command.
+
+#### `sth list` vs `sth search`
+
+- `sth list` filters by exact metadata field values (`--tag`, `--category`, `--project`).
+- `sth search <query>` does full-text matching across session content.
+- They can be combined: `sth search <query> --tag <tag>` narrows text results to a specific tag.
 
 ## Test
 
