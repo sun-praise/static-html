@@ -35,6 +35,16 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runStart(args[1:], stdout)
 	case "send":
 		return runSend(args[1:], stdout)
+	case "tag":
+		return runTag(args[1:], stdout)
+	case "categorize":
+		return runCategorize(args[1:], stdout)
+	case "project":
+		return runProject(args[1:], stdout)
+	case "list":
+		return runList(args[1:], stdout)
+	case "search":
+		return runSearch(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -43,7 +53,12 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
-  sth send <file.html> [--server http://127.0.0.1:3939]`)
+  sth send <file.html> [--server http://127.0.0.1:3939]
+  sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db]
+  sth categorize <session-id> [category] [--db /path/to/sessions.db]
+  sth project <session-id> [project] [--db /path/to/sessions.db]
+  sth list [--tag <tag>] [--category <cat>] [--project <proj>] [--db /path/to/sessions.db]
+  sth search <query> [--db /path/to/sessions.db]`)
 }
 
 func runStart(args []string, stdout io.Writer) error {

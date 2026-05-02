@@ -49,7 +49,15 @@ type createSessionResponse struct {
 }
 
 type homePageData struct {
-	Sessions []homePageSession
+	Sessions    []homePageSession
+	Search      string
+	FilterTag   string
+	FilterCat   string
+	FilterProj  string
+	ClearSearch string
+	ClearTag    string
+	ClearCat    string
+	ClearProj   string
 }
 
 type homePageSession struct {
@@ -58,6 +66,9 @@ type homePageSession struct {
 	EntryFile   string
 	CreatedAt   string
 	PreviewPath string
+	Tags        []string
+	Category    string
+	Project     string
 }
 
 var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
@@ -105,23 +116,151 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         margin-left: 0.75rem;
         color: #5a5a5a;
       }
+      .search-bar {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+      }
+      .search-bar input {
+        flex: 1;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid #d6d1c6;
+        border-radius: 8px;
+        font-size: 0.95rem;
+        background: #fafaf7;
+      }
+      .search-bar button {
+        padding: 0.5rem 1rem;
+        border: 1px solid #d6d1c6;
+        border-radius: 8px;
+        background: #f2efe6;
+        cursor: pointer;
+        font-size: 0.95rem;
+      }
+      .search-bar button:hover {
+        background: #e6e2d6;
+      }
+      .filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        margin-bottom: 1rem;
+      }
+      .filter-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.2rem 0.6rem;
+        border-radius: 12px;
+        font-size: 0.85rem;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      .filter-tag.tag {
+        background: #dbeafe;
+        color: #1e40af;
+      }
+      .filter-tag.tag:hover {
+        background: #bfdbfe;
+      }
+      .filter-tag.category {
+        background: #dcfce7;
+        color: #166534;
+      }
+      .filter-tag.category:hover {
+        background: #bbf7d0;
+      }
+      .filter-tag.project {
+        background: #fef3c7;
+        color: #92400e;
+      }
+      .filter-tag.project:hover {
+        background: #fde68a;
+      }
+      .filter-tag .remove {
+        font-weight: bold;
+        margin-left: 0.2rem;
+      }
+      .meta {
+        margin-top: 0.25rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.3rem;
+        align-items: center;
+      }
+      .meta .tag {
+        display: inline-block;
+        padding: 0.1rem 0.5rem;
+        border-radius: 10px;
+        font-size: 0.8rem;
+        background: #dbeafe;
+        color: #1e40af;
+      }
+      .meta .category {
+        display: inline-block;
+        padding: 0.1rem 0.5rem;
+        border-radius: 10px;
+        font-size: 0.8rem;
+        background: #dcfce7;
+        color: #166534;
+      }
+      .meta .project {
+        display: inline-block;
+        padding: 0.1rem 0.5rem;
+        border-radius: 10px;
+        font-size: 0.8rem;
+        background: #fef3c7;
+        color: #92400e;
+      }
     </style>
   </head>
   <body>
     <main>
       <h1>HTML Preview Server</h1>
       <p>Register a file with <code>sth send path/to/file.html</code> and open the returned session URL.</p>
+      <form class="search-bar" method="get" action="/">
+        <input type="text" name="q" placeholder="Search documents..." value="{{ .Search }}" />
+        <button type="submit">Search</button>
+      </form>
+      {{- if or .FilterTag .FilterCat .FilterProj .Search }}
+      <div class="filters">
+        {{- if .Search }}
+        <a href="{{ .ClearSearch }}" class="filter-tag tag">Search: {{ .Search }} <span class="remove">&times;</span></a>
+        {{- end }}
+        {{- if .FilterTag }}
+        <a href="{{ .ClearTag }}" class="filter-tag tag">Tag: {{ .FilterTag }} <span class="remove">&times;</span></a>
+        {{- end }}
+        {{- if .FilterCat }}
+        <a href="{{ .ClearCat }}" class="filter-tag category">Category: {{ .FilterCat }} <span class="remove">&times;</span></a>
+        {{- end }}
+        {{- if .FilterProj }}
+        <a href="{{ .ClearProj }}" class="filter-tag project">Project: {{ .FilterProj }} <span class="remove">&times;</span></a>
+        {{- end }}
+      </div>
+      {{- end }}
       <ul>
       {{- if .Sessions }}
         {{- range .Sessions }}
         <li>
           <a href="{{ .PreviewPath }}">{{ .Name }}</a>
-          <code>{{ .EntryFile }}</code>
           <time datetime="{{ .CreatedAt }}">{{ .CreatedAt }}</time>
+          {{- if or .Tags .Category .Project }}
+          <div class="meta">
+            {{- range .Tags }}
+            <a href="?tag={{ . }}" class="tag">{{ . }}</a>
+            {{- end }}
+            {{- if .Category }}
+            <a href="?category={{ .Category }}" class="category">{{ .Category }}</a>
+            {{- end }}
+            {{- if .Project }}
+            <a href="?project={{ .Project }}" class="project">{{ .Project }}</a>
+            {{- end }}
+          </div>
+          {{- end }}
         </li>
         {{- end }}
       {{- else }}
-        <li>No preview sessions yet.</li>
+        <li>No preview sessions found.</li>
       {{- end }}
       </ul>
     </main>
@@ -219,28 +358,91 @@ func (s *Server) routes() http.Handler {
 	})
 }
 
-func (s *Server) handleHome(w http.ResponseWriter, _ *http.Request) {
-	sessions, err := s.store.ListRecent(20)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	search := strings.TrimSpace(q.Get("q"))
+	filterTag := strings.TrimSpace(q.Get("tag"))
+	filterCat := strings.TrimSpace(q.Get("category"))
+	filterProj := strings.TrimSpace(q.Get("project"))
+
+	var items []homePageSession
+
+	if search != "" {
+		docs, err := s.store.SearchDocuments(search, session.FilterOptions{
+			Tag:      filterTag,
+			Category: filterCat,
+			Project:  filterProj,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		items = toHomePageSessions(docs)
+	} else if filterTag != "" || filterCat != "" || filterProj != "" {
+		docs, err := s.store.ListDocuments(session.FilterOptions{
+			Tag:      filterTag,
+			Category: filterCat,
+			Project:  filterProj,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		items = toHomePageSessions(docs)
+	} else {
+		docs, err := s.store.ListDocuments(session.FilterOptions{Limit: 20})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		items = toHomePageSessions(docs)
 	}
 
-	items := make([]homePageSession, 0, len(sessions))
-	for _, session := range sessions {
-		items = append(items, homePageSession{
-			ID:          session.ID,
-			Name:        filepath.Base(session.EntryFile),
-			EntryFile:   session.EntryFile,
-			CreatedAt:   session.CreatedAtISO(),
-			PreviewPath: "/s/" + session.ID + "/",
-		})
-	}
+	clearSearch := buildClearURL(r.URL, "q")
+	clearTag := buildClearURL(r.URL, "tag")
+	clearCat := buildClearURL(r.URL, "category")
+	clearProj := buildClearURL(r.URL, "project")
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := homePageTemplate.Execute(w, homePageData{Sessions: items}); err != nil {
+	if err := homePageTemplate.Execute(w, homePageData{
+		Sessions:    items,
+		Search:      search,
+		FilterTag:   filterTag,
+		FilterCat:   filterCat,
+		FilterProj:  filterProj,
+		ClearSearch: clearSearch,
+		ClearTag:    clearTag,
+		ClearCat:    clearCat,
+		ClearProj:   clearProj,
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func toHomePageSessions(docs []session.DocumentInfo) []homePageSession {
+	items := make([]homePageSession, 0, len(docs))
+	for _, doc := range docs {
+		items = append(items, homePageSession{
+			ID:          doc.SessionID,
+			Name:        filepath.Base(doc.Name),
+			EntryFile:   doc.Name,
+			CreatedAt:   doc.CreatedAt,
+			PreviewPath: "/s/" + doc.SessionID + "/",
+			Tags:        doc.Tags,
+			Category:    doc.Category,
+			Project:     doc.Project,
+		})
+	}
+	return items
+}
+
+func buildClearURL(u *url.URL, removeKey string) string {
+	q := u.Query()
+	q.Del(removeKey)
+	if len(q) == 0 {
+		return "/"
+	}
+	return "/?" + q.Encode()
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {

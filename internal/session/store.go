@@ -222,7 +222,11 @@ func (s *Store) init() error {
 		return err
 	}
 
-	return s.ensureColumns()
+	if err := s.ensureColumns(); err != nil {
+		return err
+	}
+
+	return s.initMetadata()
 }
 
 func (s *Store) ensureColumns() error {
