@@ -1,14 +1,68 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/sun-praise/static-html/internal/session"
 )
+
+func doJSONRequest(method, serverURL, path string, body any) (map[string]any, error) {
+	parsedURL, err := url.Parse(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid server URL: %w", err)
+	}
+
+	var reqBody io.Reader
+	if body != nil {
+		jsonData, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reqBody = bytes.NewReader(jsonData)
+	}
+
+	req, err := http.NewRequest(method, parsedURL.ResolveReference(&url.URL{Path: path}).String(), reqBody)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("could not reach server at %s: %w", parsedURL.Host, err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, errors.New("server returned an invalid response")
+	}
+
+	if resp.StatusCode >= 400 {
+		if errMsg, ok := result["error"].(string); ok && errMsg != "" {
+			return nil, errors.New(errMsg)
+		}
+		return nil, fmt.Errorf("server returned status %d", resp.StatusCode)
+	}
+
+	return result, nil
+}
 
 func runTag(args []string, stdout io.Writer) error {
 	remove := false
@@ -34,6 +88,24 @@ func runTag(args []string, stdout io.Writer) error {
 	tags := positionals[1:]
 	if len(tags) == 0 {
 		return errors.New("at least one tag is required")
+	}
+
+	if serverURL, ok := flags["server"]; ok {
+		method := http.MethodPut
+		if remove {
+			method = http.MethodDelete
+		}
+		if _, err := doJSONRequest(method, serverURL,
+			"/api/sessions/"+sessionID+"/tags",
+			map[string]any{"tags": tags}); err != nil {
+			return err
+		}
+		if remove {
+			fmt.Fprintf(stdout, "Removed tags from %s: %s\n", sessionID, strings.Join(tags, ", "))
+		} else {
+			fmt.Fprintf(stdout, "Added tags to %s: %s\n", sessionID, strings.Join(tags, ", "))
+		}
+		return nil
 	}
 
 	store, err := openStore(flags)
@@ -69,6 +141,26 @@ func runCategorize(args []string, stdout io.Writer) error {
 
 	sessionID := positionals[0]
 
+	if serverURL, ok := flags["server"]; ok {
+		if len(positionals) >= 2 {
+			_, err := doJSONRequest(http.MethodPut, serverURL,
+				"/api/sessions/"+sessionID+"/category",
+				map[string]any{"category": positionals[1]})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "Set category of %s to %s\n", sessionID, positionals[1])
+		} else {
+			_, err := doJSONRequest(http.MethodDelete, serverURL,
+				"/api/sessions/"+sessionID+"/category", nil)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "Cleared category of %s\n", sessionID)
+		}
+		return nil
+	}
+
 	store, err := openStore(flags)
 	if err != nil {
 		return err
@@ -102,9 +194,25 @@ func runProject(args []string, stdout io.Writer) error {
 	}
 
 	sessionID := positionals[0]
-	var project string
-	if len(positionals) >= 2 {
-		project = positionals[1]
+
+	if serverURL, ok := flags["server"]; ok {
+		if len(positionals) >= 2 {
+			_, err := doJSONRequest(http.MethodPut, serverURL,
+				"/api/sessions/"+sessionID+"/project",
+				map[string]any{"project": positionals[1]})
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "Set project of %s to %s\n", sessionID, positionals[1])
+		} else {
+			_, err := doJSONRequest(http.MethodDelete, serverURL,
+				"/api/sessions/"+sessionID+"/project", nil)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "Cleared project of %s\n", sessionID)
+		}
+		return nil
 	}
 
 	store, err := openStore(flags)
@@ -112,6 +220,11 @@ func runProject(args []string, stdout io.Writer) error {
 		return err
 	}
 	defer store.Close()
+
+	var project string
+	if len(positionals) >= 2 {
+		project = positionals[1]
+	}
 
 	if err := store.SetProject(sessionID, project); err != nil {
 		return err

@@ -54,9 +54,9 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
   sth send <file.html> [--server http://127.0.0.1:3939]
-  sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db]
-  sth categorize <session-id> [category] [--db /path/to/sessions.db]
-  sth project <session-id> [project] [--db /path/to/sessions.db]
+  sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
+  sth categorize <session-id> [category] [--db /path/to/sessions.db] [--server http://...]
+  sth project <session-id> [project] [--db /path/to/sessions.db] [--server http://...]
   sth list [--tag <tag>] [--category <cat>] [--project <proj>] [--db /path/to/sessions.db]
   sth search <query> [--db /path/to/sessions.db]`)
 }
@@ -166,7 +166,7 @@ func runSend(args []string, stdout io.Writer) error {
 	}
 	request.Header.Set("Content-Type", contentType)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 60 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
 		return fmt.Errorf(`could not reach %s. Start the server with "sth start" first.`, parsedURL.Scheme+"://"+parsedURL.Host)
