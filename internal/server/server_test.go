@@ -310,3 +310,159 @@ func newTestStore(t *testing.T) *session.Store {
 
 	return store
 }
+
+func TestDeleteSessionSuccess(t *testing.T) {
+	t.Parallel()
+
+	fixtureHTML, err := filepath.Abs(filepath.Join("..", "..", "fixtures", "basic", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	body, err := json.Marshal(map[string]string{"filePath": fixtureHTML})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	createResp, err := http.Post(srv.Origin()+"/api/sessions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+
+	var createPayload struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&createPayload); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, srv.Origin()+"/api/sessions/"+createPayload.SessionID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deleteResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer deleteResp.Body.Close()
+
+	if deleteResp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(deleteResp.Body)
+		t.Fatalf("expected 200, got %d body=%s", deleteResp.StatusCode, respBody)
+	}
+
+	var result map[string]string
+	if err := json.NewDecoder(deleteResp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result["status"] != "deleted" {
+		t.Fatalf("expected status 'deleted', got %q", result["status"])
+	}
+}
+
+func TestDeleteSessionNotFound(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	req, err := http.NewRequest(http.MethodDelete, srv.Origin()+"/api/sessions/nonexistent", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+func TestDeleteSessionIdempotent(t *testing.T) {
+	t.Parallel()
+
+	fixtureHTML, err := filepath.Abs(filepath.Join("..", "..", "fixtures", "basic", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	body, err := json.Marshal(map[string]string{"filePath": fixtureHTML})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	createResp, err := http.Post(srv.Origin()+"/api/sessions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+
+	var createPayload struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&createPayload); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 2; i++ {
+		req, err := http.NewRequest(http.MethodDelete, srv.Origin()+"/api/sessions/"+createPayload.SessionID, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("delete %d: expected 200, got %d", i+1, resp.StatusCode)
+		}
+	}
+}

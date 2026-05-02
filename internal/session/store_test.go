@@ -132,3 +132,119 @@ func TestStoreMigratesLegacyRows(t *testing.T) {
 		t.Fatalf("expected stored root dir to fall back to root dir, got %q", found.StoredRootDir)
 	}
 }
+
+func TestSoftDelete(t *testing.T) {
+	t.Parallel()
+
+	store, err := NewInMemoryStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	sess, err := store.Create("/tmp/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SoftDelete(sess.ID); err != nil {
+		t.Fatalf("SoftDelete returned error: %v", err)
+	}
+
+	got, found, err := store.Get(sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected session to still exist in DB after soft delete")
+	}
+	if got.ID != sess.ID {
+		t.Fatalf("expected session ID %q, got %q", sess.ID, got.ID)
+	}
+}
+
+func TestSoftDeleteNonExistent(t *testing.T) {
+	t.Parallel()
+
+	store, err := NewInMemoryStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	err = store.SoftDelete("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for non-existent session")
+	}
+	if err != ErrSessionNotFound {
+		t.Fatalf("expected ErrSessionNotFound, got %v", err)
+	}
+}
+
+func TestSoftDeleteIdempotent(t *testing.T) {
+	t.Parallel()
+
+	store, err := NewInMemoryStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	sess, err := store.Create("/tmp/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SoftDelete(sess.ID); err != nil {
+		t.Fatalf("first SoftDelete returned error: %v", err)
+	}
+	if err := store.SoftDelete(sess.ID); err != nil {
+		t.Fatalf("second SoftDelete returned error: %v", err)
+	}
+}
+
+func TestSoftDeleteMigration(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	db, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.Exec(`
+		CREATE TABLE sessions (
+			session_id TEXT PRIMARY KEY,
+			entry_file TEXT NOT NULL,
+			root_dir TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL
+		);
+		INSERT INTO sessions (session_id, entry_file, root_dir, created_at_unix)
+		VALUES ('legacy', '/tmp/index.html', '/tmp', 1);
+	`)
+	if err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+
+	if err := store.SoftDelete("legacy"); err != nil {
+		t.Fatalf("SoftDelete on migrated DB returned error: %v", err)
+	}
+}

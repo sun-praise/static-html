@@ -211,6 +211,8 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 	var conditions []string
 	var args []any
 
+	conditions = append(conditions, `s.deleted_at IS NULL`)
+
 	if filter.Tag != "" {
 		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_tags WHERE tag = ?)`)
 		args = append(args, filter.Tag)
@@ -286,6 +288,8 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 
 	var conditions []string
 	var args []any
+
+	conditions = append(conditions, `s.deleted_at IS NULL`)
 
 	conditions = append(conditions, `(COALESCE(s.stored_entry_file, s.entry_file) LIKE ?
 	   OR s.session_id IN (
