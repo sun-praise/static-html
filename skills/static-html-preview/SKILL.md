@@ -56,8 +56,8 @@ sth project <session-id> [project]
 # List sessions (with optional filters)
 sth list [--tag <tag>] [--category <cat>] [--project <proj>]
 
-# Search sessions
-sth search <query>
+# Search sessions (with optional metadata filters)
+sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 ```
 
 All metadata commands accept `--db /path/to/sessions.db` to override the database path.
