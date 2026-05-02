@@ -132,6 +132,9 @@ func (s *Store) SetCategory(sessionID, category string) error {
 }
 
 func (s *Store) ClearCategory(sessionID string) error {
+	if !s.sessionExists(sessionID) {
+		return ErrSessionNotFound
+	}
 	_, err := s.db.Exec(`DELETE FROM document_categories WHERE session_id = ?`, sessionID)
 	return err
 }
@@ -153,6 +156,9 @@ func (s *Store) SetProject(sessionID, project string) error {
 }
 
 func (s *Store) ClearProject(sessionID string) error {
+	if !s.sessionExists(sessionID) {
+		return ErrSessionNotFound
+	}
 	_, err := s.db.Exec(`DELETE FROM document_projects WHERE session_id = ?`, sessionID)
 	return err
 }
