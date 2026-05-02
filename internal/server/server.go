@@ -212,6 +212,21 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         background: #fef3c7;
         color: #92400e;
       }
+      .delete-btn {
+        margin-left: 0.5rem;
+        padding: 0.1rem 0.4rem;
+        border: none;
+        border-radius: 4px;
+        background: none;
+        color: #aaa;
+        cursor: pointer;
+        font-size: 0.85rem;
+        vertical-align: middle;
+      }
+      .delete-btn:hover {
+        background: #fee2e2;
+        color: #dc2626;
+      }
     </style>
   </head>
   <body>
@@ -244,6 +259,7 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         <li>
           <a href="{{ .PreviewPath }}">{{ .Name }}</a>
           <time datetime="{{ .CreatedAt }}">{{ .CreatedAt }}</time>
+          <button class="delete-btn" data-session-id="{{ .ID }}" title="Delete session">&times;</button>
           {{- if or .Tags .Category .Project }}
           <div class="meta">
             {{- range .Tags }}
@@ -264,6 +280,19 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       {{- end }}
       </ul>
     </main>
+    <script>
+    document.querySelector('ul').addEventListener('click', function(e) {
+      var btn = e.target.closest('.delete-btn');
+      if (!btn) return;
+      var id = btn.dataset.sessionId;
+      var li = btn.closest('li');
+      var name = li.querySelector('a').textContent;
+      if (!confirm('Delete "' + name + '"?')) return;
+      fetch('/api/sessions/' + id, { method: 'DELETE' }).then(function(r) {
+        if (r.ok) { li.remove(); } else { alert('Delete failed: ' + r.status); }
+      }).catch(function() { alert('Network error'); });
+    });
+    </script>
   </body>
 </html>`))
 
