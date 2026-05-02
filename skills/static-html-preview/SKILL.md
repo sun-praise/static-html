@@ -47,10 +47,10 @@ sth tag <session-id> <tag...>
 # Remove a tag
 sth tag --rm <session-id> <tag...>
 
-# Set category
+# Set category (omit [category] to clear)
 sth categorize <session-id> [category]
 
-# Set project
+# Set project (omit [project] to clear)
 sth project <session-id> [project]
 
 # List sessions (with optional filters)
@@ -61,6 +61,11 @@ sth search <query>
 ```
 
 All metadata commands accept `--db /path/to/sessions.db` to override the database path.
+
+### `sth list` vs `sth search`
+
+- `sth list` filters by exact metadata field values (`--tag`, `--category`, `--project`).
+- `sth search <query>` does full-text matching across session metadata (tags, category, project, filename). Filters and search can be combined, e.g. `sth search <query> --tag <tag>`.
 
 ## Environment overrides
 

@@ -36,7 +36,20 @@ The `send` command uploads the HTML file and all regular files under the same so
 ```bash
 sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
 sth send <file.html> [--server http://127.0.0.1:3939]
+sth tag [--rm] <session-id> <tag...>
+sth categorize <session-id> [category]
+sth project <session-id> [project]
+sth list [--tag <tag>] [--category <cat>] [--project <proj>]
+sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 ```
+
+All commands accept `--db /path/to/sessions.db` to override the database path.
+
+- `sth tag` adds tags to a session; use `--rm` to remove tags.
+- `sth categorize` sets the session category. Omit `[category]` to clear it.
+- `sth project` sets the session project. Omit `[project]` to clear it.
+- `sth list` filters sessions by exact metadata values and prints matching results as JSON.
+- `sth search` does full-text matching across session metadata (tags, category, project, filename). Supports the same `--tag`, `--category`, and `--project` filters as `list` for narrowing results.
 
 ## Test
 
