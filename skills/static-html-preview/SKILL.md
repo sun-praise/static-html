@@ -1,11 +1,11 @@
 ---
 name: sth
-description: Start or use the `sth` local HTML preview server from sun-praise/static-html. Use when the user mentions `sth`, wants `sth start` or `sth send`, needs to preview a local HTML file in a browser, serve relative CSS/JS/assets for that file, or register preview sessions from the CLI.
+description: Start or use the `sth` local HTML preview server from sun-praise/static-html. Use when the user mentions `sth`, wants `sth start`, `sth send`, `sth tag`, `sth categorize`, `sth project`, `sth list`, or `sth search`, needs to preview a local HTML file in a browser, manage session metadata, or register preview sessions from the CLI.
 ---
 
 # STH Preview
 
-Use this skill when a user wants a quick local preview for an HTML file and its relative assets, especially if they refer to the tool as `sth`.
+Use this skill when a user wants a quick local preview for an HTML file and its relative assets, manage metadata (tags, categories, projects), or search sessions.
 
 ## Workflow
 
@@ -37,6 +37,35 @@ bash scripts/send-file.sh /absolute/or/relative/file.html [server_url]
 ```
 
 The command uploads the HTML file and sibling assets from the same directory, then prints a session URL like `http://127.0.0.1:3939/s/<id>/`.
+
+4. Manage session metadata:
+
+```bash
+# Add tags
+sth tag <session-id> <tag...>
+
+# Remove a tag
+sth tag --rm <session-id> <tag...>
+
+# Set category (omit [category] to clear)
+sth categorize <session-id> [category]
+
+# Set project (omit [project] to clear)
+sth project <session-id> [project]
+
+# List sessions (with optional filters)
+sth list [--tag <tag>] [--category <cat>] [--project <proj>]
+
+# Search sessions
+sth search <query>
+```
+
+All metadata commands accept `--db /path/to/sessions.db` to override the database path.
+
+### `sth list` vs `sth search`
+
+- `sth list` filters by exact metadata field values (`--tag`, `--category`, `--project`).
+- `sth search <query>` does full-text matching across session metadata (tags, category, project, filename). Filters and search can be combined, e.g. `sth search <query> --tag <tag>`.
 
 ## Environment overrides
 
