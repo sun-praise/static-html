@@ -17,12 +17,6 @@ import (
 func TestTagCommandAddsTags(t *testing.T) {
 	t.Parallel()
 
-	store := newTestStore(t)
-	s, err := store.Create("/tmp/index.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	dbPath := filepath.Join(t.TempDir(), "cli-test.db")
 	testStore, err := session.NewSQLiteStore(dbPath)
 	if err != nil {
@@ -32,8 +26,6 @@ func TestTagCommandAddsTags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = s
-	_ = store
 
 	var stdout bytes.Buffer
 	err = Run([]string{"tag", s2.ID, "go", "web", "--db", dbPath}, &stdout, &bytes.Buffer{})

@@ -408,25 +408,21 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	} else {
-		sessions, err := s.store.ListRecent(20)
+		docs, err := s.store.ListDocuments(session.FilterOptions{Limit: 20})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		for _, sess := range sessions {
-			meta, err := s.store.GetMetadata(sess.ID)
-			if err != nil {
-				meta = session.DocumentMetadata{SessionID: sess.ID}
-			}
+		for _, doc := range docs {
 			items = append(items, homePageSession{
-				ID:          sess.ID,
-				Name:        filepath.Base(sess.EntryFile),
-				EntryFile:   sess.EntryFile,
-				CreatedAt:   sess.CreatedAtISO(),
-				PreviewPath: "/s/" + sess.ID + "/",
-				Tags:        meta.Tags,
-				Category:    meta.Category,
-				Project:     meta.Project,
+				ID:          doc.SessionID,
+				Name:        filepath.Base(doc.Name),
+				EntryFile:   doc.Name,
+				CreatedAt:   doc.CreatedAt,
+				PreviewPath: "/s/" + doc.SessionID + "/",
+				Tags:        doc.Tags,
+				Category:    doc.Category,
+				Project:     doc.Project,
 			})
 		}
 	}

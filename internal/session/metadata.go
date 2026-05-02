@@ -18,6 +18,7 @@ type FilterOptions struct {
 	Tag      string
 	Category string
 	Project  string
+	Limit    int
 }
 
 type DocumentInfo struct {
@@ -87,6 +88,9 @@ func (s *Store) RemoveTags(sessionID string, tags ...string) error {
 	if len(tags) == 0 {
 		return errors.New("at least one tag is required")
 	}
+	if !s.sessionExists(sessionID) {
+		return errors.New("session not found")
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -110,6 +114,9 @@ func (s *Store) RemoveTags(sessionID string, tags ...string) error {
 }
 
 func (s *Store) SetCategory(sessionID, category string) error {
+	if category == "" {
+		return s.ClearCategory(sessionID)
+	}
 	if !s.sessionExists(sessionID) {
 		return errors.New("session not found")
 	}
@@ -128,11 +135,11 @@ func (s *Store) ClearCategory(sessionID string) error {
 }
 
 func (s *Store) SetProject(sessionID, project string) error {
-	if project == "" {
-		return s.ClearProject(sessionID)
-	}
 	if !s.sessionExists(sessionID) {
 		return errors.New("session not found")
+	}
+	if project == "" {
+		return s.ClearProject(sessionID)
 	}
 
 	_, err := s.db.Exec(
@@ -185,7 +192,7 @@ func (s *Store) GetMetadata(sessionID string) (DocumentMetadata, error) {
 func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 	query := `
 		SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix,
-			GROUP_CONCAT(dt.tag, '|'),
+			GROUP_CONCAT(dt.tag, char(1)),
 			dc.category,
 			dp.project
 		FROM sessions s
@@ -215,6 +222,11 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 
 	query += ` GROUP BY s.session_id ORDER BY s.created_at_unix DESC`
 
+	if filter.Limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, filter.Limit)
+	}
+
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -243,7 +255,7 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 			CreatedAt: time.Unix(0, createdAtUnix).UTC().Format(time.RFC3339),
 		}
 		if tagsStr.Valid && tagsStr.String != "" {
-			doc.Tags = strings.Split(tagsStr.String, "|")
+			doc.Tags = strings.Split(tagsStr.String, "\x01")
 		} else {
 			doc.Tags = nil
 		}
@@ -267,7 +279,7 @@ func (s *Store) SearchDocuments(query string) ([]DocumentInfo, error) {
 	pattern := "%" + query + "%"
 	rows, err := s.db.Query(`
 		SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix,
-			GROUP_CONCAT(dt.tag, '|'),
+			GROUP_CONCAT(dt.tag, char(1)),
 			dc.category,
 			dp.project
 		FROM sessions s
@@ -314,7 +326,7 @@ func (s *Store) SearchDocuments(query string) ([]DocumentInfo, error) {
 			CreatedAt: time.Unix(0, createdAtUnix).UTC().Format(time.RFC3339),
 		}
 		if tagsStr.Valid && tagsStr.String != "" {
-			doc.Tags = strings.Split(tagsStr.String, "|")
+			doc.Tags = strings.Split(tagsStr.String, "\x01")
 		} else {
 			doc.Tags = nil
 		}
