@@ -135,11 +135,11 @@ func (s *Store) ClearCategory(sessionID string) error {
 }
 
 func (s *Store) SetProject(sessionID, project string) error {
-	if !s.sessionExists(sessionID) {
-		return errors.New("session not found")
-	}
 	if project == "" {
 		return s.ClearProject(sessionID)
+	}
+	if !s.sessionExists(sessionID) {
+		return errors.New("session not found")
 	}
 
 	_, err := s.db.Exec(
@@ -269,15 +269,42 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 	return docs, nil
 }
 
-func (s *Store) SearchDocuments(query string) ([]DocumentInfo, error) {
+func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentInfo, error) {
 	if query == "" {
 		return nil, errors.New("search query is required")
 	}
 
-	// Use LIKE-based search on entry_file for content matching
-	// since FTS5 on document_tags content table doesn't cover session entry files directly
 	pattern := "%" + query + "%"
-	rows, err := s.db.Query(`
+
+	var conditions []string
+	var args []any
+
+	conditions = append(conditions, `(COALESCE(s.stored_entry_file, s.entry_file) LIKE ?
+	   OR s.session_id IN (
+		   SELECT session_id FROM document_tags WHERE tag LIKE ?
+	   )
+	   OR s.session_id IN (
+		   SELECT session_id FROM document_categories WHERE category LIKE ?
+	   )
+	   OR s.session_id IN (
+		   SELECT session_id FROM document_projects WHERE project LIKE ?
+	   ))`)
+	args = append(args, pattern, pattern, pattern, pattern)
+
+	if filter.Tag != "" {
+		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_tags WHERE tag = ?)`)
+		args = append(args, filter.Tag)
+	}
+	if filter.Category != "" {
+		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_categories WHERE category = ?)`)
+		args = append(args, filter.Category)
+	}
+	if filter.Project != "" {
+		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_projects WHERE project = ?)`)
+		args = append(args, filter.Project)
+	}
+
+	queryStr := `
 		SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix,
 			GROUP_CONCAT(dt.tag, char(1)),
 			dc.category,
@@ -286,19 +313,12 @@ func (s *Store) SearchDocuments(query string) ([]DocumentInfo, error) {
 		LEFT JOIN document_tags dt ON s.session_id = dt.session_id
 		LEFT JOIN document_categories dc ON s.session_id = dc.session_id
 		LEFT JOIN document_projects dp ON s.session_id = dp.session_id
-		WHERE COALESCE(s.stored_entry_file, s.entry_file) LIKE ?
-		   OR s.session_id IN (
-			   SELECT session_id FROM document_tags WHERE tag LIKE ?
-		   )
-		   OR s.session_id IN (
-			   SELECT session_id FROM document_categories WHERE category LIKE ?
-		   )
-		   OR s.session_id IN (
-			   SELECT session_id FROM document_projects WHERE project LIKE ?
-		   )
+		WHERE ` + strings.Join(conditions, ` AND `) + `
 		GROUP BY s.session_id
 		ORDER BY s.created_at_unix DESC
-	`, pattern, pattern, pattern, pattern)
+	`
+
+	rows, err := s.db.Query(queryStr, args...)
 	if err != nil {
 		return nil, err
 	}

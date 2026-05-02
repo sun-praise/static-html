@@ -12,12 +12,16 @@ import (
 
 func runTag(args []string, stdout io.Writer) error {
 	remove := false
-	if len(args) > 0 && args[0] == "--rm" {
-		remove = true
-		args = args[1:]
+	filtered := make([]string, 0, len(args))
+	for _, a := range args {
+		if a == "--rm" {
+			remove = true
+			continue
+		}
+		filtered = append(filtered, a)
 	}
 
-	flags, positionals, err := parseArgs(args)
+	flags, positionals, err := parseArgs(filtered)
 	if err != nil {
 		return err
 	}
@@ -152,10 +156,8 @@ func runList(args []string, stdout io.Writer) error {
 
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
-	for _, doc := range docs {
-		if err := encoder.Encode(doc); err != nil {
-			return err
-		}
+	if err := encoder.Encode(docs); err != nil {
+		return err
 	}
 
 	return nil
@@ -179,7 +181,11 @@ func runSearch(args []string, stdout io.Writer) error {
 	}
 	defer store.Close()
 
-	docs, err := store.SearchDocuments(query)
+	docs, err := store.SearchDocuments(query, session.FilterOptions{
+		Tag:      flags["tag"],
+		Category: flags["category"],
+		Project:  flags["project"],
+	})
 	if err != nil {
 		return err
 	}
@@ -191,10 +197,8 @@ func runSearch(args []string, stdout io.Writer) error {
 
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
-	for _, doc := range docs {
-		if err := encoder.Encode(doc); err != nil {
-			return err
-		}
+	if err := encoder.Encode(docs); err != nil {
+		return err
 	}
 
 	return nil

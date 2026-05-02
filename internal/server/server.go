@@ -368,23 +368,16 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	var items []homePageSession
 
 	if search != "" {
-		docs, err := s.store.SearchDocuments(search)
+		docs, err := s.store.SearchDocuments(search, session.FilterOptions{
+			Tag:      filterTag,
+			Category: filterCat,
+			Project:  filterProj,
+		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		for _, doc := range docs {
-			items = append(items, homePageSession{
-				ID:          doc.SessionID,
-				Name:        filepath.Base(doc.Name),
-				EntryFile:   doc.Name,
-				CreatedAt:   doc.CreatedAt,
-				PreviewPath: "/s/" + doc.SessionID + "/",
-				Tags:        doc.Tags,
-				Category:    doc.Category,
-				Project:     doc.Project,
-			})
-		}
+		items = toHomePageSessions(docs)
 	} else if filterTag != "" || filterCat != "" || filterProj != "" {
 		docs, err := s.store.ListDocuments(session.FilterOptions{
 			Tag:      filterTag,
@@ -395,36 +388,14 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		for _, doc := range docs {
-			items = append(items, homePageSession{
-				ID:          doc.SessionID,
-				Name:        filepath.Base(doc.Name),
-				EntryFile:   doc.Name,
-				CreatedAt:   doc.CreatedAt,
-				PreviewPath: "/s/" + doc.SessionID + "/",
-				Tags:        doc.Tags,
-				Category:    doc.Category,
-				Project:     doc.Project,
-			})
-		}
+		items = toHomePageSessions(docs)
 	} else {
 		docs, err := s.store.ListDocuments(session.FilterOptions{Limit: 20})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		for _, doc := range docs {
-			items = append(items, homePageSession{
-				ID:          doc.SessionID,
-				Name:        filepath.Base(doc.Name),
-				EntryFile:   doc.Name,
-				CreatedAt:   doc.CreatedAt,
-				PreviewPath: "/s/" + doc.SessionID + "/",
-				Tags:        doc.Tags,
-				Category:    doc.Category,
-				Project:     doc.Project,
-			})
-		}
+		items = toHomePageSessions(docs)
 	}
 
 	clearSearch := buildClearURL(r.URL, "q")
@@ -446,6 +417,23 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func toHomePageSessions(docs []session.DocumentInfo) []homePageSession {
+	items := make([]homePageSession, 0, len(docs))
+	for _, doc := range docs {
+		items = append(items, homePageSession{
+			ID:          doc.SessionID,
+			Name:        filepath.Base(doc.Name),
+			EntryFile:   doc.Name,
+			CreatedAt:   doc.CreatedAt,
+			PreviewPath: "/s/" + doc.SessionID + "/",
+			Tags:        doc.Tags,
+			Category:    doc.Category,
+			Project:     doc.Project,
+		})
+	}
+	return items
 }
 
 func buildClearURL(u *url.URL, removeKey string) string {

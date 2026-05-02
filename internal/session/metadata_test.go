@@ -438,7 +438,7 @@ func TestSearchDocumentsByFileName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	docs, err := store.SearchDocuments("report")
+	docs, err := store.SearchDocuments("report", FilterOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +468,7 @@ func TestSearchDocumentsByTag(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	docs, err := store.SearchDocuments("important")
+	docs, err := store.SearchDocuments("important", FilterOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +498,7 @@ func TestSearchDocumentsByCategory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	docs, err := store.SearchDocuments("tuto")
+	docs, err := store.SearchDocuments("tuto", FilterOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +528,7 @@ func TestSearchDocumentsByProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	docs, err := store.SearchDocuments("alpha")
+	docs, err := store.SearchDocuments("alpha", FilterOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func TestSearchDocumentsEmptyQuery(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	_, err := store.SearchDocuments("")
+	_, err := store.SearchDocuments("", FilterOptions{})
 	if err == nil {
 		t.Fatal("expected error for empty search query")
 	}
@@ -560,7 +560,7 @@ func TestSearchDocumentsNoResults(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	docs, err := store.SearchDocuments("nonexistent")
+	docs, err := store.SearchDocuments("nonexistent", FilterOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
