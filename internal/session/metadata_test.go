@@ -694,3 +694,100 @@ func TestCascadingDeleteOnSessionRemoval(t *testing.T) {
 		t.Fatalf("expected metadata to be cascade-deleted, got tags=%v category=%q project=%q", meta.Tags, meta.Category, meta.Project)
 	}
 }
+
+func TestListDocumentsExcludesDeletedSessions(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1, err := store.Create("/tmp/a.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Create("/tmp/b.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SoftDelete(s1.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	docs, err := store.ListDocuments(FilterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 document after soft delete, got %d", len(docs))
+	}
+	if docs[0].SessionID == s1.ID {
+		t.Fatal("expected deleted session to be excluded from list")
+	}
+}
+
+func TestListDocumentsFilteredExcludesDeletedSessions(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1, err := store.Create("/tmp/a.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := store.Create("/tmp/b.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.AddTags(s1.ID, "go"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddTags(s2.ID, "go"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SoftDelete(s1.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	docs, err := store.ListDocuments(FilterOptions{Tag: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 document after soft delete with tag filter, got %d", len(docs))
+	}
+	if docs[0].SessionID != s2.ID {
+		t.Fatal("expected only non-deleted session with tag 'go'")
+	}
+}
+
+func TestSearchDocumentsExcludesDeletedSessions(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1, err := store.Create("/tmp/my-report.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.Create("/tmp/other-report.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SoftDelete(s1.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	docs, err := store.SearchDocuments("report", FilterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(docs) != 1 {
+		t.Fatalf("expected 1 search result after soft delete, got %d", len(docs))
+	}
+	if docs[0].SessionID == s1.ID {
+		t.Fatal("expected deleted session to be excluded from search results")
+	}
+}

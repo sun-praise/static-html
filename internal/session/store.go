@@ -168,6 +168,26 @@ func (s *Store) Get(id string) (Session, bool, error) {
 	return session, true, nil
 }
 
+func (s *Store) SoftDelete(id string) error {
+	result, err := s.db.Exec(
+		`UPDATE sessions SET deleted_at = ? WHERE session_id = ?`,
+		time.Now().UTC().UnixNano(),
+		id,
+	)
+	if err != nil {
+		return err
+	}
+
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrSessionNotFound
+	}
+	return nil
+}
+
 func (s *Store) ListRecent(limit int) ([]Session, error) {
 	query := `SELECT session_id, entry_file, root_dir, COALESCE(stored_entry_file, entry_file), COALESCE(stored_root_dir, root_dir), created_at_unix FROM sessions ORDER BY created_at_unix DESC`
 	args := make([]any, 0, 1)
@@ -262,6 +282,11 @@ func (s *Store) ensureColumns() error {
 	}
 	if !columns["stored_root_dir"] {
 		if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN stored_root_dir TEXT`); err != nil {
+			return err
+		}
+	}
+	if !columns["deleted_at"] {
+		if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN deleted_at INTEGER DEFAULT NULL`); err != nil {
 			return err
 		}
 	}

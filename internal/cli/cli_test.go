@@ -210,3 +210,63 @@ func newTestStore(t *testing.T) *session.Store {
 
 	return store
 }
+
+func TestDeleteCommandSuccess(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Create("/tmp/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run([]string{"delete", sess.ID, "--db", dbPath}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(stdout.String(), "deleted") {
+		t.Fatalf("expected deletion confirmation, got %q", stdout.String())
+	}
+}
+
+func TestDeleteCommandNonExistent(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = Run([]string{"delete", "nonexistent", "--db", dbPath}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for non-existent session")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDeleteCommandMissingArg(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err := Run([]string{"delete"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected error for missing session ID")
+	}
+	if !strings.Contains(err.Error(), "missing session ID") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}

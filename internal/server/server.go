@@ -366,6 +366,8 @@ func (s *Server) routes() http.Handler {
 			s.handleClearProject(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/metadata"):
 			s.handleGetMetadata(w, r)
+		case r.Method == http.MethodDelete && isExactSessionPath(r.URL.Path):
+			s.handleDeleteSession(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -911,6 +913,15 @@ func hasPrefixSuffix(path, prefix, suffix string) bool {
 	return strings.HasPrefix(path, prefix) && strings.HasSuffix(path, suffix)
 }
 
+func isExactSessionPath(urlPath string) bool {
+	const prefix = "/api/sessions/"
+	if !strings.HasPrefix(urlPath, prefix) {
+		return false
+	}
+	trimmed := strings.TrimPrefix(urlPath, prefix)
+	return trimmed != "" && !strings.Contains(trimmed, "/")
+}
+
 func extractSessionIDFromMetaPath(urlPath, prefix, suffix string) (string, bool) {
 	trimmed := strings.TrimPrefix(urlPath, prefix)
 	trimmed = strings.TrimSuffix(trimmed, suffix)
@@ -1112,4 +1123,20 @@ func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+
+	err := s.store.SoftDelete(sessionID)
+	if err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeJSONError(w, http.StatusNotFound, "Session not found.")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }

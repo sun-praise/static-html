@@ -45,6 +45,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runList(args[1:], stdout)
 	case "search":
 		return runSearch(args[1:], stdout)
+	case "delete":
+		return runDelete(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -58,7 +60,8 @@ func printUsage(w io.Writer) {
   sth categorize <session-id> [category] [--db /path/to/sessions.db] [--server http://...]
   sth project <session-id> [project] [--db /path/to/sessions.db] [--server http://...]
   sth list [--tag <tag>] [--category <cat>] [--project <proj>] [--db /path/to/sessions.db]
-  sth search <query> [--db /path/to/sessions.db]`)
+  sth search <query> [--db /path/to/sessions.db]
+  sth delete <session-id> [--db /path/to/sessions.db]`)
 }
 
 func runStart(args []string, stdout io.Writer) error {
@@ -324,4 +327,33 @@ func parseArgs(args []string) (map[string]string, []string, error) {
 	}
 
 	return flags, positionals, nil
+}
+
+func runDelete(args []string, stdout io.Writer) error {
+	flags, positionals, err := parseArgs(args)
+	if err != nil {
+		return err
+	}
+
+	if len(positionals) < 1 {
+		return errors.New("missing session ID")
+	}
+
+	sessionID := positionals[0]
+
+	store, err := openStore(flags)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	if err := store.SoftDelete(sessionID); err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			return fmt.Errorf("session %q not found", sessionID)
+		}
+		return err
+	}
+
+	fmt.Fprintf(stdout, "Session %q deleted.\n", sessionID)
+	return nil
 }
