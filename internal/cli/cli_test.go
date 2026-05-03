@@ -270,3 +270,39 @@ func TestDeleteCommandMissingArg(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestWriteZIPArchiveSkipsPermissionDenied(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	readableFile := filepath.Join(rootDir, "index.html")
+	if err := os.WriteFile(readableFile, []byte("<!doctype html><title>ok</title>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	noPermDir := filepath.Join(rootDir, "no-permission")
+	if err := os.MkdirAll(noPermDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Chmod(noPermDir, 0o755) // Restore permissions for cleanup
+	}()
+
+	var buf bytes.Buffer
+	if err := writeZIPArchive(rootDir, &buf); err != nil {
+		t.Fatalf("writeZIPArchive failed: %v", err)
+	}
+
+	zipReader, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatalf("failed to read zip: %v", err)
+	}
+
+	if len(zipReader.File) != 1 {
+		t.Fatalf("expected 1 file in archive, got %d", len(zipReader.File))
+	}
+
+	if zipReader.File[0].Name != "index.html" {
+		t.Fatalf("expected index.html, got %q", zipReader.File[0].Name)
+	}
+}

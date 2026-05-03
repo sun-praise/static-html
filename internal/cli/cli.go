@@ -275,6 +275,9 @@ func writeZIPArchive(rootDir string, target io.Writer) error {
 	archive := zip.NewWriter(target)
 	err := filepath.WalkDir(rootDir, func(filePath string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			if errors.Is(walkErr, os.ErrPermission) || strings.Contains(walkErr.Error(), "permission denied") {
+				return nil
+			}
 			return walkErr
 		}
 		if entry.IsDir() {
