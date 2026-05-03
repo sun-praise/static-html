@@ -766,8 +766,16 @@ func IsHTMLFile(filePath string) bool {
 	return extension == ".html" || extension == ".htm"
 }
 
+const maxFileContentSearchSize = 10 << 20 // 10MB
+
 func fileContentContains(filePath, queryLower string) bool {
-	data, err := os.ReadFile(filePath)
+	f, err := os.Open(filePath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxFileContentSearchSize))
 	if err != nil {
 		return false
 	}

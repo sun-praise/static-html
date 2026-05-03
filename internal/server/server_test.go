@@ -467,6 +467,125 @@ func TestSearchByFileContent(t *testing.T) {
 	}
 }
 
+func TestSearchNoResults(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	entryFile := filepath.Join(rootDir, "index.html")
+	if err := os.WriteFile(entryFile, []byte("<html><body><h1>hello world</h1></body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	body, err := json.Marshal(map[string]string{"filePath": entryFile})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	createResp, err := http.Post(srv.Origin()+"/api/sessions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("unexpected create status: %d", createResp.StatusCode)
+	}
+
+	searchResp, err := http.Get(srv.Origin() + "/?q=zzznonexistent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchResp.Body.Close()
+
+	if searchResp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected search status: %d", searchResp.StatusCode)
+	}
+
+	searchBody, err := io.ReadAll(searchResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if bytes.Contains(searchBody, []byte("index.html")) {
+		t.Fatal("expected no results for non-matching query")
+	}
+}
+
+func TestSearchContentNoDuplicate(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	// File name contains "ralph", and content also contains "ralph"
+	entryFile := filepath.Join(rootDir, "ralph-page.html")
+	if err := os.WriteFile(entryFile, []byte("<html><body><h1>ralph is here</h1></body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	body, err := json.Marshal(map[string]string{"filePath": entryFile})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	createResp, err := http.Post(srv.Origin()+"/api/sessions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("unexpected create status: %d", createResp.StatusCode)
+	}
+
+	searchResp, err := http.Get(srv.Origin() + "/?q=ralph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchResp.Body.Close()
+
+	searchBody, err := io.ReadAll(searchResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if searchResp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected search status: %d", searchResp.StatusCode)
+	}
+
+	// Count occurrences of the session card — should appear exactly once
+	count := bytes.Count(searchBody, []byte("ralph-page.html"))
+	if count != 1 {
+		t.Fatalf("expected exactly 1 occurrence of ralph-page.html, got %d", count)
+	}
+}
+
 func TestDeleteSessionIdempotent(t *testing.T) {
 	t.Parallel()
 
