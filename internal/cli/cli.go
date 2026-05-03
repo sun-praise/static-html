@@ -55,10 +55,10 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
-  sth send <file.html> [--server http://127.0.0.1:3939]
+  sth send <file.html> --tag <tag...> --category <cat> --project <proj> [--server http://127.0.0.1:3939]
   sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
-  sth categorize <session-id> [category] [--db /path/to/sessions.db] [--server http://...]
-  sth project <session-id> [project] [--db /path/to/sessions.db] [--server http://...]
+  sth categorize <session-id> <category> [--db /path/to/sessions.db] [--server http://...]
+  sth project <session-id> <project> [--db /path/to/sessions.db] [--server http://...]
   sth list [--tag <tag>] [--category <cat>] [--project <proj>] [--db /path/to/sessions.db]
   sth search <query> [--db /path/to/sessions.db]
   sth delete <session-id> [--db /path/to/sessions.db]`)
@@ -134,6 +134,20 @@ func runSend(args []string, stdout io.Writer) error {
 		return errors.New("missing HTML file path")
 	}
 
+	tag := flags["tag"]
+	category := flags["category"]
+	project := flags["project"]
+
+	if tag == "" {
+		return errors.New("--tag is required")
+	}
+	if category == "" {
+		return errors.New("--category is required")
+	}
+	if project == "" {
+		return errors.New("--project is required")
+	}
+
 	entryFile, err := filepath.Abs(positionals[0])
 	if err != nil {
 		return fmt.Errorf("failed to resolve file path: %w", err)
@@ -159,7 +173,9 @@ func runSend(args []string, stdout io.Writer) error {
 		return fmt.Errorf("invalid server URL: %w", err)
 	}
 
-	requestBody, contentType, err := newUploadRequestBody(entryFile)
+	tags := strings.Split(tag, ",")
+
+	requestBody, contentType, err := newUploadRequestBody(entryFile, tags, category, project)
 	if err != nil {
 		return err
 	}
@@ -201,7 +217,7 @@ func runSend(args []string, stdout io.Writer) error {
 	return nil
 }
 
-func newUploadRequestBody(entryFile string) (io.Reader, string, error) {
+func newUploadRequestBody(entryFile string, tags []string, category, project string) (io.Reader, string, error) {
 	rootDir := filepath.Dir(entryFile)
 	entryPath := filepath.Base(entryFile)
 	uploadName := filepath.Base(entryPath)
@@ -219,6 +235,20 @@ func newUploadRequestBody(entryFile string) (io.Reader, string, error) {
 		if err := formWriter.WriteField("entryPath", filepath.ToSlash(entryPath)); err != nil {
 			_ = writer.CloseWithError(err)
 			return
+		}
+		if err := formWriter.WriteField("category", category); err != nil {
+			_ = writer.CloseWithError(err)
+			return
+		}
+		if err := formWriter.WriteField("project", project); err != nil {
+			_ = writer.CloseWithError(err)
+			return
+		}
+		for _, t := range tags {
+			if err := formWriter.WriteField("tags", t); err != nil {
+				_ = writer.CloseWithError(err)
+				return
+			}
 		}
 
 		archiveWriter, err := formWriter.CreateFormFile("archive", "site.zip")

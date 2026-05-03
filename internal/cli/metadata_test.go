@@ -117,7 +117,7 @@ func TestCategorizeCommand(t *testing.T) {
 	}
 }
 
-func TestCategorizeCommandClears(t *testing.T) {
+func TestCategorizeCommandRejectsEmpty(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "cli-test.db")
@@ -137,12 +137,12 @@ func TestCategorizeCommandClears(t *testing.T) {
 
 	var stdout bytes.Buffer
 	err = Run([]string{"categorize", s.ID, "--db", dbPath}, &stdout, &bytes.Buffer{})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("expected error when category is omitted")
 	}
 
-	if !strings.Contains(stdout.String(), "Cleared") {
-		t.Fatalf("unexpected output: %q", stdout.String())
+	if !strings.Contains(err.Error(), "usage") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -180,7 +180,7 @@ func TestProjectCommand(t *testing.T) {
 	}
 }
 
-func TestProjectCommandClears(t *testing.T) {
+func TestProjectCommandRejectsEmpty(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "cli-test.db")
@@ -200,12 +200,12 @@ func TestProjectCommandClears(t *testing.T) {
 
 	var stdout bytes.Buffer
 	err = Run([]string{"project", s.ID, "--db", dbPath}, &stdout, &bytes.Buffer{})
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		t.Fatal("expected error when project is omitted")
 	}
 
-	if !strings.Contains(stdout.String(), "Cleared") {
-		t.Fatalf("unexpected output: %q", stdout.String())
+	if !strings.Contains(err.Error(), "usage") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

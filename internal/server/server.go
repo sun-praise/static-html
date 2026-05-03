@@ -39,7 +39,10 @@ type Server struct {
 }
 
 type createSessionRequest struct {
-	FilePath string `json:"filePath"`
+	FilePath string   `json:"filePath"`
+	Tags     []string `json:"tags"`
+	Category string   `json:"category"`
+	Project  string   `json:"project"`
 }
 
 type createSessionResponse struct {
@@ -546,6 +549,18 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusBadRequest, "filePath is required.")
 		return
 	}
+	if len(req.Tags) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "tags is required.")
+		return
+	}
+	if req.Category == "" {
+		writeJSONError(w, http.StatusBadRequest, "category is required.")
+		return
+	}
+	if req.Project == "" {
+		writeJSONError(w, http.StatusBadRequest, "project is required.")
+		return
+	}
 
 	entryFile, err := filepath.Abs(req.FilePath)
 	if err != nil {
@@ -570,6 +585,11 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 
 	session, err := s.store.Create(entryFile)
 	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if err := s.setSessionMetadata(session.ID, req.Tags, req.Category, req.Project); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -624,6 +644,23 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 	}
 	defer archiveFile.Close()
 
+	tags := r.Form["tags"]
+	category := strings.TrimSpace(r.FormValue("category"))
+	project := strings.TrimSpace(r.FormValue("project"))
+
+	if len(tags) == 0 {
+		writeJSONError(w, http.StatusBadRequest, "tags is required.")
+		return
+	}
+	if category == "" {
+		writeJSONError(w, http.StatusBadRequest, "category is required.")
+		return
+	}
+	if project == "" {
+		writeJSONError(w, http.StatusBadRequest, "project is required.")
+		return
+	}
+
 	uploadRoot, err := defaultUploadRoot()
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -671,6 +708,11 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	cleanupSessionDir = false
+
+	if err := s.setSessionMetadata(session.ID, tags, category, project); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 
 	baseURL := baseURL(r)
 	response := createSessionResponse{
@@ -1019,6 +1061,19 @@ func (s *Server) requireSession(sessionID string) (session.Session, bool, error)
 	return s.store.Get(sessionID)
 }
 
+func (s *Server) setSessionMetadata(sessionID string, tags []string, category, project string) error {
+	if err := s.store.AddTags(sessionID, tags...); err != nil {
+		return err
+	}
+	if err := s.store.SetCategory(sessionID, category); err != nil {
+		return err
+	}
+	if err := s.store.SetProject(sessionID, project); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Server) writeMetaOrError(w http.ResponseWriter, sessionID string, storeErr error) {
 	if storeErr != nil {
 		if errors.Is(storeErr, session.ErrSessionNotFound) {
@@ -1093,36 +1148,17 @@ func (s *Server) handleSetCategory(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "Request body must be valid JSON.")
 		return
 	}
+	if req.Category == "" {
+		writeJSONError(w, http.StatusBadRequest, "category is required and cannot be cleared.")
+		return
+	}
 
 	err := s.store.SetCategory(sessionID, req.Category)
 	s.writeMetaOrError(w, sessionID, err)
 }
 
 func (s *Server) handleClearCategory(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
-	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/category")
-	if !ok {
-		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
-		return
-	}
-
-	_, found, err := s.requireSession(sessionID)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if !found {
-		writeJSONError(w, http.StatusNotFound, "Session not found.")
-		return
-	}
-
-	if err := s.store.ClearCategory(sessionID); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	meta, _ := s.store.GetMetadata(sessionID)
-	writeJSON(w, http.StatusOK, meta)
+	writeJSONError(w, http.StatusBadRequest, "category is required and cannot be cleared.")
 }
 
 func (s *Server) handleSetProject(w http.ResponseWriter, r *http.Request) {
@@ -1138,36 +1174,17 @@ func (s *Server) handleSetProject(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "Request body must be valid JSON.")
 		return
 	}
+	if req.Project == "" {
+		writeJSONError(w, http.StatusBadRequest, "project is required and cannot be cleared.")
+		return
+	}
 
 	err := s.store.SetProject(sessionID, req.Project)
 	s.writeMetaOrError(w, sessionID, err)
 }
 
 func (s *Server) handleClearProject(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
-	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/project")
-	if !ok {
-		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
-		return
-	}
-
-	_, found, err := s.requireSession(sessionID)
-	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if !found {
-		writeJSONError(w, http.StatusNotFound, "Session not found.")
-		return
-	}
-
-	if err := s.store.ClearProject(sessionID); err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	meta, _ := s.store.GetMetadata(sessionID)
-	writeJSON(w, http.StatusOK, meta)
+	writeJSONError(w, http.StatusBadRequest, "project is required and cannot be cleared.")
 }
 
 func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {

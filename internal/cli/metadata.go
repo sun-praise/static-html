@@ -135,29 +135,21 @@ func runCategorize(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	if len(positionals) < 1 {
+	if len(positionals) < 2 {
 		return errors.New("usage: sth categorize <session-id> <category>")
 	}
 
 	sessionID := positionals[0]
+	category := positionals[1]
 
 	if serverURL, ok := flags["server"]; ok {
-		if len(positionals) >= 2 {
-			_, err := doJSONRequest(http.MethodPut, serverURL,
-				"/api/sessions/"+sessionID+"/category",
-				map[string]any{"category": positionals[1]})
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(stdout, "Set category of %s to %s\n", sessionID, positionals[1])
-		} else {
-			_, err := doJSONRequest(http.MethodDelete, serverURL,
-				"/api/sessions/"+sessionID+"/category", nil)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(stdout, "Cleared category of %s\n", sessionID)
+		_, err := doJSONRequest(http.MethodPut, serverURL,
+			"/api/sessions/"+sessionID+"/category",
+			map[string]any{"category": category})
+		if err != nil {
+			return err
 		}
+		fmt.Fprintf(stdout, "Set category of %s to %s\n", sessionID, category)
 		return nil
 	}
 
@@ -167,18 +159,10 @@ func runCategorize(args []string, stdout io.Writer) error {
 	}
 	defer store.Close()
 
-	if len(positionals) >= 2 {
-		category := positionals[1]
-		if err := store.SetCategory(sessionID, category); err != nil {
-			return err
-		}
-		fmt.Fprintf(stdout, "Set category of %s to %s\n", sessionID, category)
-	} else {
-		if err := store.ClearCategory(sessionID); err != nil {
-			return err
-		}
-		fmt.Fprintf(stdout, "Cleared category of %s\n", sessionID)
+	if err := store.SetCategory(sessionID, category); err != nil {
+		return err
 	}
+	fmt.Fprintf(stdout, "Set category of %s to %s\n", sessionID, category)
 
 	return nil
 }
@@ -189,29 +173,21 @@ func runProject(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	if len(positionals) < 1 {
-		return errors.New("usage: sth project <session-id> [project]")
+	if len(positionals) < 2 {
+		return errors.New("usage: sth project <session-id> <project>")
 	}
 
 	sessionID := positionals[0]
+	project := positionals[1]
 
 	if serverURL, ok := flags["server"]; ok {
-		if len(positionals) >= 2 {
-			_, err := doJSONRequest(http.MethodPut, serverURL,
-				"/api/sessions/"+sessionID+"/project",
-				map[string]any{"project": positionals[1]})
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(stdout, "Set project of %s to %s\n", sessionID, positionals[1])
-		} else {
-			_, err := doJSONRequest(http.MethodDelete, serverURL,
-				"/api/sessions/"+sessionID+"/project", nil)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(stdout, "Cleared project of %s\n", sessionID)
+		_, err := doJSONRequest(http.MethodPut, serverURL,
+			"/api/sessions/"+sessionID+"/project",
+			map[string]any{"project": project})
+		if err != nil {
+			return err
 		}
+		fmt.Fprintf(stdout, "Set project of %s to %s\n", sessionID, project)
 		return nil
 	}
 
@@ -221,20 +197,10 @@ func runProject(args []string, stdout io.Writer) error {
 	}
 	defer store.Close()
 
-	var project string
-	if len(positionals) >= 2 {
-		project = positionals[1]
-	}
-
 	if err := store.SetProject(sessionID, project); err != nil {
 		return err
 	}
-
-	if project != "" {
-		fmt.Fprintf(stdout, "Set project of %s to %s\n", sessionID, project)
-	} else {
-		fmt.Fprintf(stdout, "Cleared project of %s\n", sessionID)
-	}
+	fmt.Fprintf(stdout, "Set project of %s to %s\n", sessionID, project)
 
 	return nil
 }

@@ -42,7 +42,7 @@ func TestSendPrintsSessionURL(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := Run([]string{"send", fixtureHTML, "--server", srv.Origin()}, &stdout, &stderr); err != nil {
+	if err := Run([]string{"send", fixtureHTML, "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.Origin()}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 
@@ -62,7 +62,7 @@ func TestSendFailsClearlyWhenServerUnavailable(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err = Run([]string{"send", fixtureHTML, "--server", "http://127.0.0.1:4399"}, &stdout, &stderr)
+	err = Run([]string{"send", fixtureHTML, "--tag", "test", "--category", "cat", "--project", "proj", "--server", "http://127.0.0.1:4399"}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected send to fail")
 	}
@@ -90,7 +90,7 @@ func TestSendSurfacesServerJSONError(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := Run([]string{"send", fixtureHTML, "--server", srv.URL}, &stdout, &stderr)
+	err := Run([]string{"send", fixtureHTML, "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected send to fail")
 	}
@@ -185,7 +185,7 @@ func TestSendUploadsMultipartArchive(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := Run([]string{"send", entryFile, "--server", srv.URL}, &stdout, &stderr); err != nil {
+	if err := Run([]string{"send", entryFile, "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 

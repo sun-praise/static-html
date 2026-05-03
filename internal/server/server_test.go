@@ -49,7 +49,12 @@ func TestCreateSessionAndServeAssets(t *testing.T) {
 		_ = srv.Stop(ctx)
 	}()
 
-	body, err := json.Marshal(map[string]string{"filePath": absoluteFixture})
+	body, err := json.Marshal(map[string]any{
+		"filePath": absoluteFixture,
+		"tags":     []string{"test"},
+		"category": "tutorial",
+		"project":  "my-site",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +143,12 @@ func TestTraversalIsRejected(t *testing.T) {
 		_ = srv.Stop(ctx)
 	}()
 
-	body, err := json.Marshal(map[string]string{"filePath": fixtureHTML})
+	body, err := json.Marshal(map[string]any{
+		"filePath": fixtureHTML,
+		"tags":     []string{"test"},
+		"category": "test",
+		"project":  "test",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,6 +213,15 @@ func TestCreateUploadedSessionAndServeAssets(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := formWriter.WriteField("entryPath", "index.html"); err != nil {
+		t.Fatal(err)
+	}
+	if err := formWriter.WriteField("category", "uploaded"); err != nil {
+		t.Fatal(err)
+	}
+	if err := formWriter.WriteField("project", "test-proj"); err != nil {
+		t.Fatal(err)
+	}
+	if err := formWriter.WriteField("tags", "upload"); err != nil {
 		t.Fatal(err)
 	}
 	archivePart, err := formWriter.CreateFormFile("archive", "site.zip")
@@ -311,6 +330,39 @@ func newTestStore(t *testing.T) *session.Store {
 	return store
 }
 
+func createTestSession(t *testing.T, srvURL, filePath string) string {
+	t.Helper()
+
+	body, err := json.Marshal(map[string]any{
+		"filePath": filePath,
+		"tags":     []string{"test"},
+		"category": "test-cat",
+		"project":  "test-proj",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Post(srvURL+"/api/sessions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("createTestSession: unexpected status %d body=%s", resp.StatusCode, respBody)
+	}
+
+	var payload struct {
+		SessionID string `json:"sessionId"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload.SessionID
+}
+
 func TestDeleteSessionSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -333,25 +385,9 @@ func TestDeleteSessionSuccess(t *testing.T) {
 		_ = srv.Stop(ctx)
 	}()
 
-	body, err := json.Marshal(map[string]string{"filePath": fixtureHTML})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sessionID := createTestSession(t, srv.Origin(), fixtureHTML)
 
-	createResp, err := http.Post(srv.Origin()+"/api/sessions", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer createResp.Body.Close()
-
-	var createPayload struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.NewDecoder(createResp.Body).Decode(&createPayload); err != nil {
-		t.Fatal(err)
-	}
-
-	req, err := http.NewRequest(http.MethodDelete, srv.Origin()+"/api/sessions/"+createPayload.SessionID, nil)
+	req, err := http.NewRequest(http.MethodDelete, srv.Origin()+"/api/sessions/"+sessionID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,20 +468,7 @@ func TestSearchByFileContent(t *testing.T) {
 		_ = srv.Stop(ctx)
 	}()
 
-	body, err := json.Marshal(map[string]string{"filePath": entryFile})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	createResp, err := http.Post(srv.Origin()+"/api/sessions", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer createResp.Body.Close()
-
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("unexpected create status: %d", createResp.StatusCode)
-	}
+	createTestSession(t, srv.Origin(), entryFile)
 
 	searchResp, err := http.Get(srv.Origin() + "/?q=ralph")
 	if err != nil {
@@ -490,20 +513,7 @@ func TestSearchNoResults(t *testing.T) {
 		_ = srv.Stop(ctx)
 	}()
 
-	body, err := json.Marshal(map[string]string{"filePath": entryFile})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	createResp, err := http.Post(srv.Origin()+"/api/sessions", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer createResp.Body.Close()
-
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("unexpected create status: %d", createResp.StatusCode)
-	}
+	createTestSession(t, srv.Origin(), entryFile)
 
 	searchResp, err := http.Get(srv.Origin() + "/?q=zzznonexistent")
 	if err != nil {
@@ -549,20 +559,7 @@ func TestSearchContentNoDuplicate(t *testing.T) {
 		_ = srv.Stop(ctx)
 	}()
 
-	body, err := json.Marshal(map[string]string{"filePath": entryFile})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	createResp, err := http.Post(srv.Origin()+"/api/sessions", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer createResp.Body.Close()
-
-	if createResp.StatusCode != http.StatusCreated {
-		t.Fatalf("unexpected create status: %d", createResp.StatusCode)
-	}
+	createTestSession(t, srv.Origin(), entryFile)
 
 	searchResp, err := http.Get(srv.Origin() + "/?q=ralph")
 	if err != nil {
@@ -608,26 +605,10 @@ func TestDeleteSessionIdempotent(t *testing.T) {
 		_ = srv.Stop(ctx)
 	}()
 
-	body, err := json.Marshal(map[string]string{"filePath": fixtureHTML})
-	if err != nil {
-		t.Fatal(err)
-	}
+	sessionID := createTestSession(t, srv.Origin(), fixtureHTML)
 
-	createResp, err := http.Post(srv.Origin()+"/api/sessions", "application/json", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer createResp.Body.Close()
-
-	var createPayload struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.NewDecoder(createResp.Body).Decode(&createPayload); err != nil {
-		t.Fatal(err)
-	}
-
-	for i := 0; i < 2; i++ {
-		req, err := http.NewRequest(http.MethodDelete, srv.Origin()+"/api/sessions/"+createPayload.SessionID, nil)
+	for i := range 2 {
+		req, err := http.NewRequest(http.MethodDelete, srv.Origin()+"/api/sessions/"+sessionID, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
