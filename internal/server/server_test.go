@@ -409,6 +409,64 @@ func TestDeleteSessionNotFound(t *testing.T) {
 	}
 }
 
+func TestSearchByFileContent(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	entryFile := filepath.Join(rootDir, "index.html")
+	if err := os.WriteFile(entryFile, []byte("<html><body><h1>ralphplus project</h1></body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	body, err := json.Marshal(map[string]string{"filePath": entryFile})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	createResp, err := http.Post(srv.Origin()+"/api/sessions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+
+	if createResp.StatusCode != http.StatusCreated {
+		t.Fatalf("unexpected create status: %d", createResp.StatusCode)
+	}
+
+	searchResp, err := http.Get(srv.Origin() + "/?q=ralph")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer searchResp.Body.Close()
+
+	searchBody, err := io.ReadAll(searchResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if searchResp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected search status: %d", searchResp.StatusCode)
+	}
+
+	if !bytes.Contains(searchBody, []byte("index.html")) {
+		t.Fatalf("expected search to find file by content, got: %s", string(searchBody))
+	}
+}
+
 func TestDeleteSessionIdempotent(t *testing.T) {
 	t.Parallel()
 

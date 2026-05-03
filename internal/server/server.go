@@ -2,6 +2,7 @@ package server
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -422,6 +423,32 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		metaMatched := make(map[string]bool, len(docs))
+		for _, d := range docs {
+			metaMatched[d.SessionID] = true
+		}
+
+		allDocs, err := s.store.ListDocuments(session.FilterOptions{
+			Tag:      filterTag,
+			Category: filterCat,
+			Project:  filterProj,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		queryLower := strings.ToLower(search)
+		for _, d := range allDocs {
+			if metaMatched[d.SessionID] {
+				continue
+			}
+			if fileContentContains(d.Name, queryLower) {
+				docs = append(docs, d)
+			}
+		}
+
 		items = toHomePageSessions(docs)
 	} else if filterTag != "" || filterCat != "" || filterProj != "" {
 		docs, err := s.store.ListDocuments(session.FilterOptions{
@@ -737,6 +764,14 @@ func parsePreviewPath(r *http.Request) (string, string, string, error) {
 func IsHTMLFile(filePath string) bool {
 	extension := strings.ToLower(filepath.Ext(filePath))
 	return extension == ".html" || extension == ".htm"
+}
+
+func fileContentContains(filePath, queryLower string) bool {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(bytes.ToLower(data), []byte(queryLower))
 }
 
 func IsSubpath(rootDir string, targetPath string) bool {
