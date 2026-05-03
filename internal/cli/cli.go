@@ -172,7 +172,8 @@ func runSend(args []string, stdout io.Writer) error {
 	client := &http.Client{Timeout: 60 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf(`could not reach %s. Start the server with "sth start" first.`, parsedURL.Scheme+"://"+parsedURL.Host)
+		displayURL := parsedURL.Scheme + "://" + parsedURL.Host
+		return fmt.Errorf(`could not reach %s: %w. Start the server with "sth start" first.`, displayURL, err)
 	}
 	defer response.Body.Close()
 
