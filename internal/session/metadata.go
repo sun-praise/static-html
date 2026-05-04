@@ -74,6 +74,7 @@ func (s *Store) AddTags(sessionID string, tags ...string) error {
 	}
 	defer stmt.Close()
 
+	added := 0
 	for _, tag := range tags {
 		if tag == "" {
 			continue
@@ -81,6 +82,10 @@ func (s *Store) AddTags(sessionID string, tags ...string) error {
 		if _, err := stmt.Exec(sessionID, tag); err != nil {
 			return err
 		}
+		added++
+	}
+	if added == 0 {
+		return errors.New("at least one non-empty tag is required")
 	}
 
 	return tx.Commit()
@@ -107,6 +112,9 @@ func (s *Store) RemoveTags(sessionID string, tags ...string) error {
 	defer stmt.Close()
 
 	for _, tag := range tags {
+		if tag == "" {
+			continue
+		}
 		if _, err := stmt.Exec(sessionID, tag); err != nil {
 			return err
 		}
