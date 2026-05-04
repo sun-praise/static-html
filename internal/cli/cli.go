@@ -55,7 +55,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
-  sth send <file.html> --tag <tag...> --category <cat> --project <proj> [--server http://127.0.0.1:3939]
+  sth send <file.html> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939]
   sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
   sth categorize <session-id> <category> [--db /path/to/sessions.db] [--server http://...]
   sth project <session-id> <project> [--db /path/to/sessions.db] [--server http://...]
@@ -353,6 +353,9 @@ func parseArgs(args []string) (map[string]string, []string, error) {
 			return nil, nil, fmt.Errorf("missing value for --%s", name)
 		}
 
+		if _, exists := flags[name]; exists {
+			return nil, nil, fmt.Errorf("duplicate flag --%s", name)
+		}
 		flags[name] = args[index+1]
 		index++
 	}
