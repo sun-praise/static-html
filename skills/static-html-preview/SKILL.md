@@ -38,14 +38,20 @@ bash scripts/send-file.sh /absolute/or/relative/file.html [server_url]
 
 The command uploads the HTML file and sibling assets from the same directory, then prints a session URL like `http://127.0.0.1:3939/s/<id>/`.
 
+When calling `sth send` directly, `--tag` accepts multiple comma-separated values:
+
+```bash
+sth send file.html --tag tag1,tag2,tag3 --category cat --project proj
+```
+
 4. Manage session metadata:
 
 ```bash
-# Add tags
-sth tag <session-id> <tag...>
+# Add tags (supports multiple tags at once)
+sth tag <session-id> <tag1> [tag2] ...
 
-# Remove a tag
-sth tag --rm <session-id> <tag...>
+# Remove tags (supports multiple tags at once)
+sth tag --rm <session-id> <tag1> [tag2] ...
 
 # Set category (omit [category] to clear)
 sth categorize <session-id> [category]
@@ -75,6 +81,29 @@ All metadata commands accept `--db /path/to/sessions.db` to override the databas
 - `STATIC_HTML_HOST`: server host, default `127.0.0.1` (set this to your LAN host when running on another machine)
 - `STATIC_HTML_PORT`: default port for `start-server.sh`
 - `STATIC_HTML_SERVER_URL`: default server URL for `send-file.sh`
+
+## FAQ
+
+### Tag 可以有一个还是多个？
+
+**支持多个。** 系统设计上每个 session 可以关联多个 tag：
+
+- `sth send` 用逗号分隔：`--tag tag1,tag2,tag3`
+- `sth tag` 用空格分隔多个位置参数：`sth tag <session-id> tag1 tag2 tag3`
+- Web UI 也会把多个 tag 渲染成独立的标签 pill
+
+### 为什么页面上某个 session 只显示一个 tag，而且看起来像 JSON（如 `["日报"]`）？
+
+这是因为**创建该 session 的客户端把 tag 作为 JSON 字符串发送了**，而不是 JSON 数组。服务器把这个 JSON 字符串当作**单个 tag** 存入了数据库。
+
+例如，客户端错误地发送了：
+```json
+{"tags": "[\"日报\"]"}
+```
+
+服务器会将其反序列化为 `["[\"日报\"]"]`，最终页面上只显示一个内容为 `["日报"]` 的 tag。
+
+**正确做法**：发送 JSON 数组或直接使用 `sth send --tag`（内部会自动处理为多个值）。
 
 ## Notes
 
