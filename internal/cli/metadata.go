@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -217,10 +218,9 @@ func runList(args []string, stdout io.Writer) error {
 	}
 	defer store.Close()
 
-	filter := session.FilterOptions{
-		Tag:      flags["tag"],
-		Category: flags["category"],
-		Project:  flags["project"],
+	filter, err := parseFilterOptions(flags)
+	if err != nil {
+		return err
 	}
 
 	docs, err := store.ListDocuments(filter)
@@ -260,11 +260,12 @@ func runSearch(args []string, stdout io.Writer) error {
 	}
 	defer store.Close()
 
-	docs, err := store.SearchDocuments(query, session.FilterOptions{
-		Tag:      flags["tag"],
-		Category: flags["category"],
-		Project:  flags["project"],
-	})
+	filter, err := parseFilterOptions(flags)
+	if err != nil {
+		return err
+	}
+
+	docs, err := store.SearchDocuments(query, filter)
 	if err != nil {
 		return err
 	}
@@ -281,4 +282,34 @@ func runSearch(args []string, stdout io.Writer) error {
 	}
 
 	return nil
+}
+
+func parseFilterOptions(flags map[string]string) (session.FilterOptions, error) {
+	filter := session.FilterOptions{
+		Tag:      flags["tag"],
+		Category: flags["category"],
+		Project:  flags["project"],
+	}
+
+	if limitStr, ok := flags["limit"]; ok {
+		n, err := strconv.Atoi(limitStr)
+		if err != nil || n < 0 {
+			return session.FilterOptions{}, errors.New("limit must be a non-negative integer")
+		}
+		filter.Limit = n
+	}
+
+	if offsetStr, ok := flags["offset"]; ok {
+		n, err := strconv.Atoi(offsetStr)
+		if err != nil || n < 0 {
+			return session.FilterOptions{}, errors.New("offset must be a non-negative integer")
+		}
+		filter.Offset = n
+	}
+
+	if filter.Offset > 0 && filter.Limit <= 0 {
+		return session.FilterOptions{}, errors.New("offset requires a positive limit")
+	}
+
+	return filter, nil
 }
