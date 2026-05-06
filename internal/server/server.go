@@ -62,6 +62,14 @@ type homePageData struct {
 	ClearTag    string
 	ClearCat    string
 	ClearProj   string
+	Page        int
+	TotalPages  int
+	HasPrev     bool
+	HasNext     bool
+	PrevPage    int
+	NextPage    int
+	PageRange   []int
+	PageURL     map[int]string
 }
 
 type homePageSession struct {
@@ -231,6 +239,44 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         background: #fee2e2;
         color: #dc2626;
       }
+      .pagination {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 0.25rem;
+        margin-top: 1.5rem;
+        padding-top: 1rem;
+        border-top: 1px solid #d6d1c6;
+        flex-wrap: wrap;
+      }
+      .pagination a, .pagination span {
+        display: inline-block;
+        padding: 0.3rem 0.6rem;
+        border-radius: 6px;
+        text-decoration: none;
+        font-size: 0.9rem;
+        min-width: 1.5rem;
+        text-align: center;
+      }
+      .pagination a {
+        background: #f2efe6;
+        color: #171717;
+        border: 1px solid #d6d1c6;
+      }
+      .pagination a:hover {
+        background: #e6e2d6;
+      }
+      .pagination .current {
+        background: #171717;
+        color: #fff;
+        border: 1px solid #171717;
+      }
+      .pagination .disabled {
+        color: #aaa;
+        background: transparent;
+        border: 1px solid transparent;
+        cursor: default;
+      }
     </style>
   </head>
   <body>
@@ -283,6 +329,27 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         <li>No preview sessions found.</li>
       {{- end }}
       </ul>
+      {{- if gt .TotalPages 1 }}
+      <nav class="pagination">
+        {{- if .HasPrev }}
+        <a href="{{ index $.PageURL $.PrevPage }}">← Prev</a>
+        {{- else }}
+        <span class="disabled">← Prev</span>
+        {{- end }}
+        {{- range .PageRange }}
+          {{- if eq . $.Page }}
+        <span class="current">{{ . }}</span>
+          {{- else }}
+        <a href="{{ index $.PageURL . }}">{{ . }}</a>
+          {{- end }}
+        {{- end }}
+        {{- if .HasNext }}
+        <a href="{{ index $.PageURL $.NextPage }}">Next →</a>
+        {{- else }}
+        <span class="disabled">Next →</span>
+        {{- end }}
+      </nav>
+      {{- end }}
     </main>
     <script>
     document.querySelector('ul').addEventListener('click', function(e) {
@@ -407,6 +474,8 @@ func (s *Server) routes() http.Handler {
 	})
 }
 
+const defaultPageSize = 20
+
 func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	search := strings.TrimSpace(q.Get("q"))
@@ -414,9 +483,22 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	filterCat := strings.TrimSpace(q.Get("category"))
 	filterProj := strings.TrimSpace(q.Get("project"))
 
+	page := 1
+	if p := q.Get("page"); p != "" {
+		if n, err := fmt.Sscanf(p, "%d", &page); err != nil || n != 1 || page < 1 {
+			page = 1
+		}
+	}
+
 	var items []homePageSession
+	var total int
+	var totalPages int
 
 	if search != "" {
+		// Search path: full-text search across metadata + file content.
+		// File content search happens in Go, so we must fetch all candidates
+		// and paginate in memory. This is the only correct approach when
+		// file content matching is required.
 		docs, err := s.store.SearchDocuments(search, session.FilterOptions{
 			Tag:      filterTag,
 			Category: filterCat,
@@ -432,7 +514,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			metaMatched[d.SessionID] = true
 		}
 
-		allDocs, err := s.store.ListDocuments(session.FilterOptions{
+		listDocs, err := s.store.ListDocuments(session.FilterOptions{
 			Tag:      filterTag,
 			Category: filterCat,
 			Project:  filterProj,
@@ -443,7 +525,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		}
 
 		queryLower := strings.ToLower(search)
-		for _, d := range allDocs {
+		for _, d := range listDocs {
 			if metaMatched[d.SessionID] {
 				continue
 			}
@@ -452,20 +534,51 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		items = toHomePageSessions(docs)
-	} else if filterTag != "" || filterCat != "" || filterProj != "" {
-		docs, err := s.store.ListDocuments(session.FilterOptions{
+		total = len(docs)
+		totalPages = (total + defaultPageSize - 1) / defaultPageSize
+		if totalPages < 1 {
+			totalPages = 1
+		}
+		if page > totalPages {
+			page = totalPages
+		}
+		start := (page - 1) * defaultPageSize
+		end := start + defaultPageSize
+		if end > total {
+			end = total
+		}
+		if start < total {
+			items = toHomePageSessions(docs[start:end])
+		}
+	} else {
+		// Non-search paths: use SQL-level LIMIT/OFFSET for efficiency.
+		countFilter := session.FilterOptions{
 			Tag:      filterTag,
 			Category: filterCat,
 			Project:  filterProj,
-		})
+		}
+		var err error
+		total, err = s.store.CountDocuments(countFilter)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		items = toHomePageSessions(docs)
-	} else {
-		docs, err := s.store.ListDocuments(session.FilterOptions{Limit: 20})
+
+		totalPages = (total + defaultPageSize - 1) / defaultPageSize
+		if totalPages < 1 {
+			totalPages = 1
+		}
+		if page > totalPages {
+			page = totalPages
+		}
+
+		docs, err := s.store.ListDocuments(session.FilterOptions{
+			Tag:      filterTag,
+			Category: filterCat,
+			Project:  filterProj,
+			Limit:    defaultPageSize,
+			Offset:   (page - 1) * defaultPageSize,
+		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -478,6 +591,13 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	clearCat := buildClearURL(r.URL, "category")
 	clearProj := buildClearURL(r.URL, "project")
 
+	pageRange := make([]int, 0, totalPages)
+	pageURL := make(map[int]string, totalPages)
+	for i := 1; i <= totalPages; i++ {
+		pageRange = append(pageRange, i)
+		pageURL[i] = buildPageURL(r.URL, i)
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := homePageTemplate.Execute(w, homePageData{
 		Sessions:    items,
@@ -489,6 +609,14 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		ClearTag:    clearTag,
 		ClearCat:    clearCat,
 		ClearProj:   clearProj,
+		Page:        page,
+		TotalPages:  totalPages,
+		HasPrev:     page > 1,
+		HasNext:     page < totalPages,
+		PrevPage:    page - 1,
+		NextPage:    page + 1,
+		PageRange:   pageRange,
+		PageURL:     pageURL,
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -517,6 +645,12 @@ func buildClearURL(u *url.URL, removeKey string) string {
 	if len(q) == 0 {
 		return "/"
 	}
+	return "/?" + q.Encode()
+}
+
+func buildPageURL(u *url.URL, page int) string {
+	q := u.Query()
+	q.Set("page", fmt.Sprintf("%d", page))
 	return "/?" + q.Encode()
 }
 

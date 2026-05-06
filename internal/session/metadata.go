@@ -21,6 +21,7 @@ type FilterOptions struct {
 	Category string
 	Project  string
 	Limit    int
+	Offset   int
 }
 
 type DocumentInfo struct {
@@ -205,6 +206,38 @@ func (s *Store) GetMetadata(sessionID string) (DocumentMetadata, error) {
 	return meta, nil
 }
 
+func (s *Store) CountDocuments(filter FilterOptions) (int, error) {
+	query := `SELECT COUNT(DISTINCT s.session_id) FROM sessions s`
+	var conditions []string
+	var args []any
+
+	conditions = append(conditions, `s.deleted_at IS NULL`)
+
+	if filter.Tag != "" {
+		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_tags WHERE tag = ?)`)
+		args = append(args, filter.Tag)
+	}
+	if filter.Category != "" {
+		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_categories WHERE category = ?)`)
+		args = append(args, filter.Category)
+	}
+	if filter.Project != "" {
+		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_projects WHERE project = ?)`)
+		args = append(args, filter.Project)
+	}
+
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, ` AND `)
+	}
+
+	var count int
+	err := s.db.QueryRow(query, args...).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 	query := `
 		SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix,
@@ -243,6 +276,10 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 	if filter.Limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, filter.Limit)
+		if filter.Offset > 0 {
+			query += ` OFFSET ?`
+			args = append(args, filter.Offset)
+		}
 	}
 
 	rows, err := s.db.Query(query, args...)
@@ -337,6 +374,15 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 		GROUP BY s.session_id
 		ORDER BY s.created_at_unix DESC
 	`
+
+	if filter.Limit > 0 {
+		queryStr += ` LIMIT ?`
+		args = append(args, filter.Limit)
+		if filter.Offset > 0 {
+			queryStr += ` OFFSET ?`
+			args = append(args, filter.Offset)
+		}
+	}
 
 	rows, err := s.db.Query(queryStr, args...)
 	if err != nil {

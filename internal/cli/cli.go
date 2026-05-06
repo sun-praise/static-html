@@ -59,8 +59,8 @@ func printUsage(w io.Writer) {
   sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
   sth categorize <session-id> <category> [--db /path/to/sessions.db] [--server http://...]
   sth project <session-id> <project> [--db /path/to/sessions.db] [--server http://...]
-  sth list [--tag <tag>] [--category <cat>] [--project <proj>] [--db /path/to/sessions.db]
-  sth search <query> [--db /path/to/sessions.db]
+  sth list [--tag <tag>] [--category <cat>] [--project <proj>] [--limit <n>] [--offset <n>] [--db /path/to/sessions.db]
+  sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>] [--limit <n>] [--offset <n>] [--db /path/to/sessions.db]
   sth delete <session-id> [--db /path/to/sessions.db]`)
 }
 
