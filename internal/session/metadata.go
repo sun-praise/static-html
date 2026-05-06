@@ -292,22 +292,25 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 		return nil, errors.New("search query is required")
 	}
 
-	pattern := "%" + query + "%"
+	// Escape LIKE wildcards so user literals like % and _ are matched exactly.
+	// Backslash must be escaped first because it is the ESCAPE character.
+	escaped := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(query, `\`, `\\`), `%`, `\%`), `_`, `\_`)
+	pattern := "%" + escaped + "%"
 
 	var conditions []string
 	var args []any
 
 	conditions = append(conditions, `s.deleted_at IS NULL`)
 
-	conditions = append(conditions, `(COALESCE(s.stored_entry_file, s.entry_file) LIKE ?
+	conditions = append(conditions, `(COALESCE(s.stored_entry_file, s.entry_file) LIKE ? ESCAPE '\'
 	   OR s.session_id IN (
-		   SELECT session_id FROM document_tags WHERE tag LIKE ?
+		   SELECT session_id FROM document_tags WHERE tag LIKE ? ESCAPE '\'
 	   )
 	   OR s.session_id IN (
-		   SELECT session_id FROM document_categories WHERE category LIKE ?
+		   SELECT session_id FROM document_categories WHERE category LIKE ? ESCAPE '\'
 	   )
 	   OR s.session_id IN (
-		   SELECT session_id FROM document_projects WHERE project LIKE ?
+		   SELECT session_id FROM document_projects WHERE project LIKE ? ESCAPE '\'
 	   ))`)
 	args = append(args, pattern, pattern, pattern, pattern)
 
