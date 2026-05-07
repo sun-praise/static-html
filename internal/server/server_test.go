@@ -624,3 +624,94 @@ func TestDeleteSessionIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestDownloadSession(t *testing.T) {
+	t.Parallel()
+
+	fixtureHTML, err := filepath.Abs(filepath.Join("..", "..", "fixtures", "basic", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	sessionID := createTestSession(t, srv.Origin(), fixtureHTML)
+
+	downloadURL := srv.Origin() + "/api/sessions/" + sessionID + "/download"
+	resp, err := http.Get(downloadURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("unexpected status: %d body=%s", resp.StatusCode, body)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "application/zip" {
+		t.Fatalf("unexpected content-type: %q", contentType)
+	}
+
+	zipBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	zipReader, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, f := range zipReader.File {
+		if f.Name == "index.html" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("zip does not contain index.html, files: %v", zipReader.File)
+	}
+}
+
+func TestDownloadSessionNotFound(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/nonexistent/download")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
