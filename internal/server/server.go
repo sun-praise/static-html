@@ -239,6 +239,23 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         background: #fee2e2;
         color: #dc2626;
       }
+      .action-btn {
+        margin-left: 0.3rem;
+        padding: 0.1rem 0.4rem;
+        border: none;
+        border-radius: 4px;
+        background: none;
+        color: #aaa;
+        cursor: pointer;
+        font-size: 0.85rem;
+        vertical-align: middle;
+        text-decoration: none;
+        display: inline-block;
+      }
+      .action-btn:hover {
+        background: #e6e2d6;
+        color: #171717;
+      }
       .pagination {
         display: flex;
         justify-content: center;
@@ -309,6 +326,8 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         <li>
           <a href="{{ .PreviewPath }}">{{ .Name }}</a>
           <time datetime="{{ .CreatedAt }}">{{ .CreatedAt }}</time>
+          <a class="action-btn download-btn" href="/api/sessions/{{ .ID }}/download" title="Download" download>⬇</a>
+          <button class="action-btn share-btn" data-share-url="{{ .PreviewPath }}" title="Share">🔗</button>
           <button class="delete-btn" data-session-id="{{ .ID }}" title="Delete session">&times;</button>
           {{- if or .Tags .Category .Project }}
           <div class="meta">
@@ -354,14 +373,29 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
     <script>
     document.querySelector('ul').addEventListener('click', function(e) {
       var btn = e.target.closest('.delete-btn');
-      if (!btn) return;
-      var id = btn.dataset.sessionId;
-      var li = btn.closest('li');
-      var name = li.querySelector('a').textContent;
-      if (!confirm('Delete "' + name + '"?')) return;
-      fetch('/api/sessions/' + id, { method: 'DELETE' }).then(function(r) {
-        if (r.ok) { li.remove(); } else { alert('Delete failed: ' + r.status); }
-      }).catch(function() { alert('Network error'); });
+      if (btn) {
+        var id = btn.dataset.sessionId;
+        var li = btn.closest('li');
+        var name = li.querySelector('a').textContent;
+        if (!confirm('Delete "' + name + '"?')) return;
+        fetch('/api/sessions/' + id, { method: 'DELETE' }).then(function(r) {
+          if (r.ok) { li.remove(); } else { alert('Delete failed: ' + r.status); }
+        }).catch(function() { alert('Network error'); });
+        return;
+      }
+      var shareBtn = e.target.closest('.share-btn');
+      if (shareBtn) {
+        var url = window.location.origin + shareBtn.dataset.shareUrl;
+        if (navigator.share) {
+          navigator.share({ url: url }).catch(function() {});
+        } else if (navigator.clipboard) {
+          navigator.clipboard.writeText(url).then(function() {
+            var original = shareBtn.textContent;
+            shareBtn.textContent = 'Copied!';
+            setTimeout(function() { shareBtn.textContent = original; }, 1500);
+          }).catch(function() {});
+        }
+      }
     });
     </script>
   </body>
@@ -466,6 +500,8 @@ func (s *Server) routes() http.Handler {
 			s.handleClearProject(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/metadata"):
 			s.handleGetMetadata(w, r)
+		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/download"):
+			s.handleDownloadSession(w, r)
 		case r.Method == http.MethodDelete && isExactSessionPath(r.URL.Path):
 			s.handleDeleteSession(w, r)
 		default:
@@ -904,6 +940,79 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.ServeFile(w, r, targetPath)
+}
+
+func (s *Server) handleDownloadSession(w http.ResponseWriter, r *http.Request) {
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/download")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	session, found, err := s.store.Get(sessionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if !found {
+		http.Error(w, "Session not found.", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s.zip\"", sessionID))
+
+	archive := zip.NewWriter(w)
+	defer archive.Close()
+
+	err = filepath.WalkDir(session.StoredRootDir, func(filePath string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+
+		targetPath := filepath.Clean(filePath)
+		if !IsSubpath(session.StoredRootDir, targetPath) {
+			return fmt.Errorf("path escapes the session root")
+		}
+
+		relativePath, err := filepath.Rel(session.StoredRootDir, targetPath)
+		if err != nil {
+			return err
+		}
+
+		fileWriter, err := archive.Create(filepath.ToSlash(relativePath))
+		if err != nil {
+			return err
+		}
+
+		sourceFile, err := os.Open(targetPath)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(fileWriter, sourceFile)
+		closeErr := sourceFile.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
+
+	if err != nil {
+		// Headers already sent; log and let the truncated response stand.
+		fmt.Fprintf(os.Stderr, "download archive error: %v\n", err)
+	}
 }
 
 var errRedirectRequired = errors.New("redirect required")
