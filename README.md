@@ -1,6 +1,13 @@
 # static-html
 
+[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/)
+[![Go Report Card](https://goreportcard.com/badge/github.com/sun-praise/static-html)](https://goreportcard.com/report/github.com/sun-praise/static-html)
+[![GitHub release](https://img.shields.io/github/v/release/sun-praise/static-html?include_prereleases)](https://github.com/sun-praise/static-html/releases)
+[![License](https://img.shields.io/github/license/sun-praise/static-html)](https://github.com/sun-praise/static-html/blob/main/LICENSE)
+
 A local HTML preview server with a CLI for registering HTML files as browser-viewable sessions.
+
+[中文](README.cn.md)
 
 ## Requirements
 
