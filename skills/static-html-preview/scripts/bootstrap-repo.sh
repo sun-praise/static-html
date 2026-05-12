@@ -10,11 +10,12 @@ build_stamp="$repo_dir/dist/.static-html-go-build"
 
 ensure_checkout() {
   if [ -d "$repo_dir/.git" ]; then
-    if [ "${STATIC_HTML_SKIP_UPDATE:-0}" != "1" ]; then
-      git -C "$repo_dir" fetch origin "$repo_ref" --depth=1
-      git -C "$repo_dir" checkout "$repo_ref"
-      git -C "$repo_dir" pull --ff-only origin "$repo_ref"
+    if [ "${STATIC_HTML_SKIP_UPDATE:-1}" != "0" ]; then
+      return
     fi
+    git -C "$repo_dir" fetch origin "$repo_ref" --depth=1
+    git -C "$repo_dir" checkout "$repo_ref"
+    git -C "$repo_dir" pull --ff-only origin "$repo_ref"
     return
   fi
 
