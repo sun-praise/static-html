@@ -271,6 +271,103 @@ func TestDeleteCommandMissingArg(t *testing.T) {
 	}
 }
 
+func TestSendOnlyIncludesWebAssetsInArchive(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	entryFile := filepath.Join(rootDir, "index.html")
+	cssFile := filepath.Join(rootDir, "style.css")
+	binFile := filepath.Join(rootDir, "program")
+	logFile := filepath.Join(rootDir, "debug.log")
+	hiddenFile := filepath.Join(rootDir, ".hidden")
+	hiddenDir := filepath.Join(rootDir, ".secret")
+	hiddenNested := filepath.Join(hiddenDir, "data.html")
+
+	for _, f := range []struct {
+		path    string
+		content []byte
+		isDir   bool
+	}{
+		{entryFile, []byte("<!doctype html><title>ok</title>"), false},
+		{cssFile, []byte("body{background:#fff}"), false},
+		{binFile, []byte("\x00\x01\x02binary"), false},
+		{logFile, []byte("2024-01-01 log entry"), false},
+		{hiddenFile, []byte("hidden"), false},
+		{hiddenDir, nil, true},
+		{hiddenNested, []byte("secret"), false},
+	} {
+		if f.isDir {
+			if err := os.MkdirAll(f.path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.path, f.content, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reader, err := r.MultipartReader()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		archiveEntries := map[string]string{}
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if part.FormName() == "archive" {
+				archiveBytes, _ := io.ReadAll(part)
+				zr, _ := zip.NewReader(bytes.NewReader(archiveBytes), int64(len(archiveBytes)))
+				for _, f := range zr.File {
+					fr, _ := f.Open()
+					c, _ := io.ReadAll(fr)
+					fr.Close()
+					archiveEntries[f.Name] = string(c)
+				}
+			}
+		}
+
+		if _, ok := archiveEntries["index.html"]; !ok {
+			t.Fatal("archive missing index.html")
+		}
+		if _, ok := archiveEntries["style.css"]; !ok {
+			t.Fatal("archive missing style.css")
+		}
+		if _, ok := archiveEntries["program"]; ok {
+			t.Fatal("archive should not include binary file 'program'")
+		}
+		if _, ok := archiveEntries["debug.log"]; ok {
+			t.Fatal("archive should not include non-web file 'debug.log'")
+		}
+		if _, ok := archiveEntries[".hidden"]; ok {
+			t.Fatal("archive should not include hidden file '.hidden'")
+		}
+		if _, ok := archiveEntries[".secret/data.html"]; ok {
+			t.Fatal("archive should not include files in hidden directories")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": "http://example.test/s/session/"})
+	}))
+	defer srv.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run([]string{"send", entryFile, "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestWriteZIPArchiveSkipsPermissionDenied(t *testing.T) {
 	t.Parallel()
 
