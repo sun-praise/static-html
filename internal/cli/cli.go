@@ -280,6 +280,19 @@ func writeZIPArchive(rootDir string, target io.Writer) error {
 			}
 			return walkErr
 		}
+
+		relativePath, err := filepath.Rel(rootDir, filePath)
+		if err != nil {
+			return err
+		}
+
+		if isHiddenPath(relativePath) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
 		if entry.IsDir() {
 			return nil
 		}
@@ -292,9 +305,8 @@ func writeZIPArchive(rootDir string, target io.Writer) error {
 			return nil
 		}
 
-		relativePath, err := filepath.Rel(rootDir, filePath)
-		if err != nil {
-			return err
+		if !isWebAsset(filePath) {
+			return nil
 		}
 
 		sourceFile, err := os.Open(filePath)
@@ -322,6 +334,31 @@ func writeZIPArchive(rootDir string, target io.Writer) error {
 	}
 
 	return archive.Close()
+}
+
+func isHiddenPath(path string) bool {
+	for _, part := range strings.Split(path, string(filepath.Separator)) {
+		if strings.HasPrefix(part, ".") && part != "." && part != ".." {
+			return true
+		}
+	}
+	return false
+}
+
+func isWebAsset(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".html", ".htm",
+		".css", ".js", ".mjs",
+		".json", ".xml", ".txt",
+		".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".bmp", ".avif",
+		".woff", ".woff2", ".ttf", ".eot", ".otf",
+		".mp3", ".mp4", ".webm", ".ogg", ".wav",
+		".map", ".wasm", ".pdf":
+		return true
+	default:
+		return false
+	}
 }
 
 func ensureLocalFile(filePath string) error {
