@@ -77,7 +77,7 @@ All metadata commands accept `--db /path/to/sessions.db` to override the databas
 
 - `STATIC_HTML_REPO_DIR`: existing checkout to reuse
 - `STATIC_HTML_REPO_REF`: branch or ref to clone/update, default `main`
-- `STATIC_HTML_SKIP_UPDATE=1`: skip fetch/pull when reusing an existing checkout
+- `STATIC_HTML_SKIP_UPDATE`: default `1` (skip fetch/pull). Set to `0` to enable auto-update on each invocation
 - `STATIC_HTML_HOST`: server host, default auto-detected LAN IP (e.g. `192.168.2.14`)
 - `STATIC_HTML_PORT`: default port for `start-server.sh`
 - `STATIC_HTML_SERVER_URL`: default server URL for `send-file.sh`
