@@ -761,6 +761,12 @@ func TestBuildClearURL(t *testing.T) {
 			removeKey: "q",
 			want:      "/?tag=foo#section",
 		},
+		{
+			name:      "fragment only no query params",
+			rawURL:    "/#section",
+			removeKey: "q",
+			want:      "/#section",
+		},
 	}
 
 	for _, tt := range tests {
