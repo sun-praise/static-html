@@ -1164,12 +1164,6 @@ func extractZIPArchive(file multipartFile, destinationDir string) error {
 		return errors.New("archive must be a valid zip file")
 	}
 
-	for _, archivedFile := range reader.File {
-		if archivedFile.FileInfo().IsDir() {
-			continue
-		}
-	}
-
 	if len(reader.File) > maxArchiveFiles {
 		return errors.New("uploaded archive contains too many files")
 	}

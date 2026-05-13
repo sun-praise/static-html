@@ -6,4 +6,5 @@ dist/
 .claude/worktrees
 .worktrees/
 
-.ralph
+.ralph/
+.serena/
