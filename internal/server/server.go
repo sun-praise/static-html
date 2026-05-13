@@ -716,16 +716,21 @@ func toHomePageSessions(docs []session.DocumentInfo) []homePageSession {
 func buildClearURL(u *url.URL, removeKey string) string {
 	q := u.Query()
 	q.Del(removeKey)
-	if len(q) == 0 {
-		return "/"
-	}
-	return "/?" + q.Encode()
+	return (&url.URL{
+		Path:     "/",
+		RawQuery: q.Encode(),
+		Fragment: u.Fragment,
+	}).String()
 }
 
 func buildPageURL(u *url.URL, page int) string {
 	q := u.Query()
 	q.Set("page", fmt.Sprintf("%d", page))
-	return "/?" + q.Encode()
+	return (&url.URL{
+		Path:     "/",
+		RawQuery: q.Encode(),
+		Fragment: u.Fragment,
+	}).String()
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
