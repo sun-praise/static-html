@@ -473,3 +473,25 @@ func readBody(t *testing.T, resp *http.Response) []byte {
 	}
 	return body
 }
+
+func readBodySafe(resp *http.Response) []byte {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return []byte{}
+	}
+	return body
+}
+
+func TestReadBodySafeReturnsEmptyOnError(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(errorReader{}),
+	}
+	got := readBodySafe(resp)
+	if len(got) != 0 {
+		t.Fatalf("expected empty []byte, got %v", got)
+	}
+}
+
+type errorReader struct{}
+
+func (errorReader) Read(_ []byte) (int, error) { return 0, io.ErrUnexpectedEOF }
