@@ -22,6 +22,8 @@ func TestTagCommandAddsTags(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer testStore.Close()
+
 	s2, err := testStore.Create("/tmp/index.html")
 	if err != nil {
 		t.Fatal(err)
