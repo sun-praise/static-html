@@ -498,8 +498,7 @@ func (s *Server) Origins() []string {
 	port := address.Port
 
 	if address.IP.IsUnspecified() {
-		var origins []string
-		origins = append(origins, fmt.Sprintf("http://127.0.0.1:%d", port))
+		origins := []string{fmt.Sprintf("http://127.0.0.1:%d", port)}
 
 		addrs, err := net.InterfaceAddrs()
 		if err == nil {

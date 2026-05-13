@@ -102,7 +102,9 @@ func runStart(args []string, stdout io.Writer) error {
 	}
 
 	origins := srv.Origins()
-	if len(origins) == 1 {
+	if len(origins) == 0 {
+		fmt.Fprintf(stdout, "HTML server listening on %s:%d\n", host, port)
+	} else if len(origins) == 1 {
 		fmt.Fprintf(stdout, "HTML server listening on %s\n", origins[0])
 	} else {
 		fmt.Fprintln(stdout, "HTML server listening on:")
