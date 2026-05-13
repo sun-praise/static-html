@@ -5,7 +5,7 @@
 核心代码：
 - `internal/server/server.go`: `DefaultHost = "127.0.0.1"`，`Origin()` 返回绑定地址
 - `internal/cli/cli.go`: 启动输出 `srv.Origin()`
-- `scripts/start-server.sh`: `STATIC_HTML_HOST` 默认 `127.0.0.1`
+- `skills/static-html-preview/scripts/start-server.sh`: `STATIC_HTML_HOST` 默认 `127.0.0.1`
 
 ## Goals / Non-Goals
 

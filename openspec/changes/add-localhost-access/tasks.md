@@ -10,7 +10,7 @@
 
 ## 3. Script Updates
 
-- [ ] 3.1 更新 `start-server.sh` 默认 host 为 `0.0.0.0`
+- [ ] 3.1 更新 `skills/static-html-preview/scripts/start-server.sh` 默认 host 为 `0.0.0.0`
 
 ## 4. Verification
 

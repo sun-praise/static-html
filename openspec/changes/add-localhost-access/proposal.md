@@ -20,4 +20,4 @@
 
 - `internal/server/server.go`: 修改默认 Host 常量和 `Origin()` 逻辑，新增 `Origins()` 方法
 - `internal/cli/cli.go`: 修改启动输出以展示多个访问地址
-- `scripts/start-server.sh`: 更新默认 host 为 `0.0.0.0`
+- `skills/static-html-preview/scripts/start-server.sh`: 更新默认 host 为 `0.0.0.0`
