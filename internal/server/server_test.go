@@ -767,6 +767,12 @@ func TestBuildClearURL(t *testing.T) {
 			removeKey: "q",
 			want:      "/#section",
 		},
+		{
+			name:      "fragment with special characters encoded safely",
+			rawURL:    "/?q=test#sec%20tion",
+			removeKey: "q",
+			want:      "/#sec%20tion",
+		},
 	}
 
 	for _, tt := range tests {
