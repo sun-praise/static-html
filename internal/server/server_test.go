@@ -715,3 +715,65 @@ func TestDownloadSessionNotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
 }
+
+func TestBuildClearURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		rawURL    string
+		removeKey string
+		want      string
+	}{
+		{
+			name:      "no query no fragment",
+			rawURL:    "/",
+			removeKey: "q",
+			want:      "/",
+		},
+		{
+			name:      "remove only param leaves root",
+			rawURL:    "/?q=test",
+			removeKey: "q",
+			want:      "/",
+		},
+		{
+			name:      "remove one param keeps others",
+			rawURL:    "/?q=test&tag=foo",
+			removeKey: "q",
+			want:      "/?tag=foo",
+		},
+		{
+			name:      "fragment preserved with no remaining params",
+			rawURL:    "/?q=test#section",
+			removeKey: "q",
+			want:      "/#section",
+		},
+		{
+			name:      "fragment preserved with remaining params",
+			rawURL:    "/?q=test&tag=foo#section",
+			removeKey: "q",
+			want:      "/?tag=foo#section",
+		},
+		{
+			name:      "fragment preserved when key not present",
+			rawURL:    "/?tag=foo#section",
+			removeKey: "q",
+			want:      "/?tag=foo#section",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			u, err := url.Parse(tt.rawURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := buildClearURL(u, tt.removeKey)
+			if got != tt.want {
+				t.Errorf("buildClearURL(%q, %q) = %q, want %q", tt.rawURL, tt.removeKey, got, tt.want)
+			}
+		})
+	}
+}

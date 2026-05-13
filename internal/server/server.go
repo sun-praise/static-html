@@ -716,8 +716,15 @@ func toHomePageSessions(docs []session.DocumentInfo) []homePageSession {
 func buildClearURL(u *url.URL, removeKey string) string {
 	q := u.Query()
 	q.Del(removeKey)
+	fragment := u.Fragment
 	if len(q) == 0 {
+		if fragment != "" {
+			return "/#" + fragment
+		}
 		return "/"
+	}
+	if fragment != "" {
+		return "/?" + q.Encode() + "#" + fragment
 	}
 	return "/?" + q.Encode()
 }
