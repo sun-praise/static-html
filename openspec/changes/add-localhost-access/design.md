@@ -29,7 +29,7 @@
 
 ### 2. 网络接口检测
 
-新增 `Origins()` 方法，遍历 `net.Interfaces()` 获取非回环、已启用的接口 IP，与 `127.0.0.1`/`localhost` 一起返回。
+新增 `Origins()` 方法，使用 `net.InterfaceAddrs()` 获取已启用接口 IP，过滤回环地址后与 `127.0.0.1` 一起返回。
 
 返回格式为 `[]string`，如：
 ```
