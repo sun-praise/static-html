@@ -789,3 +789,59 @@ func TestBuildClearURL(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildPageURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		rawURL string
+		page   int
+		want   string
+	}{
+		{
+			name:   "basic page",
+			rawURL: "/",
+			page:   2,
+			want:   "/?page=2",
+		},
+		{
+			name:   "preserves existing params",
+			rawURL: "/?q=test",
+			page:   3,
+			want:   "/?page=3&q=test",
+		},
+		{
+			name:   "preserves fragment",
+			rawURL: "/?q=test#section",
+			page:   2,
+			want:   "/?page=2&q=test#section",
+		},
+		{
+			name:   "fragment only no query",
+			rawURL: "/#section",
+			page:   1,
+			want:   "/?page=1#section",
+		},
+		{
+			name:   "replaces existing page param",
+			rawURL: "/?page=1&q=test",
+			page:   5,
+			want:   "/?page=5&q=test",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			u, err := url.Parse(tt.rawURL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := buildPageURL(u, tt.page)
+			if got != tt.want {
+				t.Errorf("buildPageURL(%q, %d) = %q, want %q", tt.rawURL, tt.page, got, tt.want)
+			}
+		})
+	}
+}
