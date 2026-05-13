@@ -359,7 +359,7 @@ func TestHomePageShowsMetadata(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	body := readBody(resp)
+	body := readBody(t, resp)
 	if !strings.Contains(string(body), "go") {
 		t.Fatalf("expected home page to show 'go' tag, got: %s", string(body))
 	}
@@ -416,7 +416,7 @@ func TestHomePageFilterByTag(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	body := string(readBody(resp))
+	body := string(readBody(t, resp))
 	if !strings.Contains(body, "/s/"+s1.ID+"/") {
 		t.Fatalf("expected filtered page to include session s1, got: %s", body)
 	}
@@ -457,7 +457,7 @@ func TestHomePageSearch(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	body := string(readBody(resp))
+	body := string(readBody(t, resp))
 	if !strings.Contains(body, "/s/"+s1.ID+"/") {
 		t.Fatalf("expected search results to include s1, got: %s", body)
 	}
@@ -467,10 +467,33 @@ func get(url string) (*http.Response, error) {
 	return http.Get(url)
 }
 
-func readBody(resp *http.Response) []byte {
+func readBody(t *testing.T, resp *http.Response) []byte {
+	t.Helper()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil
+		t.Fatalf("failed to read response body: %v", err)
 	}
 	return body
 }
+
+func readBodySafe(resp *http.Response) []byte {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return []byte{}
+	}
+	return body
+}
+
+func TestReadBodySafeReturnsEmptyOnError(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(errorReader{}),
+	}
+	got := readBodySafe(resp)
+	if len(got) != 0 {
+		t.Fatalf("expected empty []byte, got %v", got)
+	}
+}
+
+type errorReader struct{}
+
+func (errorReader) Read(_ []byte) (int, error) { return 0, io.ErrUnexpectedEOF }
