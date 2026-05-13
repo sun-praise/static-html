@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	DefaultHost      = "127.0.0.1"
+	DefaultHost      = "0.0.0.0"
 	DefaultPort      = 3939
 	DefaultServerURL = "http://127.0.0.1:3939"
 	maxUploadBytes   = 64 << 20
@@ -474,7 +474,45 @@ func (s *Server) Origin() string {
 		return ""
 	}
 
-	return fmt.Sprintf("http://%s:%d", address.IP.String(), address.Port)
+	ip := address.IP
+	if ip.IsUnspecified() {
+		ip = net.IPv4(127, 0, 0, 1)
+	}
+
+	return fmt.Sprintf("http://%s:%d", ip.String(), address.Port)
+}
+
+func (s *Server) Origins() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.listener == nil {
+		return nil
+	}
+
+	address, ok := s.listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return nil
+	}
+
+	port := address.Port
+
+	if address.IP.IsUnspecified() {
+		origins := []string{fmt.Sprintf("http://127.0.0.1:%d", port)}
+
+		addrs, err := net.InterfaceAddrs()
+		if err == nil {
+			for _, addr := range addrs {
+				if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+					origins = append(origins, fmt.Sprintf("http://%s:%d", ipNet.IP.String(), port))
+				}
+			}
+		}
+
+		return origins
+	}
+
+	return []string{fmt.Sprintf("http://%s:%d", address.IP.String(), port)}
 }
 
 func (s *Server) routes() http.Handler {

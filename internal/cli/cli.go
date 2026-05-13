@@ -54,7 +54,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
-  sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
+  sth start [--host 0.0.0.0] [--port 3939] [--db /path/to/sessions.db]
   sth send <file.html> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939]
   sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
   sth categorize <session-id> <category> [--db /path/to/sessions.db] [--server http://...]
@@ -101,7 +101,17 @@ func runStart(args []string, stdout io.Writer) error {
 		return errors.Join(err, store.Close())
 	}
 
-	fmt.Fprintf(stdout, "HTML server listening on %s\n", srv.Origin())
+	origins := srv.Origins()
+	if len(origins) == 0 {
+		fmt.Fprintf(stdout, "HTML server listening on %s:%d\n", host, port)
+	} else if len(origins) == 1 {
+		fmt.Fprintf(stdout, "HTML server listening on %s\n", origins[0])
+	} else {
+		fmt.Fprintln(stdout, "HTML server listening on:")
+		for _, o := range origins {
+			fmt.Fprintf(stdout, "  - %s\n", o)
+		}
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
