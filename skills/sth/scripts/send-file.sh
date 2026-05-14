@@ -85,7 +85,10 @@ if command -v realpath >/dev/null 2>&1; then
     exit 1
   }
 else
-  target_file="$(cd "$(dirname "$target_file")" && pwd)/$(basename "$target_file")"
+  target_file="$(cd "$(dirname "$target_file")" 2>/dev/null && pwd)/$(basename "$target_file")" || {
+    echo "Error: cannot resolve path: $original_file" >&2
+    exit 1
+  }
   if [ ! -e "$target_file" ]; then
     echo "Error: file not found or inaccessible: $original_file" >&2
     exit 1
@@ -97,10 +100,10 @@ if [ ! -f "$target_file" ]; then
 fi
 
 tmpdir="$(mktemp -d)"
-cleanup() { rm -rf "$tmpdir"; }
-trap cleanup EXIT SIGINT SIGTERM
+cleanup() { [ -d "$tmpdir" ] && rm -rf "$tmpdir"; }
+trap cleanup EXIT
 
-cp "$target_file" "$tmpdir/"
+cp -- "$target_file" "$tmpdir/"
 filename="$(basename "$target_file")"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
