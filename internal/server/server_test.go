@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,9 +21,40 @@ import (
 func TestNewRequiresStore(t *testing.T) {
 	t.Parallel()
 
-	_, err := New("127.0.0.1", 0, nil)
+	_, err := New("127.0.0.1", 0, nil, "")
 	if err == nil {
 		t.Fatal("expected nil store to be rejected")
+	}
+}
+
+func TestServerNameOverridesOrigin(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store, "192.168.2.14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	origin := srv.Origin()
+	if !strings.HasPrefix(origin, "http://192.168.2.14:") {
+		t.Fatalf("expected origin to use server-name 192.168.2.14, got %q", origin)
+	}
+
+	origins := srv.Origins()
+	if len(origins) != 1 {
+		t.Fatalf("expected exactly 1 origin with server-name, got %d", len(origins))
+	}
+	if !strings.HasPrefix(origins[0], "http://192.168.2.14:") {
+		t.Fatalf("expected origins[0] to use server-name 192.168.2.14, got %q", origins[0])
 	}
 }
 
@@ -36,7 +68,7 @@ func TestCreateSessionAndServeAssets(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +162,7 @@ func TestTraversalIsRejected(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +226,7 @@ func TestCreateUploadedSessionAndServeAssets(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +404,7 @@ func TestDeleteSessionSuccess(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +448,7 @@ func TestDeleteSessionNotFound(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +487,7 @@ func TestSearchByFileContent(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +532,7 @@ func TestSearchNoResults(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +578,7 @@ func TestSearchContentNoDuplicate(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +624,7 @@ func TestDeleteSessionIdempotent(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +666,7 @@ func TestDownloadSession(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,7 +724,7 @@ func TestDownloadSessionNotFound(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}

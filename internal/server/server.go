@@ -32,6 +32,7 @@ const (
 type Server struct {
 	host       string
 	port       int
+	serverName string
 	store      *session.Store
 	httpServer *http.Server
 	listener   net.Listener
@@ -401,7 +402,7 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
   </body>
 </html>`))
 
-func New(host string, port int, store *session.Store) (*Server, error) {
+func New(host string, port int, store *session.Store, serverName string) (*Server, error) {
 	if host == "" {
 		host = DefaultHost
 	}
@@ -411,9 +412,10 @@ func New(host string, port int, store *session.Store) (*Server, error) {
 	}
 
 	srv := &Server{
-		host:  host,
-		port:  port,
-		store: store,
+		host:       host,
+		port:       port,
+		serverName: serverName,
+		store:      store,
 	}
 
 	srv.httpServer = &http.Server{
@@ -475,6 +477,9 @@ func (s *Server) Origin() string {
 	}
 
 	ip := address.IP
+	if s.serverName != "" {
+		return fmt.Sprintf("http://%s:%d", s.serverName, address.Port)
+	}
 	if ip.IsUnspecified() {
 		ip = net.IPv4(127, 0, 0, 1)
 	}
@@ -496,6 +501,10 @@ func (s *Server) Origins() []string {
 	}
 
 	port := address.Port
+
+	if s.serverName != "" {
+		return []string{fmt.Sprintf("http://%s:%d", s.serverName, port)}
+	}
 
 	if address.IP.IsUnspecified() {
 		origins := []string{fmt.Sprintf("http://127.0.0.1:%d", port)}
