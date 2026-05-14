@@ -36,6 +36,8 @@ func isValidServerName(name string) bool {
 	if ip := net.ParseIP(name); ip != nil {
 		return ip.To4() != nil
 	}
+	// Block consecutive dots explicitly; the hostname regex allows '.' in
+	// the character class which would otherwise match inputs like "a..b".
 	if strings.Contains(name, "..") {
 		return false
 	}
@@ -1339,7 +1341,17 @@ func (s *Server) serverBaseURL(r *http.Request) string {
 	defer s.mu.RUnlock()
 
 	if s.serverName != "" {
-		return fmt.Sprintf("http://%s:%d", s.serverName, s.port)
+		port := s.port
+		if s.listener != nil {
+			if addr, ok := s.listener.Addr().(*net.TCPAddr); ok {
+				port = addr.Port
+			}
+		}
+		scheme := "http"
+		if r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil {
+			scheme = "https"
+		}
+		return fmt.Sprintf("%s://%s:%d", scheme, s.serverName, port)
 	}
 
 	return baseURL(r)
