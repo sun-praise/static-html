@@ -115,7 +115,8 @@ if [ ! -f "$target_file" ]; then
   exit 1
 fi
 filename="$(basename "$target_file")"
-if [[ "$filename" != *.html && "$filename" != *.htm ]]; then
+lowername="${filename,,}"
+if [[ "$lowername" != *.html && "$lowername" != *.htm ]]; then
   echo "Error: file must have .html or .htm extension: $filename" >&2
   exit 1
 fi
@@ -126,7 +127,6 @@ cleanup() { [ -d "${tmpdir:-}" ] && rm -rf "$tmpdir"; }
 trap cleanup EXIT
 
 cp -- "$target_file" "$tmpdir/"
-filename="$(basename "$target_file")"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$("$script_dir/bootstrap-repo.sh")"
