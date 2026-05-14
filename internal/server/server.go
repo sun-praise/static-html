@@ -408,8 +408,10 @@ func New(host string, port int, store *session.Store, serverName string) (*Serve
 	}
 
 	if serverName != "" {
-		if strings.ContainsAny(serverName, " /:") || strings.HasPrefix(serverName, "http://") || strings.HasPrefix(serverName, "https://") {
-			return nil, errors.New("server: --server-name must be a plain hostname or IP (no spaces, slashes, colons, or protocol prefix)")
+		// NOTE: this validation rejects IPv6 addresses (which contain colons).
+		// Supporting IPv6 would require bracketed format ([::1]:port) in URLs.
+		if strings.ContainsAny(serverName, " /:") {
+			return nil, errors.New("server: --server-name must be a plain hostname or IPv4 address (no spaces, slashes, colons, or protocol prefix)")
 		}
 	}
 
@@ -511,7 +513,6 @@ func (s *Server) Origins() []string {
 	if s.serverName != "" {
 		return []string{
 			fmt.Sprintf("http://%s:%d", s.serverName, port),
-			fmt.Sprintf("http://127.0.0.1:%d", port),
 		}
 	}
 

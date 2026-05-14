@@ -50,14 +50,11 @@ func TestServerNameOverridesOrigin(t *testing.T) {
 	}
 
 	origins := srv.Origins()
-	if len(origins) != 2 {
-		t.Fatalf("expected 2 origins with server-name (custom + 127.0.0.1), got %d", len(origins))
+	if len(origins) != 1 {
+		t.Fatalf("expected 1 origin with server-name, got %d", len(origins))
 	}
 	if !strings.HasPrefix(origins[0], "http://192.168.2.14:") {
 		t.Fatalf("expected origins[0] to use server-name 192.168.2.14, got %q", origins[0])
-	}
-	if !strings.HasPrefix(origins[1], "http://127.0.0.1:") {
-		t.Fatalf("expected origins[1] to be 127.0.0.1 fallback, got %q", origins[1])
 	}
 }
 
