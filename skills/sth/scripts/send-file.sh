@@ -31,28 +31,32 @@ tag=""
 category=""
 project=""
 
+require_value() {
+  local opt="$1" val="${2:-}"
+  if [ -z "$val" ]; then
+    echo "Error: $opt requires a value" >&2
+    usage
+  fi
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tag)
-      [ -z "${2:-}" ] || [[ "${2:-}" == -* ]] && { echo "Error: --tag requires a value" >&2; usage; }
-      tag="$2"; shift 2 ;;
+      require_value "--tag" "${2:-}"; tag="$2"; shift 2 ;;
     --tag=*)
-      tag="${1#--tag=}"; [ -z "$tag" ] && { echo "Error: --tag requires a value" >&2; usage; }; shift ;;
+      tag="${1#--tag=}"; require_value "--tag" "$tag"; shift ;;
     --category)
-      [ -z "${2:-}" ] || [[ "${2:-}" == -* ]] && { echo "Error: --category requires a value" >&2; usage; }
-      category="$2"; shift 2 ;;
+      require_value "--category" "${2:-}"; category="$2"; shift 2 ;;
     --category=*)
-      category="${1#--category=}"; [ -z "$category" ] && { echo "Error: --category requires a value" >&2; usage; }; shift ;;
+      category="${1#--category=}"; require_value "--category" "$category"; shift ;;
     --project)
-      [ -z "${2:-}" ] || [[ "${2:-}" == -* ]] && { echo "Error: --project requires a value" >&2; usage; }
-      project="$2"; shift 2 ;;
+      require_value "--project" "${2:-}"; project="$2"; shift 2 ;;
     --project=*)
-      project="${1#--project=}"; [ -z "$project" ] && { echo "Error: --project requires a value" >&2; usage; }; shift ;;
+      project="${1#--project=}"; require_value "--project" "$project"; shift ;;
     --server)
-      [ -z "${2:-}" ] || [[ "${2:-}" == -* ]] && { echo "Error: --server requires a value" >&2; usage; }
-      server_url="$2"; shift 2 ;;
+      require_value "--server" "${2:-}"; server_url="$2"; shift 2 ;;
     --server=*)
-      server_url="${1#--server=}"; [ -z "$server_url" ] && { echo "Error: --server requires a value" >&2; usage; }; shift ;;
+      server_url="${1#--server=}"; require_value "--server" "$server_url"; shift ;;
     -*)
       echo "Unknown option: $1" >&2; usage ;;
     *)
@@ -105,10 +109,11 @@ elif command -v readlink >/dev/null 2>&1; then
 else
   # Best-effort path resolution via cd+pwd; correctness is guaranteed by the -f check below.
   _base="$(basename "$target_file")"
-  target_file="$(cd "$(dirname "$target_file")" 2>/dev/null && pwd)/$_base" || {
+  _dir="$(cd "$(dirname "$target_file")" 2>/dev/null && pwd)" || {
     echo "Error: cannot resolve path: $original_file" >&2
     exit 1
   }
+  target_file="$_dir/$_base"
   if [ ! -e "$target_file" ]; then
     echo "Error: file not found or inaccessible: $original_file" >&2
     exit 1
