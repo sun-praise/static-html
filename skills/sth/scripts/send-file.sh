@@ -18,6 +18,8 @@ EOF
   exit 1
 }
 
+trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
+
 if [ "$#" -lt 1 ]; then
   usage
 fi
@@ -71,7 +73,6 @@ if [[ ! "$server_url" =~ ^https?:// ]]; then
   exit 1
 fi
 
-trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
 tag="$(trim "$tag")"
 category="$(trim "$category")"
 project="$(trim "$project")"
@@ -101,7 +102,8 @@ elif command -v readlink >/dev/null 2>&1; then
     exit 1
   }
 else
-  target_file="$(cd "$(dirname "$target_file")" 2>/dev/null && pwd)/$(basename "$target_file")" || {
+  _base="$(basename "$target_file")"
+  target_file="$(cd "$(dirname "$target_file")" 2>/dev/null && pwd)/$_base" || {
     echo "Error: cannot resolve path: $original_file" >&2
     exit 1
   }
@@ -115,7 +117,7 @@ if [ ! -f "$target_file" ]; then
   exit 1
 fi
 filename="$(basename "$target_file")"
-lowername="${filename,,}"
+lowername="$(echo "$filename" | tr '[:upper:]' '[:lower:]')"
 if [[ "$lowername" != *.html && "$lowername" != *.htm ]]; then
   echo "Error: file must have .html or .htm extension: $filename" >&2
   exit 1
