@@ -78,7 +78,12 @@ if [ -z "$project" ]; then
   usage
 fi
 
-target_file="$(cd "$(dirname "$target_file")" && pwd)/$(basename "$target_file")"
+dir="$(dirname "$target_file")"
+if [ ! -d "$dir" ]; then
+  echo "Error: directory not found: $dir" >&2
+  exit 1
+fi
+target_file="$(cd "$dir" && pwd)/$(basename "$target_file")"
 if [ ! -f "$target_file" ]; then
   echo "Error: file not found: $target_file" >&2
   exit 1
@@ -95,6 +100,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$("$script_dir/bootstrap-repo.sh")"
 
 cd "$repo_dir"
+# Do NOT use exec here; the shell must remain alive so the EXIT trap can clean up $tmpdir.
 "$repo_dir/dist/sth" send "$tmpdir/$filename" \
   --server "$server_url" \
   --tag "$tag" \
