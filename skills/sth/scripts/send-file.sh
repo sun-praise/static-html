@@ -84,6 +84,11 @@ if command -v realpath >/dev/null 2>&1; then
     echo "Error: file not found or inaccessible: $original_file" >&2
     exit 1
   }
+elif command -v readlink >/dev/null 2>&1; then
+  target_file="$(readlink -f -- "$target_file" 2>/dev/null)" || {
+    echo "Error: file not found or inaccessible: $original_file" >&2
+    exit 1
+  }
 else
   target_file="$(cd "$(dirname "$target_file")" 2>/dev/null && pwd)/$(basename "$target_file")" || {
     echo "Error: cannot resolve path: $original_file" >&2
@@ -99,7 +104,6 @@ if [ ! -f "$target_file" ]; then
   exit 1
 fi
 
-tmpdir=""
 tmpdir="$(mktemp -d)"
 cleanup() { [ -d "${tmpdir:-}" ] && rm -rf "$tmpdir"; }
 trap cleanup EXIT
