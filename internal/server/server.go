@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -28,6 +29,15 @@ const (
 	maxUploadBytes   = 64 << 20
 	maxArchiveFiles  = 2048
 )
+
+var hostnamePattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9.\-]*[a-zA-Z0-9])?$`)
+
+func isValidServerName(name string) bool {
+	if net.ParseIP(name) != nil {
+		return true
+	}
+	return hostnamePattern.MatchString(name)
+}
 
 type Server struct {
 	host       string
@@ -408,10 +418,8 @@ func New(host string, port int, store *session.Store, serverName string) (*Serve
 	}
 
 	if serverName != "" {
-		// NOTE: this validation rejects IPv6 addresses (which contain colons).
-		// Supporting IPv6 would require bracketed format ([::1]:port) in URLs.
-		if strings.ContainsAny(serverName, " /:") {
-			return nil, errors.New("server: --server-name must be a plain hostname or IPv4 address (no spaces, slashes, colons, or protocol prefix)")
+		if !isValidServerName(serverName) {
+			return nil, errors.New("server: --server-name must be a valid IPv4 address or hostname (letters, digits, dots, hyphens)")
 		}
 	}
 
@@ -484,6 +492,7 @@ func (s *Server) Origin() string {
 		return ""
 	}
 
+	// NOTE: scheme is hardcoded to http, consistent with the rest of the codebase.
 	ip := address.IP
 	if s.serverName != "" {
 		return fmt.Sprintf("http://%s:%d", s.serverName, address.Port)

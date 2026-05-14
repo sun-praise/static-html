@@ -115,10 +115,45 @@ func TestServerNameValidation(t *testing.T) {
 		"has:colon",
 		"http://host",
 		"https://host",
+		"host@evil",
+		"host#fragment",
+		"host?query=1",
+		"host%20name",
+		"host\nnewline",
+		"host\rtab",
+		"host\ttab",
+		"..",
+		".start",
+		"end.",
+		"-hyphen",
+		"hyphen-",
 	} {
 		_, err := New("127.0.0.1", 0, store, invalid)
 		if err == nil {
 			t.Errorf("expected serverName %q to be rejected", invalid)
+		}
+	}
+}
+
+func TestServerNameValidationAcceptsValid(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+
+	for _, valid := range []string{
+		"192.168.2.14",
+		"myhost.local",
+		"sub.domain.example.com",
+		"host-with-dashes.local",
+		"a",
+		"localhost",
+		"10.0.0.1",
+		"255.255.255.255",
+		"host123",
+	} {
+		_, err := New("127.0.0.1", 0, store, valid)
+		if err != nil {
+			t.Errorf("expected serverName %q to be accepted, got error: %v", valid, err)
 		}
 	}
 }
