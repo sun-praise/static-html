@@ -71,6 +71,11 @@ func runStart(args []string, stdout io.Writer) error {
 	}
 
 	bindAddr := server.DefaultHost
+	_, hasHost := flags["host"]
+	_, hasBind := flags["bind"]
+	if hasHost && hasBind {
+		fmt.Fprintln(os.Stderr, "warning: both --host and --bind specified; --host takes precedence")
+	}
 	if value, ok := flags["host"]; ok {
 		bindAddr = value
 	} else if value, ok := flags["bind"]; ok {

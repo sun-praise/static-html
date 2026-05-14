@@ -30,16 +30,15 @@ const (
 	maxArchiveFiles  = 2048
 )
 
-var hostnamePattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9.\-]*[a-zA-Z0-9])?$`)
+// hostnamePattern matches valid hostnames with dot-separated labels.
+// Each label starts and ends with [a-zA-Z0-9]; inner characters allow hyphens.
+// Consecutive dots are inherently rejected because each label requires
+// at least one alphanumeric character between dots.
+var hostnamePattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*$`)
 
 func isValidServerName(name string) bool {
 	if ip := net.ParseIP(name); ip != nil {
 		return ip.To4() != nil
-	}
-	// Block consecutive dots explicitly; the hostname regex allows '.' in
-	// the character class which would otherwise match inputs like "a..b".
-	if strings.Contains(name, "..") {
-		return false
 	}
 	return hostnamePattern.MatchString(name)
 }
@@ -1327,13 +1326,15 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
-func baseURL(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
+func determineScheme(r *http.Request) string {
+	if r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil {
+		return "https"
 	}
+	return "http"
+}
 
-	return scheme + "://" + r.Host
+func baseURL(r *http.Request) string {
+	return determineScheme(r) + "://" + r.Host
 }
 
 func (s *Server) serverBaseURL(r *http.Request) string {
@@ -1347,9 +1348,9 @@ func (s *Server) serverBaseURL(r *http.Request) string {
 				port = addr.Port
 			}
 		}
-		scheme := "http"
-		if r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil {
-			scheme = "https"
+		scheme := determineScheme(r)
+		if (scheme == "http" && port == 80) || (scheme == "https" && port == 443) {
+			return fmt.Sprintf("%s://%s", scheme, s.serverName)
 		}
 		return fmt.Sprintf("%s://%s:%d", scheme, s.serverName, port)
 	}

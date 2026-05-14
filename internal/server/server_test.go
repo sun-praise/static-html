@@ -226,6 +226,79 @@ func TestServerNameValidationAcceptsValid(t *testing.T) {
 	}
 }
 
+
+func TestServerBaseURLDefaultPort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		serverName string
+		port       int
+		scheme     string
+		want       string
+	}{
+		{"http port 80 omits port", "example.com", 80, "http", "http://example.com"},
+		{"https port 443 omits port", "example.com", 443, "https", "https://example.com"},
+		{"http port 8080 includes port", "example.com", 8080, "http", "http://example.com:8080"},
+		{"https port 8443 includes port", "example.com", 8443, "https", "https://example.com:8443"},
+		{"http port 3939 includes port", "192.168.2.14", 3939, "http", "http://192.168.2.14:3939"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(t)
+			srv, err := New("127.0.0.1", tt.port, store, tt.serverName)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			r := &http.Request{TLS: nil, Header: http.Header{}}
+			if tt.scheme == "https" {
+				r.Header.Set("X-Forwarded-Proto", "https")
+			}
+
+			got := srv.serverBaseURL(r)
+			if got != tt.want {
+				t.Errorf("serverBaseURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServerBaseURLFallback(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 3939, store, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &http.Request{TLS: nil, Host: "127.0.0.1:3939", Header: http.Header{}}
+	got := srv.serverBaseURL(r)
+	if got != "http://127.0.0.1:3939" {
+		t.Errorf("serverBaseURL() fallback = %q, want http://127.0.0.1:3939", got)
+	}
+}
+
+func TestServerBaseURLForwardedProto(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 443, store, "secure.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &http.Request{TLS: nil, Host: "secure.example.com", Header: http.Header{}}
+	r.Header.Set("X-Forwarded-Proto", "https")
+
+	got := srv.serverBaseURL(r)
+	if got != "https://secure.example.com" {
+		t.Errorf("serverBaseURL() with X-Forwarded-Proto = %q, want https://secure.example.com", got)
+	}
+}
+
 func TestCreateSessionAndServeAssets(t *testing.T) {
 	t.Parallel()
 
