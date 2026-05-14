@@ -65,6 +65,17 @@ if [ -z "$target_file" ]; then
   echo "Error: <file.html> is required" >&2
   usage
 fi
+
+if [[ ! "$server_url" =~ ^https?:// ]]; then
+  echo "Error: server URL must start with http:// or https://" >&2
+  exit 1
+fi
+
+trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
+tag="$(trim "$tag")"
+category="$(trim "$category")"
+project="$(trim "$project")"
+
 if [ -z "$tag" ]; then
   echo "Error: --tag is required" >&2
   usage
@@ -77,16 +88,6 @@ if [ -z "$project" ]; then
   echo "Error: --project is required" >&2
   usage
 fi
-
-if [[ ! "$server_url" =~ ^https?:// ]]; then
-  echo "Error: server URL must start with http:// or https://" >&2
-  exit 1
-fi
-
-trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
-tag="$(trim "$tag")"
-category="$(trim "$category")"
-project="$(trim "$project")"
 
 original_file="$target_file"
 if command -v realpath >/dev/null 2>&1; then
@@ -111,6 +112,11 @@ else
 fi
 if [ ! -f "$target_file" ]; then
   echo "Error: file not found: $target_file" >&2
+  exit 1
+fi
+filename="$(basename "$target_file")"
+if [[ "$filename" != *.html && "$filename" != *.htm ]]; then
+  echo "Error: file must have .html or .htm extension: $filename" >&2
   exit 1
 fi
 
