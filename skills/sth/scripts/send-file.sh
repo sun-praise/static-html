@@ -64,6 +64,8 @@ while [ "$#" -gt 0 ]; do
       server_url="$(trim "$2")"; shift 2 ;;
     --server=*)
       server_url="$(trim "${1#--server=}")"; [ -z "$server_url" ] && { echo "Error: --server requires a value" >&2; usage; }; shift ;;
+    --)
+      shift; break ;;
     -*)
       echo "Unknown option: $1" >&2; usage ;;
     *)
