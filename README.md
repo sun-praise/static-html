@@ -130,16 +130,19 @@ Checklist:
 
 If the client is stale, replace it and retry; old clients can still send legacy `entryFile` metadata and trigger cross-host path errors even if the server is updated.
 
-## Codex Skill
+## Agent Skill
 
-This repo also ships an installable Codex skill at `skills/static-html-preview`.
+This repo ships an agent skill at `skills/sth` that teaches coding agents (Claude Code, Codex, Cursor, etc.) how to use `sth`.
 
-Install it from GitHub with the local installer helper:
+Install it with [npx skills](https://github.com/vercel-labs/skills):
 
 ```bash
-~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
-  --repo sun-praise/static-html \
-  --path skills/static-html-preview
-```
+# Install to current project
+npx skills add sun-praise/static-html
 
-After installing the skill, restart Codex to pick it up.
+# Install globally
+npx skills add sun-praise/static-html -g
+
+# Install to specific agents
+npx skills add sun-praise/static-html -a claude-code -a cursor
+```
