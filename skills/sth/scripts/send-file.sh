@@ -18,6 +18,7 @@ EOF
   exit 1
 }
 
+# Remove leading and trailing whitespace from a string
 trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
 
 if [ "$#" -lt 1 ]; then
@@ -33,22 +34,22 @@ project=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tag)
-      [ -z "${2:-}" ] && { echo "Error: --tag requires a value" >&2; usage; }
+      [ -z "${2:-}" ] || [[ "${2:-}" == -* ]] && { echo "Error: --tag requires a value" >&2; usage; }
       tag="$2"; shift 2 ;;
     --tag=*)
       tag="${1#--tag=}"; [ -z "$tag" ] && { echo "Error: --tag requires a value" >&2; usage; }; shift ;;
     --category)
-      [ -z "${2:-}" ] && { echo "Error: --category requires a value" >&2; usage; }
+      [ -z "${2:-}" ] || [[ "${2:-}" == -* ]] && { echo "Error: --category requires a value" >&2; usage; }
       category="$2"; shift 2 ;;
     --category=*)
       category="${1#--category=}"; [ -z "$category" ] && { echo "Error: --category requires a value" >&2; usage; }; shift ;;
     --project)
-      [ -z "${2:-}" ] && { echo "Error: --project requires a value" >&2; usage; }
+      [ -z "${2:-}" ] || [[ "${2:-}" == -* ]] && { echo "Error: --project requires a value" >&2; usage; }
       project="$2"; shift 2 ;;
     --project=*)
       project="${1#--project=}"; [ -z "$project" ] && { echo "Error: --project requires a value" >&2; usage; }; shift ;;
     --server)
-      [ -z "${2:-}" ] && { echo "Error: --server requires a value" >&2; usage; }
+      [ -z "${2:-}" ] || [[ "${2:-}" == -* ]] && { echo "Error: --server requires a value" >&2; usage; }
       server_url="$2"; shift 2 ;;
     --server=*)
       server_url="${1#--server=}"; [ -z "$server_url" ] && { echo "Error: --server requires a value" >&2; usage; }; shift ;;
@@ -102,6 +103,7 @@ elif command -v readlink >/dev/null 2>&1; then
     exit 1
   }
 else
+  # Best-effort path resolution via cd+pwd; correctness is guaranteed by the -f check below.
   _base="$(basename "$target_file")"
   target_file="$(cd "$(dirname "$target_file")" 2>/dev/null && pwd)/$_base" || {
     echo "Error: cannot resolve path: $original_file" >&2
