@@ -99,8 +99,9 @@ if [ ! -f "$target_file" ]; then
   exit 1
 fi
 
+tmpdir=""
 tmpdir="$(mktemp -d)"
-cleanup() { [ -d "$tmpdir" ] && rm -rf "$tmpdir"; }
+cleanup() { [ -d "${tmpdir:-}" ] && rm -rf "$tmpdir"; }
 trap cleanup EXIT
 
 cp -- "$target_file" "$tmpdir/"
