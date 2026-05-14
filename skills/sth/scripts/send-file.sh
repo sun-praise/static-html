@@ -78,6 +78,16 @@ if [ -z "$project" ]; then
   usage
 fi
 
+if [[ ! "$server_url" =~ ^https?:// ]]; then
+  echo "Error: server URL must start with http:// or https://" >&2
+  exit 1
+fi
+
+trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"; printf '%s' "$v"; }
+tag="$(trim "$tag")"
+category="$(trim "$category")"
+project="$(trim "$project")"
+
 original_file="$target_file"
 if command -v realpath >/dev/null 2>&1; then
   target_file="$(realpath -- "$target_file" 2>/dev/null)" || {
@@ -105,6 +115,7 @@ if [ ! -f "$target_file" ]; then
 fi
 
 tmpdir="$(mktemp -d)"
+chmod 700 "$tmpdir"
 cleanup() { [ -d "${tmpdir:-}" ] && rm -rf "$tmpdir"; }
 trap cleanup EXIT
 
