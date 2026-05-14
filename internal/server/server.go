@@ -33,8 +33,8 @@ const (
 var hostnamePattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9.\-]*[a-zA-Z0-9])?$`)
 
 func isValidServerName(name string) bool {
-	if net.ParseIP(name) != nil {
-		return true
+	if ip := net.ParseIP(name); ip != nil {
+		return ip.To4() != nil
 	}
 	return hostnamePattern.MatchString(name)
 }
@@ -493,10 +493,10 @@ func (s *Server) Origin() string {
 	}
 
 	// NOTE: scheme is hardcoded to http, consistent with the rest of the codebase.
-	ip := address.IP
 	if s.serverName != "" {
 		return fmt.Sprintf("http://%s:%d", s.serverName, address.Port)
 	}
+	ip := address.IP
 	if ip.IsUnspecified() {
 		ip = net.IPv4(127, 0, 0, 1)
 	}

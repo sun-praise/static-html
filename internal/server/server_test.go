@@ -127,6 +127,9 @@ func TestServerNameValidation(t *testing.T) {
 		"end.",
 		"-hyphen",
 		"hyphen-",
+		"2001:db8::1",
+		"::1",
+		"fe80::1%eth0",
 	} {
 		_, err := New("127.0.0.1", 0, store, invalid)
 		if err == nil {
