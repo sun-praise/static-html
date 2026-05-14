@@ -1326,6 +1326,9 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+// determineScheme returns the URL scheme for the request.
+// It trusts the X-Forwarded-Proto header, so the server must
+// run behind a trusted reverse proxy when relying on this logic.
 func determineScheme(r *http.Request) string {
 	if r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil {
 		return "https"

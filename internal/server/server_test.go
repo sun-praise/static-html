@@ -175,7 +175,10 @@ func TestServerNameUsedInSessionURL(t *testing.T) {
 	}
 
 	srv.mu.RLock()
-	actualAddr := srv.listener.Addr().(*net.TCPAddr)
+	actualAddr, ok := srv.listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener address is not TCP: %T", srv.listener.Addr())
+	}
 	srv.mu.RUnlock()
 	actualURL := fmt.Sprintf("http://127.0.0.1:%d", actualAddr.Port)
 

@@ -74,7 +74,7 @@ func runStart(args []string, stdout io.Writer) error {
 	_, hasHost := flags["host"]
 	_, hasBind := flags["bind"]
 	if hasHost && hasBind {
-		fmt.Fprintln(os.Stderr, "warning: both --host and --bind specified; --host takes precedence")
+		fmt.Fprintln(os.Stderr, "warning: --host is deprecated, use --bind instead; --host takes precedence")
 	}
 	if value, ok := flags["host"]; ok {
 		bindAddr = value
