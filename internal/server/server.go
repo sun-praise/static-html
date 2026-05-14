@@ -36,6 +36,9 @@ func isValidServerName(name string) bool {
 	if ip := net.ParseIP(name); ip != nil {
 		return ip.To4() != nil
 	}
+	if strings.Contains(name, "..") {
+		return false
+	}
 	return hostnamePattern.MatchString(name)
 }
 
@@ -835,10 +838,10 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	baseURL := baseURL(r)
+	base := s.serverBaseURL(r)
 	response := createSessionResponse{
 		SessionID: session.ID,
-		URL:       baseURL + "/s/" + session.ID + "/",
+		URL:       base + "/s/" + session.ID + "/",
 		EntryFile: session.EntryFile,
 		RootDir:   session.RootDir,
 	}
@@ -955,10 +958,10 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	baseURL := baseURL(r)
+	base := s.serverBaseURL(r)
 	response := createSessionResponse{
 		SessionID: session.ID,
-		URL:       baseURL + "/s/" + session.ID + "/",
+		URL:       base + "/s/" + session.ID + "/",
 		EntryFile: session.EntryFile,
 		RootDir:   session.RootDir,
 	}
@@ -1329,6 +1332,17 @@ func baseURL(r *http.Request) string {
 	}
 
 	return scheme + "://" + r.Host
+}
+
+func (s *Server) serverBaseURL(r *http.Request) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.serverName != "" {
+		return fmt.Sprintf("http://%s:%d", s.serverName, s.port)
+	}
+
+	return baseURL(r)
 }
 
 func hasPrefixSuffix(path, prefix, suffix string) bool {

@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -130,11 +132,74 @@ func TestServerNameValidation(t *testing.T) {
 		"2001:db8::1",
 		"::1",
 		"fe80::1%eth0",
+		"a..b",
+		"host..domain.com",
 	} {
 		_, err := New("127.0.0.1", 0, store, invalid)
 		if err == nil {
 			t.Errorf("expected serverName %q to be rejected", invalid)
 		}
+	}
+}
+
+func TestServerNameUsedInSessionURL(t *testing.T) {
+	t.Parallel()
+
+	fixtureHTML, err := filepath.Abs(filepath.Join("..", "..", "fixtures", "basic", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store, "192.168.2.14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	body, err := json.Marshal(map[string]any{
+		"filePath": fixtureHTML,
+		"tags":     []string{"test"},
+		"category": "test",
+		"project":  "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.mu.RLock()
+	actualAddr := srv.listener.Addr().(*net.TCPAddr)
+	srv.mu.RUnlock()
+	actualURL := fmt.Sprintf("http://127.0.0.1:%d", actualAddr.Port)
+
+	createResp, err := http.Post(actualURL+"/api/sessions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+
+	if createResp.StatusCode != http.StatusCreated {
+		respBody, _ := io.ReadAll(createResp.Body)
+		t.Fatalf("unexpected status: %d body=%s", createResp.StatusCode, respBody)
+	}
+
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+
+	expectedPrefix := "http://192.168.2.14:"
+	if !strings.HasPrefix(payload.URL, expectedPrefix) {
+		t.Fatalf("expected session URL to use serverName, got %q", payload.URL)
 	}
 }
 

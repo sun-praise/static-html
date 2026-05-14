@@ -73,6 +73,8 @@ func runStart(args []string, stdout io.Writer) error {
 	host := server.DefaultHost
 	if value, ok := flags["host"]; ok {
 		host = value
+	} else if value, ok := flags["bind"]; ok {
+		host = value
 	}
 
 	port := server.DefaultPort
