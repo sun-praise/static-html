@@ -31,32 +31,24 @@ tag=""
 category=""
 project=""
 
-require_value() {
-  local opt="$1" val="${2:-}"
-  if [ -z "$val" ]; then
-    echo "Error: $opt requires a value" >&2
-    usage
-  fi
-}
-
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tag)
-      require_value "--tag" "${2:-}"; tag="$2"; shift 2 ;;
+      [ -z "${2:-}" ] && { echo "Error: --tag requires a value" >&2; usage; }; tag="$(trim "$2")"; shift 2 ;;
     --tag=*)
-      tag="${1#--tag=}"; require_value "--tag" "$tag"; shift ;;
+      tag="$(trim "${1#--tag=}")"; [ -z "$tag" ] && { echo "Error: --tag requires a value" >&2; usage; }; shift ;;
     --category)
-      require_value "--category" "${2:-}"; category="$2"; shift 2 ;;
+      [ -z "${2:-}" ] && { echo "Error: --category requires a value" >&2; usage; }; category="$(trim "$2")"; shift 2 ;;
     --category=*)
-      category="${1#--category=}"; require_value "--category" "$category"; shift ;;
+      category="$(trim "${1#--category=}")"; [ -z "$category" ] && { echo "Error: --category requires a value" >&2; usage; }; shift ;;
     --project)
-      require_value "--project" "${2:-}"; project="$2"; shift 2 ;;
+      [ -z "${2:-}" ] && { echo "Error: --project requires a value" >&2; usage; }; project="$(trim "$2")"; shift 2 ;;
     --project=*)
-      project="${1#--project=}"; require_value "--project" "$project"; shift ;;
+      project="$(trim "${1#--project=}")"; [ -z "$project" ] && { echo "Error: --project requires a value" >&2; usage; }; shift ;;
     --server)
-      require_value "--server" "${2:-}"; server_url="$2"; shift 2 ;;
+      [ -z "${2:-}" ] && { echo "Error: --server requires a value" >&2; usage; }; server_url="$(trim "$2")"; shift 2 ;;
     --server=*)
-      server_url="${1#--server=}"; require_value "--server" "$server_url"; shift ;;
+      server_url="$(trim "${1#--server=}")"; [ -z "$server_url" ] && { echo "Error: --server requires a value" >&2; usage; }; shift ;;
     -*)
       echo "Unknown option: $1" >&2; usage ;;
     *)
@@ -77,10 +69,6 @@ if [[ ! "$server_url" =~ ^https?:// ]]; then
   echo "Error: server URL must start with http:// or https://" >&2
   exit 1
 fi
-
-tag="$(trim "$tag")"
-category="$(trim "$category")"
-project="$(trim "$project")"
 
 if [ -z "$tag" ]; then
   echo "Error: --tag is required" >&2
