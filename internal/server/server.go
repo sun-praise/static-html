@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -29,9 +30,23 @@ const (
 	maxArchiveFiles  = 2048
 )
 
+// hostnamePattern matches valid hostnames with dot-separated labels.
+// Each label starts and ends with [a-zA-Z0-9]; inner characters allow hyphens.
+// Consecutive dots are inherently rejected because each label requires
+// at least one alphanumeric character between dots.
+var hostnamePattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*$`)
+
+func isValidServerName(name string) bool {
+	if ip := net.ParseIP(name); ip != nil {
+		return ip.To4() != nil
+	}
+	return hostnamePattern.MatchString(name)
+}
+
 type Server struct {
 	host       string
 	port       int
+	serverName string
 	store      *session.Store
 	httpServer *http.Server
 	listener   net.Listener
@@ -401,9 +416,15 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
   </body>
 </html>`))
 
-func New(host string, port int, store *session.Store) (*Server, error) {
+func New(host string, port int, store *session.Store, serverName string) (*Server, error) {
 	if host == "" {
 		host = DefaultHost
+	}
+
+	if serverName != "" {
+		if !isValidServerName(serverName) {
+			return nil, errors.New("server: --server-name must be a valid IPv4 address or hostname (letters, digits, dots, hyphens)")
+		}
 	}
 
 	if store == nil {
@@ -411,9 +432,10 @@ func New(host string, port int, store *session.Store) (*Server, error) {
 	}
 
 	srv := &Server{
-		host:  host,
-		port:  port,
-		store: store,
+		host:       host,
+		port:       port,
+		serverName: serverName,
+		store:      store,
 	}
 
 	srv.httpServer = &http.Server{
@@ -474,6 +496,10 @@ func (s *Server) Origin() string {
 		return ""
 	}
 
+	// NOTE: scheme is hardcoded to http, consistent with the rest of the codebase.
+	if s.serverName != "" {
+		return fmt.Sprintf("http://%s:%d", s.serverName, address.Port)
+	}
 	ip := address.IP
 	if ip.IsUnspecified() {
 		ip = net.IPv4(127, 0, 0, 1)
@@ -496,6 +522,12 @@ func (s *Server) Origins() []string {
 	}
 
 	port := address.Port
+
+	if s.serverName != "" {
+		return []string{
+			fmt.Sprintf("http://%s:%d", s.serverName, port),
+		}
+	}
 
 	if address.IP.IsUnspecified() {
 		origins := []string{fmt.Sprintf("http://127.0.0.1:%d", port)}
@@ -807,10 +839,10 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	baseURL := baseURL(r)
+	base := s.serverBaseURL(r)
 	response := createSessionResponse{
 		SessionID: session.ID,
-		URL:       baseURL + "/s/" + session.ID + "/",
+		URL:       base + "/s/" + session.ID + "/",
 		EntryFile: session.EntryFile,
 		RootDir:   session.RootDir,
 	}
@@ -927,10 +959,10 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	baseURL := baseURL(r)
+	base := s.serverBaseURL(r)
 	response := createSessionResponse{
 		SessionID: session.ID,
-		URL:       baseURL + "/s/" + session.ID + "/",
+		URL:       base + "/s/" + session.ID + "/",
 		EntryFile: session.EntryFile,
 		RootDir:   session.RootDir,
 	}
@@ -1294,13 +1326,39 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+// determineScheme returns the URL scheme for the request.
+// It trusts the X-Forwarded-Proto header, so the server must
+// run behind a trusted reverse proxy when relying on this logic.
+func determineScheme(r *http.Request) string {
+	if r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
 func baseURL(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
+	return determineScheme(r) + "://" + r.Host
+}
+
+func (s *Server) serverBaseURL(r *http.Request) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.serverName != "" {
+		port := s.port
+		if s.listener != nil {
+			if addr, ok := s.listener.Addr().(*net.TCPAddr); ok {
+				port = addr.Port
+			}
+		}
+		scheme := determineScheme(r)
+		if (scheme == "http" && port == 80) || (scheme == "https" && port == 443) {
+			return fmt.Sprintf("%s://%s", scheme, s.serverName)
+		}
+		return fmt.Sprintf("%s://%s:%d", scheme, s.serverName, port)
 	}
 
-	return scheme + "://" + r.Host
+	return baseURL(r)
 }
 
 func hasPrefixSuffix(path, prefix, suffix string) bool {

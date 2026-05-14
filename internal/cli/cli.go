@@ -54,7 +54,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
-  sth start [--host 0.0.0.0] [--port 3939] [--db /path/to/sessions.db]
+  sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--db /path/to/sessions.db]
   sth send <file.html> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939]
   sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
   sth categorize <session-id> <category> [--db /path/to/sessions.db] [--server http://...]
@@ -70,9 +70,16 @@ func runStart(args []string, stdout io.Writer) error {
 		return err
 	}
 
-	host := server.DefaultHost
+	bindAddr := server.DefaultHost
+	_, hasHost := flags["host"]
+	_, hasBind := flags["bind"]
+	if hasHost && hasBind {
+		fmt.Fprintln(os.Stderr, "warning: --host is deprecated, use --bind instead; --host takes precedence")
+	}
 	if value, ok := flags["host"]; ok {
-		host = value
+		bindAddr = value
+	} else if value, ok := flags["bind"]; ok {
+		bindAddr = value
 	}
 
 	port := server.DefaultPort
@@ -87,12 +94,17 @@ func runStart(args []string, stdout io.Writer) error {
 		return errors.New("port must be a positive integer")
 	}
 
+	var serverName string
+	if value, ok := flags["server-name"]; ok {
+		serverName = value
+	}
+
 	store, err := openStore(flags)
 	if err != nil {
 		return err
 	}
 
-	srv, err := server.New(host, port, store)
+	srv, err := server.New(bindAddr, port, store, serverName)
 	if err != nil {
 		return errors.Join(err, store.Close())
 	}
@@ -103,7 +115,7 @@ func runStart(args []string, stdout io.Writer) error {
 
 	origins := srv.Origins()
 	if len(origins) == 0 {
-		fmt.Fprintf(stdout, "HTML server listening on %s:%d\n", host, port)
+		fmt.Fprintf(stdout, "HTML server listening on %s:%d\n", bindAddr, port)
 	} else if len(origins) == 1 {
 		fmt.Fprintf(stdout, "HTML server listening on %s\n", origins[0])
 	} else {

@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,9 +23,282 @@ import (
 func TestNewRequiresStore(t *testing.T) {
 	t.Parallel()
 
-	_, err := New("127.0.0.1", 0, nil)
+	_, err := New("127.0.0.1", 0, nil, "")
 	if err == nil {
 		t.Fatal("expected nil store to be rejected")
+	}
+}
+
+func TestServerNameOverridesOrigin(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store, "192.168.2.14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	origin := srv.Origin()
+	if !strings.HasPrefix(origin, "http://192.168.2.14:") {
+		t.Fatalf("expected origin to use server-name 192.168.2.14, got %q", origin)
+	}
+
+	origins := srv.Origins()
+	if len(origins) != 1 {
+		t.Fatalf("expected 1 origin with server-name, got %d", len(origins))
+	}
+	if !strings.HasPrefix(origins[0], "http://192.168.2.14:") {
+		t.Fatalf("expected origins[0] to use server-name 192.168.2.14, got %q", origins[0])
+	}
+}
+
+func TestServerNameDomain(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store, "myhost.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	origin := srv.Origin()
+	if !strings.HasPrefix(origin, "http://myhost.local:") {
+		t.Fatalf("expected origin to use server-name myhost.local, got %q", origin)
+	}
+}
+
+func TestServerNameEmptyFallsBack(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	origin := srv.Origin()
+	if !strings.HasPrefix(origin, "http://127.0.0.1:") {
+		t.Fatalf("expected origin to default to 127.0.0.1, got %q", origin)
+	}
+}
+
+func TestServerNameValidation(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+
+	for _, invalid := range []string{
+		"has space",
+		"has/slash",
+		"has:colon",
+		"http://host",
+		"https://host",
+		"host@evil",
+		"host#fragment",
+		"host?query=1",
+		"host%20name",
+		"host\nnewline",
+		"host\rtab",
+		"host\ttab",
+		"..",
+		".start",
+		"end.",
+		"-hyphen",
+		"hyphen-",
+		"2001:db8::1",
+		"::1",
+		"fe80::1%eth0",
+		"a..b",
+		"host..domain.com",
+	} {
+		_, err := New("127.0.0.1", 0, store, invalid)
+		if err == nil {
+			t.Errorf("expected serverName %q to be rejected", invalid)
+		}
+	}
+}
+
+func TestServerNameUsedInSessionURL(t *testing.T) {
+	t.Parallel()
+
+	fixtureHTML, err := filepath.Abs(filepath.Join("..", "..", "fixtures", "basic", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store, "192.168.2.14")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	body, err := json.Marshal(map[string]any{
+		"filePath": fixtureHTML,
+		"tags":     []string{"test"},
+		"category": "test",
+		"project":  "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.mu.RLock()
+	actualAddr, ok := srv.listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener address is not TCP: %T", srv.listener.Addr())
+	}
+	srv.mu.RUnlock()
+	actualURL := fmt.Sprintf("http://127.0.0.1:%d", actualAddr.Port)
+
+	createResp, err := http.Post(actualURL+"/api/sessions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+
+	if createResp.StatusCode != http.StatusCreated {
+		respBody, _ := io.ReadAll(createResp.Body)
+		t.Fatalf("unexpected status: %d body=%s", createResp.StatusCode, respBody)
+	}
+
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+
+	expectedPrefix := "http://192.168.2.14:"
+	if !strings.HasPrefix(payload.URL, expectedPrefix) {
+		t.Fatalf("expected session URL to use serverName, got %q", payload.URL)
+	}
+}
+
+func TestServerNameValidationAcceptsValid(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+
+	for _, valid := range []string{
+		"192.168.2.14",
+		"myhost.local",
+		"sub.domain.example.com",
+		"host-with-dashes.local",
+		"a",
+		"localhost",
+		"10.0.0.1",
+		"255.255.255.255",
+		"host123",
+	} {
+		_, err := New("127.0.0.1", 0, store, valid)
+		if err != nil {
+			t.Errorf("expected serverName %q to be accepted, got error: %v", valid, err)
+		}
+	}
+}
+
+
+func TestServerBaseURLDefaultPort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		serverName string
+		port       int
+		scheme     string
+		want       string
+	}{
+		{"http port 80 omits port", "example.com", 80, "http", "http://example.com"},
+		{"https port 443 omits port", "example.com", 443, "https", "https://example.com"},
+		{"http port 8080 includes port", "example.com", 8080, "http", "http://example.com:8080"},
+		{"https port 8443 includes port", "example.com", 8443, "https", "https://example.com:8443"},
+		{"http port 3939 includes port", "192.168.2.14", 3939, "http", "http://192.168.2.14:3939"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newTestStore(t)
+			srv, err := New("127.0.0.1", tt.port, store, tt.serverName)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			r := &http.Request{TLS: nil, Header: http.Header{}}
+			if tt.scheme == "https" {
+				r.Header.Set("X-Forwarded-Proto", "https")
+			}
+
+			got := srv.serverBaseURL(r)
+			if got != tt.want {
+				t.Errorf("serverBaseURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServerBaseURLFallback(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 3939, store, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &http.Request{TLS: nil, Host: "127.0.0.1:3939", Header: http.Header{}}
+	got := srv.serverBaseURL(r)
+	if got != "http://127.0.0.1:3939" {
+		t.Errorf("serverBaseURL() fallback = %q, want http://127.0.0.1:3939", got)
+	}
+}
+
+func TestServerBaseURLForwardedProto(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 443, store, "secure.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r := &http.Request{TLS: nil, Host: "secure.example.com", Header: http.Header{}}
+	r.Header.Set("X-Forwarded-Proto", "https")
+
+	got := srv.serverBaseURL(r)
+	if got != "https://secure.example.com" {
+		t.Errorf("serverBaseURL() with X-Forwarded-Proto = %q, want https://secure.example.com", got)
 	}
 }
 
@@ -36,7 +312,7 @@ func TestCreateSessionAndServeAssets(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +406,7 @@ func TestTraversalIsRejected(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +470,7 @@ func TestCreateUploadedSessionAndServeAssets(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +648,7 @@ func TestDeleteSessionSuccess(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +692,7 @@ func TestDeleteSessionNotFound(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +731,7 @@ func TestSearchByFileContent(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -500,7 +776,7 @@ func TestSearchNoResults(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +822,7 @@ func TestSearchContentNoDuplicate(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -592,7 +868,7 @@ func TestDeleteSessionIdempotent(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +910,7 @@ func TestDownloadSession(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,7 +968,7 @@ func TestDownloadSessionNotFound(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store)
+	srv, err := New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,7 +22,7 @@ func TestSendPrintsSessionURL(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	srv, err := server.New("127.0.0.1", 0, store)
+	srv, err := server.New("127.0.0.1", 0, store, "")
 	if err != nil {
 		t.Fatal(err)
 	}
