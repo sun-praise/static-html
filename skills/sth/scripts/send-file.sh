@@ -101,7 +101,7 @@ if command -v realpath >/dev/null 2>&1; then
     echo "Error: file not found or inaccessible: $original_file" >&2
     exit 1
   }
-elif command -v readlink >/dev/null 2>&1; then
+elif command -v readlink >/dev/null 2>&1 && readlink -f / >/dev/null 2>&1; then
   target_file="$(readlink -f -- "$target_file" 2>/dev/null)" || {
     echo "Error: file not found or inaccessible: $original_file" >&2
     exit 1
@@ -125,17 +125,12 @@ if [ ! -f "$target_file" ]; then
   echo "Error: file not found: $target_file" >&2
   exit 1
 fi
-allowed_exts="html htm"
 filename="$(basename "$target_file")"
 lowername="$(echo "$filename" | tr '[:upper:]' '[:lower:]')"
-_ext_match=false
-for _ext in $allowed_exts; do
-  [[ "$lowername" == *".$_ext" ]] && { _ext_match=true; break; }
-done
-if [ "$_ext_match" = false ]; then
-  echo "Error: file must have .${allowed_exts// / or .} extension: $filename" >&2
-  exit 1
-fi
+case "$lowername" in
+  *.html|*.htm) ;;
+  *) echo "Error: file must have .html or .htm extension: $filename" >&2; exit 1 ;;
+esac
 
 tmpdir="$(mktemp -d)"
 chmod 700 "$tmpdir"
