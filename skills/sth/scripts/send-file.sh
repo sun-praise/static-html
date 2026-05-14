@@ -15,7 +15,7 @@ Options:
 Note: Only the specified HTML file is uploaded. If you need to include sibling
 resources (CSS/JS/images), use 'sth send' directly with the appropriate directory.
 EOF
-  exit 1
+  exit "${1:-1}"
 }
 
 # Strips leading/trailing whitespace and collapses internal newlines to spaces.
@@ -27,8 +27,11 @@ trim() {
   printf '%s' "$v"
 }
 
-if [ "$#" -lt 1 ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
-  usage
+if [ "$#" -lt 1 ]; then
+  usage 1
+fi
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  usage 0
 fi
 
 target_file=""
@@ -40,7 +43,7 @@ project=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --help|-h)
-      usage ;;
+      usage 0 ;;
     --tag)
       if [ -z "${2:-}" ]; then echo "Error: --tag requires a value" >&2; usage; fi
       tag="$(trim "$2")"; shift 2 ;;
@@ -126,7 +129,7 @@ if [ ! -f "$target_file" ]; then
   exit 1
 fi
 filename="$(basename "$target_file")"
-lowername="$(echo "$filename" | tr '[:upper:]' '[:lower:]')"
+lowername="$(printf '%s' "$filename" | tr '[:upper:]' '[:lower:]')"
 case "$lowername" in
   *.html|*.htm) ;;
   *) echo "Error: file must have .html or .htm extension: $filename" >&2; exit 1 ;;
@@ -141,6 +144,10 @@ cp -- "$target_file" "$tmpdir/"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$("$script_dir/bootstrap-repo.sh")"
+if [ ! -d "$repo_dir" ]; then
+  echo "Error: bootstrap-repo.sh did not return a valid directory: $repo_dir" >&2
+  exit 1
+fi
 
 cd "$repo_dir"
 # Do NOT use exec here; the shell must remain alive so the EXIT trap can clean up $tmpdir.
