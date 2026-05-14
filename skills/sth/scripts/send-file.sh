@@ -78,12 +78,10 @@ if [ -z "$project" ]; then
   usage
 fi
 
-dir="$(dirname "$target_file")"
-if [ ! -d "$dir" ]; then
-  echo "Error: directory not found: $dir" >&2
+target_file="$(realpath -- "$target_file" 2>/dev/null)" || {
+  echo "Error: file not found or inaccessible: $1" >&2
   exit 1
-fi
-target_file="$(cd "$dir" && pwd)/$(basename "$target_file")"
+}
 if [ ! -f "$target_file" ]; then
   echo "Error: file not found: $target_file" >&2
   exit 1
