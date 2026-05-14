@@ -34,22 +34,22 @@ while [ "$#" -gt 0 ]; do
       [ -z "${2:-}" ] && { echo "Error: --tag requires a value" >&2; usage; }
       tag="$2"; shift 2 ;;
     --tag=*)
-      tag="${1#--tag=}"; [ -z "$tag" ] && { echo "Error: --tag value cannot be empty" >&2; usage; }; shift ;;
+      tag="${1#--tag=}"; [ -z "$tag" ] && { echo "Error: --tag requires a value" >&2; usage; }; shift ;;
     --category)
       [ -z "${2:-}" ] && { echo "Error: --category requires a value" >&2; usage; }
       category="$2"; shift 2 ;;
     --category=*)
-      category="${1#--category=}"; [ -z "$category" ] && { echo "Error: --category value cannot be empty" >&2; usage; }; shift ;;
+      category="${1#--category=}"; [ -z "$category" ] && { echo "Error: --category requires a value" >&2; usage; }; shift ;;
     --project)
       [ -z "${2:-}" ] && { echo "Error: --project requires a value" >&2; usage; }
       project="$2"; shift 2 ;;
     --project=*)
-      project="${1#--project=}"; [ -z "$project" ] && { echo "Error: --project value cannot be empty" >&2; usage; }; shift ;;
+      project="${1#--project=}"; [ -z "$project" ] && { echo "Error: --project requires a value" >&2; usage; }; shift ;;
     --server)
       [ -z "${2:-}" ] && { echo "Error: --server requires a value" >&2; usage; }
       server_url="$2"; shift 2 ;;
     --server=*)
-      server_url="${1#--server=}"; [ -z "$server_url" ] && { echo "Error: --server value cannot be empty" >&2; usage; }; shift ;;
+      server_url="${1#--server=}"; [ -z "$server_url" ] && { echo "Error: --server requires a value" >&2; usage; }; shift ;;
     -*)
       echo "Unknown option: $1" >&2; usage ;;
     *)
@@ -79,10 +79,18 @@ if [ -z "$project" ]; then
 fi
 
 original_file="$target_file"
-target_file="$(realpath -- "$target_file" 2>/dev/null)" || {
-  echo "Error: file not found or inaccessible: $original_file" >&2
-  exit 1
-}
+if command -v realpath >/dev/null 2>&1; then
+  target_file="$(realpath -- "$target_file" 2>/dev/null)" || {
+    echo "Error: file not found or inaccessible: $original_file" >&2
+    exit 1
+  }
+else
+  target_file="$(cd "$(dirname "$target_file")" && pwd)/$(basename "$target_file")"
+  if [ ! -e "$target_file" ]; then
+    echo "Error: file not found or inaccessible: $original_file" >&2
+    exit 1
+  fi
+fi
 if [ ! -f "$target_file" ]; then
   echo "Error: file not found: $target_file" >&2
   exit 1
@@ -90,7 +98,7 @@ fi
 
 tmpdir="$(mktemp -d)"
 cleanup() { rm -rf "$tmpdir"; }
-trap cleanup EXIT
+trap cleanup EXIT SIGINT SIGTERM
 
 cp "$target_file" "$tmpdir/"
 filename="$(basename "$target_file")"

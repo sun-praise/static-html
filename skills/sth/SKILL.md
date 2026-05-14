@@ -38,6 +38,8 @@ bash scripts/send-file.sh /absolute/or/relative/file.html --tag TAG --category C
 
 The command copies the HTML file to an isolated temporary directory (avoiding packaging unrelated files), uploads it, and prints a session URL like `http://192.168.2.14:3939/s/<id>/`.
 
+If you need to include sibling resources (CSS, JS, images) alongside the HTML file, use `sth send` directly with the directory containing those resources instead of `send-file.sh`.
+
 When calling `sth send` directly, `--tag` accepts multiple comma-separated values:
 
 ```bash
