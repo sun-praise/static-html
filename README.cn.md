@@ -130,16 +130,19 @@ go test ./...
 
 如果客户端版本过旧，请替换后重试；旧客户端仍可能发送过时的 `entryFile` 元数据，即使服务端已更新也会触发跨主机路径错误。
 
-## Codex 技能
+## Agent 技能
 
-本仓库还附带了一个可安装的 Codex 技能，位于 `skills/static-html-preview`。
+本仓库附带了一个 agent 技能，位于 `skills/sth`，可以让编码助手（Claude Code、Codex、Cursor 等）自动使用 `sth`。
 
-使用本地安装脚本从 GitHub 安装：
+使用 [npx skills](https://github.com/vercel-labs/skills) 安装：
 
 ```bash
-~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
-  --repo sun-praise/static-html \
-  --path skills/static-html-preview
-```
+# 安装到当前项目
+npx skills add sun-praise/static-html
 
-安装技能后，重启 Codex 即可生效。
+# 全局安装
+npx skills add sun-praise/static-html -g
+
+# 安装到指定 agent
+npx skills add sun-praise/static-html -a claude-code -a cursor
+```
