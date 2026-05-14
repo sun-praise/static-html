@@ -50,11 +50,79 @@ func TestServerNameOverridesOrigin(t *testing.T) {
 	}
 
 	origins := srv.Origins()
-	if len(origins) != 1 {
-		t.Fatalf("expected exactly 1 origin with server-name, got %d", len(origins))
+	if len(origins) != 2 {
+		t.Fatalf("expected 2 origins with server-name (custom + 127.0.0.1), got %d", len(origins))
 	}
 	if !strings.HasPrefix(origins[0], "http://192.168.2.14:") {
 		t.Fatalf("expected origins[0] to use server-name 192.168.2.14, got %q", origins[0])
+	}
+	if !strings.HasPrefix(origins[1], "http://127.0.0.1:") {
+		t.Fatalf("expected origins[1] to be 127.0.0.1 fallback, got %q", origins[1])
+	}
+}
+
+func TestServerNameDomain(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store, "myhost.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	origin := srv.Origin()
+	if !strings.HasPrefix(origin, "http://myhost.local:") {
+		t.Fatalf("expected origin to use server-name myhost.local, got %q", origin)
+	}
+}
+
+func TestServerNameEmptyFallsBack(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	origin := srv.Origin()
+	if !strings.HasPrefix(origin, "http://127.0.0.1:") {
+		t.Fatalf("expected origin to default to 127.0.0.1, got %q", origin)
+	}
+}
+
+func TestServerNameValidation(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+
+	for _, invalid := range []string{
+		"has space",
+		"has/slash",
+		"has:colon",
+		"http://host",
+		"https://host",
+	} {
+		_, err := New("127.0.0.1", 0, store, invalid)
+		if err == nil {
+			t.Errorf("expected serverName %q to be rejected", invalid)
+		}
 	}
 }
 

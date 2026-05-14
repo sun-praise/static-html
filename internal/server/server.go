@@ -407,6 +407,12 @@ func New(host string, port int, store *session.Store, serverName string) (*Serve
 		host = DefaultHost
 	}
 
+	if serverName != "" {
+		if strings.ContainsAny(serverName, " /:") || strings.HasPrefix(serverName, "http://") || strings.HasPrefix(serverName, "https://") {
+			return nil, errors.New("server: --server-name must be a plain hostname or IP (no spaces, slashes, colons, or protocol prefix)")
+		}
+	}
+
 	if store == nil {
 		return nil, errors.New("server: store must not be nil")
 	}
@@ -503,7 +509,10 @@ func (s *Server) Origins() []string {
 	port := address.Port
 
 	if s.serverName != "" {
-		return []string{fmt.Sprintf("http://%s:%d", s.serverName, port)}
+		return []string{
+			fmt.Sprintf("http://%s:%d", s.serverName, port),
+			fmt.Sprintf("http://127.0.0.1:%d", port),
+		}
 	}
 
 	if address.IP.IsUnspecified() {
