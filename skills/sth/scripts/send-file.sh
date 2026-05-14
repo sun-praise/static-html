@@ -78,8 +78,9 @@ if [ -z "$project" ]; then
   usage
 fi
 
+original_file="$target_file"
 target_file="$(realpath -- "$target_file" 2>/dev/null)" || {
-  echo "Error: file not found or inaccessible: $1" >&2
+  echo "Error: file not found or inaccessible: $original_file" >&2
   exit 1
 }
 if [ ! -f "$target_file" ]; then
