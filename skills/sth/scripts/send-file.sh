@@ -34,17 +34,17 @@ while [ "$#" -gt 0 ]; do
       [ -z "${2:-}" ] && { echo "Error: --tag requires a value" >&2; usage; }
       tag="$2"; shift 2 ;;
     --tag=*)
-      tag="${1#--tag=}"; shift ;;
+      tag="${1#--tag=}"; [ -z "$tag" ] && { echo "Error: --tag value cannot be empty" >&2; usage; }; shift ;;
     --category)
       [ -z "${2:-}" ] && { echo "Error: --category requires a value" >&2; usage; }
       category="$2"; shift 2 ;;
     --category=*)
-      category="${1#--category=}"; shift ;;
+      category="${1#--category=}"; [ -z "$category" ] && { echo "Error: --category value cannot be empty" >&2; usage; }; shift ;;
     --project)
       [ -z "${2:-}" ] && { echo "Error: --project requires a value" >&2; usage; }
       project="$2"; shift 2 ;;
     --project=*)
-      project="${1#--project=}"; shift ;;
+      project="${1#--project=}"; [ -z "$project" ] && { echo "Error: --project value cannot be empty" >&2; usage; }; shift ;;
     --server)
       [ -z "${2:-}" ] && { echo "Error: --server requires a value" >&2; usage; }
       server_url="$2"; shift 2 ;;
@@ -78,12 +78,7 @@ if [ -z "$project" ]; then
   usage
 fi
 
-dir="$(dirname "$target_file")"
-if [ ! -d "$dir" ]; then
-  echo "Error: directory not found: $dir" >&2
-  exit 1
-fi
-target_file="$(cd "$dir" && pwd)/$(basename "$target_file")"
+target_file="$(cd "$(dirname "$target_file")" && pwd)/$(basename "$target_file")"
 if [ ! -f "$target_file" ]; then
   echo "Error: file not found: $target_file" >&2
   exit 1
@@ -100,7 +95,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_dir="$("$script_dir/bootstrap-repo.sh")"
 
 cd "$repo_dir"
-exec "$repo_dir/dist/sth" send "$tmpdir/$filename" \
+"$repo_dir/dist/sth" send "$tmpdir/$filename" \
   --server "$server_url" \
   --tag "$tag" \
   --category "$category" \
