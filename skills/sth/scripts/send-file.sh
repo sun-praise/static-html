@@ -18,6 +18,7 @@ EOF
   exit 1
 }
 
+# Strips leading/trailing whitespace and collapses internal newlines to spaces.
 trim() {
   local v="$1"
   v="${v#"${v%%[![:space:]]*}"}"
@@ -107,7 +108,8 @@ elif command -v readlink >/dev/null 2>&1; then
   }
 else
   # Best-effort path resolution via cd+pwd; correctness is guaranteed by the -f check below.
-  # Note: this branch does not resolve symlinks; use realpath or readlink if available.
+  # Limitations compared to realpath/readlink: symlinks are not resolved, and a dangling
+  # symlink will use the link name as basename rather than the target name.
   _base="$(basename "$target_file")"
   _dir="$(cd "$(dirname "$target_file")" 2>/dev/null && pwd)" || {
     echo "Error: cannot resolve path: $original_file" >&2
@@ -123,10 +125,15 @@ if [ ! -f "$target_file" ]; then
   echo "Error: file not found: $target_file" >&2
   exit 1
 fi
+allowed_exts="html htm"
 filename="$(basename "$target_file")"
 lowername="$(echo "$filename" | tr '[:upper:]' '[:lower:]')"
-if [[ "$lowername" != *.html && "$lowername" != *.htm ]]; then
-  echo "Error: file must have .html or .htm extension: $filename" >&2
+_ext_match=false
+for _ext in $allowed_exts; do
+  [[ "$lowername" == *".$_ext" ]] && { _ext_match=true; break; }
+done
+if [ "$_ext_match" = false ]; then
+  echo "Error: file must have .${allowed_exts// / or .} extension: $filename" >&2
   exit 1
 fi
 
