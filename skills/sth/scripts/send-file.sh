@@ -49,7 +49,7 @@ while [ "$#" -gt 0 ]; do
       [ -z "${2:-}" ] && { echo "Error: --server requires a value" >&2; usage; }
       server_url="$2"; shift 2 ;;
     --server=*)
-      server_url="${1#--server=}"; shift ;;
+      server_url="${1#--server=}"; [ -z "$server_url" ] && { echo "Error: --server value cannot be empty" >&2; usage; }; shift ;;
     -*)
       echo "Unknown option: $1" >&2; usage ;;
     *)
