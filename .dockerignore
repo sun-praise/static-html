@@ -3,5 +3,5 @@ node_modules
 dist
 fixtures
 .claude
-*.md
+/*.md
 /LICENSE
