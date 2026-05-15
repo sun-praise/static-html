@@ -115,6 +115,25 @@ All metadata commands accept `--db /path/to/sessions.db` to override the databas
 
 **正确做法**：发送 JSON 数组或直接使用 `sth send --tag`（内部会自动处理为多个值）。
 
+### 为什么 `sth send` 报错 "Failed to parse multipart form upload" 或上传很慢？
+
+如果 HTML 文件放在一个大目录里（如 home 目录 `/home/user/report.html`），`sth send` 会把父目录下的所有相关文件打包上传，可能导致超时或体积过大。
+
+**解决方法**：把文件放到一个单独的目录再发送：
+
+```bash
+mkdir /tmp/report-dir && cp report.html /tmp/report-dir/
+sth send /tmp/report-dir/report.html --tag test --category cat --project proj
+```
+
+或者直接使用 `send-file.sh`，它会自动处理隔离：
+
+```bash
+bash scripts/send-file.sh report.html --tag test --category cat --project proj
+```
+
+如果 HTML 文件有同目录的兄弟资源（CSS/JS/图片），`sth send` 会自动检测并一起打包，无需手动处理。
+
 ## Notes
 
 - This skill expects `git`, `go`, and a working Go toolchain.
