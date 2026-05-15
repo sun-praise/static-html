@@ -3,7 +3,6 @@ project_name: static-html
 before:
   hooks:
     - go mod tidy
-    - go generate ./...
 
 builds:
   - env:
@@ -47,11 +46,6 @@ changelog:
       - '^ci:'
 
 release:
-  github:
-    owner: |
-      {{ .Env.GITHUB_REPOSITORY_OWNER }}
-    name: |
-      {{ .Tag }}
   draft: false
   prerelease: auto
   mode: replace
