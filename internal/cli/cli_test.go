@@ -466,3 +466,45 @@ func TestSingleFileSkipsWalkOnLargeDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSubdirectoryWithAssetsStillWalks(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	entryFile := filepath.Join(rootDir, "index.html")
+	if err := os.WriteFile(entryFile, []byte("<!doctype html><title>ok</title>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-standard subdirectory name that isWebAssetDir won't recognize
+	cssDir := filepath.Join(rootDir, "src", "components")
+	if err := os.MkdirAll(cssDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cssFile := filepath.Join(cssDir, "style.css")
+	if err := os.WriteFile(cssFile, []byte("body{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := writeZIPArchive(rootDir, &buf); err != nil {
+		t.Fatalf("writeZIPArchive failed: %v", err)
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatalf("failed to read zip: %v", err)
+	}
+
+	names := map[string]bool{}
+	for _, f := range zr.File {
+		names[f.Name] = true
+	}
+
+	if !names["index.html"] {
+		t.Fatal("archive missing index.html")
+	}
+	if !names["src/components/style.css"] {
+		t.Fatal("archive missing src/components/style.css — subdirectory assets should be included")
+	}
+}

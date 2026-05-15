@@ -296,11 +296,14 @@ func newUploadRequestBody(entryFile string, tags []string, category, project str
 func writeZIPArchive(rootDir string, target io.Writer) error {
 	archive := zip.NewWriter(target)
 
+	entries, readErr := os.ReadDir(rootDir)
+	singleFile := readErr == nil && isSingleFileDir(entries)
+
 	var err error
-	if hasSiblingWebAssets(rootDir) {
-		err = writeDirEntries(archive, rootDir)
+	if singleFile {
+		err = writeSingleFileEntry(archive, rootDir, entries)
 	} else {
-		err = writeSingleFileEntry(archive, rootDir)
+		err = writeDirEntries(archive, rootDir)
 	}
 
 	if err != nil {
@@ -310,50 +313,35 @@ func writeZIPArchive(rootDir string, target io.Writer) error {
 	return archive.Close()
 }
 
-func hasSiblingWebAssets(dir string) bool {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return true
-	}
+// isSingleFileDir returns true only when the directory contains exactly one
+// non-hidden web asset file and no non-hidden subdirectories. In all other
+// cases we fall back to the full WalkDir to avoid silently dropping resources.
+func isSingleFileDir(entries []os.DirEntry) bool {
 	webCount := 0
 	for _, e := range entries {
+		if isHiddenName(e.Name()) {
+			continue
+		}
 		if e.IsDir() {
-			if isWebAssetDir(e.Name()) {
-				return true
-			}
-			continue
+			return false
 		}
-		if isWebAsset(e.Name()) {
+		if e.Type().IsRegular() && isWebAsset(e.Name()) {
 			webCount++
-			if webCount > 1 {
-				return true
-			}
 		}
 	}
-	return false
+	return webCount == 1
 }
 
-func isWebAssetDir(name string) bool {
-	lower := strings.ToLower(name)
-	switch lower {
-	case "assets", "css", "js", "images", "img", "fonts", "media",
-		"static", "public", "styles", "scripts", "resources":
-		return true
-	}
-	return false
+func isHiddenName(name string) bool {
+	return strings.HasPrefix(name, ".") && name != "." && name != ".."
 }
 
-func writeSingleFileEntry(archive *zip.Writer, dir string) error {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return err
-	}
+func writeSingleFileEntry(archive *zip.Writer, dir string, entries []os.DirEntry) error {
 	for _, e := range entries {
-		if e.IsDir() || !e.Type().IsRegular() || !isWebAsset(e.Name()) {
+		if isHiddenName(e.Name()) || e.IsDir() || !e.Type().IsRegular() || !isWebAsset(e.Name()) {
 			continue
 		}
-		fullPath := filepath.Join(dir, e.Name())
-		sourceFile, err := os.Open(fullPath)
+		sourceFile, err := os.Open(filepath.Join(dir, e.Name()))
 		if err != nil {
 			return err
 		}
@@ -369,7 +357,7 @@ func writeSingleFileEntry(archive *zip.Writer, dir string) error {
 		}
 		return closeErr
 	}
-	return fmt.Errorf("no web asset found in %s", dir)
+	return fmt.Errorf("no web asset found in directory")
 }
 
 func writeDirEntries(archive *zip.Writer, rootDir string) error {
