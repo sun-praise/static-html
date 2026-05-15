@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -401,5 +402,109 @@ func TestWriteZIPArchiveSkipsPermissionDenied(t *testing.T) {
 
 	if zipReader.File[0].Name != "index.html" {
 		t.Fatalf("expected index.html, got %q", zipReader.File[0].Name)
+	}
+}
+
+func TestSingleFileSkipsWalkOnLargeDirectory(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	entryFile := filepath.Join(rootDir, "report.html")
+	if err := os.WriteFile(entryFile, []byte("<!doctype html><title>report</title>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create many non-web sibling files to simulate a large directory (e.g. home dir)
+	for i := 0; i < 200; i++ {
+		f := filepath.Join(rootDir, fmt.Sprintf("data-%d.log", i))
+		if err := os.WriteFile(f, []byte("log data"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reader, err := r.MultipartReader()
+		if err != nil {
+			t.Fatal(err)
+		}
+		archiveEntries := map[string]string{}
+		for {
+			part, err := reader.NextPart()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if part.FormName() == "archive" {
+				archiveBytes, _ := io.ReadAll(part)
+				zr, _ := zip.NewReader(bytes.NewReader(archiveBytes), int64(len(archiveBytes)))
+				for _, f := range zr.File {
+					fr, _ := f.Open()
+					c, _ := io.ReadAll(fr)
+					fr.Close()
+					archiveEntries[f.Name] = string(c)
+				}
+			}
+		}
+
+		if len(archiveEntries) != 1 {
+			t.Fatalf("expected 1 file in archive, got %d: %v", len(archiveEntries), archiveEntries)
+		}
+		if archiveEntries["report.html"] == "" {
+			t.Fatal("archive missing report.html")
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": "http://example.test/s/session/"})
+	}))
+	defer srv.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run([]string{"send", entryFile, "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSubdirectoryWithAssetsStillWalks(t *testing.T) {
+	t.Parallel()
+
+	rootDir := t.TempDir()
+	entryFile := filepath.Join(rootDir, "index.html")
+	if err := os.WriteFile(entryFile, []byte("<!doctype html><title>ok</title>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Non-standard subdirectory name that isWebAssetDir won't recognize
+	cssDir := filepath.Join(rootDir, "src", "components")
+	if err := os.MkdirAll(cssDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cssFile := filepath.Join(cssDir, "style.css")
+	if err := os.WriteFile(cssFile, []byte("body{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := writeZIPArchive(rootDir, &buf); err != nil {
+		t.Fatalf("writeZIPArchive failed: %v", err)
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatalf("failed to read zip: %v", err)
+	}
+
+	names := map[string]bool{}
+	for _, f := range zr.File {
+		names[f.Name] = true
+	}
+
+	if !names["index.html"] {
+		t.Fatal("archive missing index.html")
+	}
+	if !names["src/components/style.css"] {
+		t.Fatal("archive missing src/components/style.css — subdirectory assets should be included")
 	}
 }

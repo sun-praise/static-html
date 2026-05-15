@@ -295,6 +295,72 @@ func newUploadRequestBody(entryFile string, tags []string, category, project str
 
 func writeZIPArchive(rootDir string, target io.Writer) error {
 	archive := zip.NewWriter(target)
+
+	entries, readErr := os.ReadDir(rootDir)
+	singleFile := readErr == nil && isSingleFileDir(entries)
+
+	var err error
+	if singleFile {
+		err = writeSingleFileEntry(archive, rootDir, entries)
+	} else {
+		err = writeDirEntries(archive, rootDir)
+	}
+
+	if err != nil {
+		_ = archive.Close()
+		return err
+	}
+	return archive.Close()
+}
+
+// isSingleFileDir returns true only when the directory contains exactly one
+// non-hidden web asset file and no non-hidden subdirectories. In all other
+// cases we fall back to the full WalkDir to avoid silently dropping resources.
+func isSingleFileDir(entries []os.DirEntry) bool {
+	webCount := 0
+	for _, e := range entries {
+		if isHiddenName(e.Name()) {
+			continue
+		}
+		if e.IsDir() {
+			return false
+		}
+		if e.Type().IsRegular() && isWebAsset(e.Name()) {
+			webCount++
+		}
+	}
+	return webCount == 1
+}
+
+func isHiddenName(name string) bool {
+	return strings.HasPrefix(name, ".") && name != "." && name != ".."
+}
+
+func writeSingleFileEntry(archive *zip.Writer, dir string, entries []os.DirEntry) error {
+	for _, e := range entries {
+		if isHiddenName(e.Name()) || e.IsDir() || !e.Type().IsRegular() || !isWebAsset(e.Name()) {
+			continue
+		}
+		sourceFile, err := os.Open(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return err
+		}
+		w, err := archive.Create(e.Name())
+		if err != nil {
+			_ = sourceFile.Close()
+			return err
+		}
+		_, copyErr := io.Copy(w, sourceFile)
+		closeErr := sourceFile.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	}
+	return fmt.Errorf("no web asset found in directory")
+}
+
+func writeDirEntries(archive *zip.Writer, rootDir string) error {
 	err := filepath.WalkDir(rootDir, func(filePath string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if errors.Is(walkErr, os.ErrPermission) || strings.Contains(walkErr.Error(), "permission denied") {
@@ -350,12 +416,7 @@ func writeZIPArchive(rootDir string, target io.Writer) error {
 
 		return closeErr
 	})
-	if err != nil {
-		_ = archive.Close()
-		return err
-	}
-
-	return archive.Close()
+	return err
 }
 
 func isHiddenPath(path string) bool {
