@@ -1,7 +1,7 @@
 .git
 node_modules
 dist
-fixtures
+/fixtures
 .claude
 /*.md
 /LICENSE
