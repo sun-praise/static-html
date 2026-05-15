@@ -1,0 +1,7 @@
+.git
+node_modules
+dist
+/fixtures
+.claude
+/*.md
+/LICENSE
