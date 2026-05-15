@@ -295,6 +295,84 @@ func newUploadRequestBody(entryFile string, tags []string, category, project str
 
 func writeZIPArchive(rootDir string, target io.Writer) error {
 	archive := zip.NewWriter(target)
+
+	var err error
+	if hasSiblingWebAssets(rootDir) {
+		err = writeDirEntries(archive, rootDir)
+	} else {
+		err = writeSingleFileEntry(archive, rootDir)
+	}
+
+	if err != nil {
+		_ = archive.Close()
+		return err
+	}
+	return archive.Close()
+}
+
+func hasSiblingWebAssets(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return true
+	}
+	webCount := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			if isWebAssetDir(e.Name()) {
+				return true
+			}
+			continue
+		}
+		if isWebAsset(e.Name()) {
+			webCount++
+			if webCount > 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func isWebAssetDir(name string) bool {
+	lower := strings.ToLower(name)
+	switch lower {
+	case "assets", "css", "js", "images", "img", "fonts", "media",
+		"static", "public", "styles", "scripts", "resources":
+		return true
+	}
+	return false
+}
+
+func writeSingleFileEntry(archive *zip.Writer, dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() || !e.Type().IsRegular() || !isWebAsset(e.Name()) {
+			continue
+		}
+		fullPath := filepath.Join(dir, e.Name())
+		sourceFile, err := os.Open(fullPath)
+		if err != nil {
+			return err
+		}
+		w, err := archive.Create(e.Name())
+		if err != nil {
+			_ = sourceFile.Close()
+			return err
+		}
+		_, copyErr := io.Copy(w, sourceFile)
+		closeErr := sourceFile.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	}
+	return fmt.Errorf("no web asset found in %s", dir)
+}
+
+func writeDirEntries(archive *zip.Writer, rootDir string) error {
 	err := filepath.WalkDir(rootDir, func(filePath string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if errors.Is(walkErr, os.ErrPermission) || strings.Contains(walkErr.Error(), "permission denied") {
@@ -350,12 +428,7 @@ func writeZIPArchive(rootDir string, target io.Writer) error {
 
 		return closeErr
 	})
-	if err != nil {
-		_ = archive.Close()
-		return err
-	}
-
-	return archive.Close()
+	return err
 }
 
 func isHiddenPath(path string) bool {
