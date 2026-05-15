@@ -16,10 +16,14 @@ FROM alpine:3.21
 
 RUN apk add --no-cache ca-certificates
 
+RUN adduser -D -u 1000 appuser
+
 WORKDIR /app
 
 COPY --from=builder /html-server /usr/local/bin/html-server
 
-EXPOSE 8080
+USER appuser
+
+EXPOSE 3939
 
 ENTRYPOINT ["html-server"]
