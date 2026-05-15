@@ -20,7 +20,11 @@ This script:
 - otherwise clones or updates `sun-praise/static-html`
 - builds `dist/sth` when the Go source fingerprint changes
 
-2. Start the preview server:
+2. Start the preview server **only if not already running**:
+
+If `STATIC_HTML_SERVER_URL` is set (e.g. the server is already deployed elsewhere), skip this step entirely.
+
+Otherwise start locally:
 
 ```bash
 bash scripts/start-server.sh [port]
