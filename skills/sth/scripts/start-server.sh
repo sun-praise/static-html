@@ -4,7 +4,7 @@ set -euo pipefail
 
 # If an external server is already configured, skip starting a local one.
 if [ -n "${STATIC_HTML_SERVER_URL:-}" ]; then
-  echo "STATIC_HTML_SERVER_URL is set ($STATIC_HTML_SERVER_URL) — skipping server start."
+  echo "STATIC_HTML_SERVER_URL is set ($STATIC_HTML_SERVER_URL) — skipping server start." >&2
   exit 0
 fi
 
