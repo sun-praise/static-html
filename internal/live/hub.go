@@ -137,6 +137,9 @@ func (m *Manager) BroadcastTo(sessionID string, data []byte) {
 	entry, ok := m.hubs[sessionID]
 	m.mu.Unlock()
 
+	// Safe TOCTOU: even if the hub is deleted concurrently after we release
+	// m.mu, the hub's Broadcast is a no-op on a stale client set. The worst
+	// case is a missed broadcast, which is acceptable for reload notifications.
 	if ok {
 		entry.hub.Broadcast(data)
 	}

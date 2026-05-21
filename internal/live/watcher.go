@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -39,6 +40,9 @@ func WatchDir(ctx context.Context, dir string, notify func()) (context.CancelFun
 				if !ok {
 					return
 				}
+				if shouldIgnorePath(event.Name) {
+					continue
+				}
 				if event.Has(fsnotify.Create) {
 					if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
 						_ = addWatchRecursive(w, event.Name)
@@ -65,9 +69,26 @@ func addWatchRecursive(w *fsnotify.Watcher, root string) error {
 		if err != nil {
 			return err
 		}
+		if shouldIgnorePath(path) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			return w.Add(path)
 		}
 		return nil
 	})
+}
+
+func shouldIgnorePath(path string) bool {
+	base := filepath.Base(path)
+	if strings.HasPrefix(base, ".") && base != "." {
+		return true
+	}
+	if strings.HasSuffix(base, ".swp") || strings.HasSuffix(base, ".tmp") {
+		return true
+	}
+	return false
 }

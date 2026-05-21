@@ -189,6 +189,7 @@ func uploadFiles(serverURL, sessionID, watchRoot string, paths []string) error {
 		for _, p := range paths {
 			f, err := os.Open(p)
 			if err != nil {
+				fmt.Fprintf(os.Stderr, "watch: cannot open %s: %v\n", p, err)
 				continue
 			}
 			info, err := f.Stat()

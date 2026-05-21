@@ -3,6 +3,7 @@ package live
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -48,10 +49,10 @@ func HandleWebSocket(mgr *Manager, getSessionDir func(sessionID string) string) 
 }
 
 func extractSessionID(urlPath string) string {
-	if len(urlPath) < 4 {
+	s := strings.TrimPrefix(urlPath, "/s/")
+	if s == urlPath || s == "" {
 		return ""
 	}
-	s := urlPath[3:]
 	end := len(s)
 	if idx := indexOf(s, '/'); idx >= 0 {
 		end = idx

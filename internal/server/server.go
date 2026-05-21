@@ -1623,8 +1623,7 @@ func (s *Server) handleUpdateFiles(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	count := 0
-	for key, headers := range r.MultipartForm.File {
-		_ = key
+	for _, headers := range r.MultipartForm.File {
 		for _, hdr := range headers {
 			if hdr.Size > maxIncrementalBytes {
 				writeJSONError(w, http.StatusRequestEntityTooLarge,
