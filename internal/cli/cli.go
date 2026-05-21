@@ -47,6 +47,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runSearch(args[1:], stdout)
 	case "delete":
 		return runDelete(args[1:], stdout)
+	case "watch":
+		return runWatch(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -61,7 +63,8 @@ func printUsage(w io.Writer) {
   sth project <session-id> <project> [--db /path/to/sessions.db] [--server http://...]
   sth list [--tag <tag>] [--category <cat>] [--project <proj>] [--limit <n>] [--offset <n>] [--db /path/to/sessions.db]
   sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>] [--limit <n>] [--offset <n>] [--db /path/to/sessions.db]
-  sth delete <session-id> [--db /path/to/sessions.db]`)
+  sth delete <session-id> [--db /path/to/sessions.db]
+  sth watch <path> --session <id> [--server http://127.0.0.1:3939]`)
 }
 
 func runStart(args []string, stdout io.Writer) error {

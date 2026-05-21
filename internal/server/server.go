@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/sun-praise/static-html/internal/live"
 	"github.com/sun-praise/static-html/internal/session"
 )
 
@@ -50,6 +51,7 @@ type Server struct {
 	store      *session.Store
 	httpServer *http.Server
 	listener   net.Listener
+	liveMgr    *live.Manager
 	mu         sync.RWMutex
 }
 
@@ -436,10 +438,13 @@ func New(host string, port int, store *session.Store, serverName string) (*Serve
 		port:       port,
 		serverName: serverName,
 		store:      store,
+		liveMgr: live.NewManager(func(sessionID, dir string, notify func()) (context.CancelFunc, error) {
+			return live.WatchDir(context.Background(), dir, notify)
+		}),
 	}
 
 	srv.httpServer = &http.Server{
-		Handler: srv.routes(),
+		Handler: live.InjectMiddleware(srv.routes()),
 	}
 
 	return srv, nil
@@ -555,6 +560,23 @@ func (s *Server) routes() http.Handler {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions":
 			s.handleCreateSession(w, r)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/s/"):
+			if strings.HasSuffix(r.URL.Path, "/ws") {
+				sid := strings.TrimPrefix(r.URL.Path, "/s/")
+				sid = strings.TrimSuffix(sid, "/ws")
+				_, found, err := s.store.Get(sid)
+				if err != nil || !found {
+					http.NotFound(w, r)
+					return
+				}
+				live.HandleWebSocket(s.liveMgr, func(id string) string {
+					s, ok, _ := s.store.Get(id)
+					if ok {
+						return s.StoredRootDir
+					}
+					return ""
+				}).ServeHTTP(w, r)
+				return
+			}
 			s.handlePreview(w, r)
 		case r.Method == http.MethodPut && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/tags"):
 			s.handleAddTags(w, r)
@@ -574,6 +596,8 @@ func (s *Server) routes() http.Handler {
 			s.handleDownloadSession(w, r)
 		case r.Method == http.MethodDelete && isExactSessionPath(r.URL.Path):
 			s.handleDeleteSession(w, r)
+		case r.Method == http.MethodPut && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/files"):
+			s.handleUpdateFiles(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1566,4 +1590,101 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+const maxIncrementalBytes = 50 << 20
+
+func (s *Server) handleUpdateFiles(w http.ResponseWriter, r *http.Request) {
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/files")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	sess, found, err := s.store.Get(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxIncrementalBytes)
+	if err := r.ParseMultipartForm(maxIncrementalBytes); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Failed to parse multipart form upload.")
+		return
+	}
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+
+	count := 0
+	for _, headers := range r.MultipartForm.File {
+		for _, hdr := range headers {
+			if hdr.Size > maxIncrementalBytes {
+				writeJSONError(w, http.StatusRequestEntityTooLarge,
+					fmt.Sprintf("File %q exceeds 50MB limit.", hdr.Filename))
+				return
+			}
+
+			src, err := hdr.Open()
+			if err != nil {
+				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Failed to read file %q.", hdr.Filename))
+				return
+			}
+
+			relPath := filepath.Clean(filepath.FromSlash(hdr.Filename))
+			if relPath == "." || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+				src.Close()
+				continue
+			}
+			if hdr.Filename == "" || strings.HasSuffix(relPath, string(filepath.Separator)) {
+				src.Close()
+				continue
+			}
+
+			targetPath := filepath.Join(sess.StoredRootDir, relPath)
+			if !IsSubpath(sess.StoredRootDir, targetPath) {
+				src.Close()
+				writeJSONError(w, http.StatusBadRequest, "File path escapes session root.")
+				return
+			}
+
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+				src.Close()
+				writeJSONError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			dst, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+			if err != nil {
+				src.Close()
+				writeJSONError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			_, copyErr := io.Copy(dst, src)
+			closeErr := errors.Join(src.Close(), dst.Close())
+			if copyErr != nil {
+				writeJSONError(w, http.StatusInternalServerError, copyErr.Error())
+				return
+			}
+			if closeErr != nil {
+				writeJSONError(w, http.StatusInternalServerError, closeErr.Error())
+				return
+			}
+			count++
+		}
+	}
+
+	s.liveMgr.BroadcastTo(sessionID, live.ReloadJSON())
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":        "ok",
+		"files_updated": count,
+	})
 }
