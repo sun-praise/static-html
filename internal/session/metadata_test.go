@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -789,5 +790,250 @@ func TestSearchDocumentsExcludesDeletedSessions(t *testing.T) {
 	}
 	if docs[0].SessionID == s1.ID {
 		t.Fatal("expected deleted session to be excluded from search results")
+	}
+}
+
+func TestGetPeersByCategoryAndProject(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1, err := store.Create("/tmp/alpha.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := store.Create("/tmp/beta.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// s3 shares the project only.
+	s3, err := store.Create("/tmp/gamma.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, s := range []struct {
+		id       string
+		category string
+		project  string
+	}{
+		{s1.ID, "tutorial", "my-site"},
+		{s2.ID, "tutorial", "my-site"},
+		{s3.ID, "docs", "my-site"},
+	} {
+		if err := store.SetCategory(s.id, s.category); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SetProject(s.id, s.project); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := store.GetPeers(s1.ID, DefaultPeerLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Current.SessionID != s1.ID {
+		t.Fatalf("expected current session %q, got %q", s1.ID, result.Current.SessionID)
+	}
+	if result.Current.Category != "tutorial" || result.Current.Project != "my-site" {
+		t.Fatalf("unexpected current metadata: %+v", result.Current)
+	}
+
+	if len(result.ByCategory) != 1 || result.ByCategory[0].SessionID != s2.ID {
+		t.Fatalf("expected byCategory to contain only %q, got %v", s2.ID, result.ByCategory)
+	}
+	if len(result.ByProject) != 2 {
+		t.Fatalf("expected 2 project peers, got %d", len(result.ByProject))
+	}
+	// s3 must appear in project peers (shares project but not category).
+	projIDs := map[string]bool{}
+	for _, p := range result.ByProject {
+		projIDs[p.SessionID] = true
+	}
+	if !projIDs[s2.ID] || !projIDs[s3.ID] {
+		t.Fatalf("expected project peers to include %q and %q, got %v", s2.ID, s3.ID, projIDs)
+	}
+}
+
+func TestGetPeersNoCategory(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1, err := store.Create("/tmp/a.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := store.Create("/tmp/b.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetProject(s1.ID, "my-site"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetProject(s2.ID, "my-site"); err != nil {
+		t.Fatal(err)
+	}
+	// No category set on either session.
+
+	result, err := store.GetPeers(s1.ID, DefaultPeerLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.ByCategory) != 0 {
+		t.Fatalf("expected empty byCategory, got %d", len(result.ByCategory))
+	}
+	if len(result.ByProject) != 1 || result.ByProject[0].SessionID != s2.ID {
+		t.Fatalf("expected byProject to contain only %q, got %v", s2.ID, result.ByProject)
+	}
+}
+
+func TestGetPeersNoProject(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1, err := store.Create("/tmp/a.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := store.Create("/tmp/b.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetCategory(s1.ID, "tutorial"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCategory(s2.ID, "tutorial"); err != nil {
+		t.Fatal(err)
+	}
+	// No project set on either session.
+
+	result, err := store.GetPeers(s1.ID, DefaultPeerLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.ByCategory) != 1 || result.ByCategory[0].SessionID != s2.ID {
+		t.Fatalf("expected byCategory to contain only %q, got %v", s2.ID, result.ByCategory)
+	}
+	if len(result.ByProject) != 0 {
+		t.Fatalf("expected empty byProject, got %d", len(result.ByProject))
+	}
+}
+
+func TestGetPeersExcludesDeletedSessions(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1, err := store.Create("/tmp/a.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := store.Create("/tmp/b.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetCategory(s1.ID, "tutorial"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCategory(s2.ID, "tutorial"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SoftDelete(s2.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.GetPeers(s1.ID, DefaultPeerLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.ByCategory) != 0 {
+		t.Fatalf("expected empty byCategory after soft delete, got %v", result.ByCategory)
+	}
+}
+
+func TestGetPeersOrderedByCreationTimeDesc(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1, err := store.Create("/tmp/first.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2, err := store.Create("/tmp/second.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s3, err := store.Create("/tmp/third.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{s1.ID, s2.ID, s3.ID} {
+		if err := store.SetCategory(id, "tutorial"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := store.GetPeers(s1.ID, DefaultPeerLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Most recent first: s3 (third created) then s2.
+	if len(result.ByCategory) != 2 {
+		t.Fatalf("expected 2 peers, got %d", len(result.ByCategory))
+	}
+	if result.ByCategory[0].SessionID != s3.ID || result.ByCategory[1].SessionID != s2.ID {
+		t.Fatalf("expected order [%q, %q], got %v", s3.ID, s2.ID, result.ByCategory)
+	}
+}
+
+func TestGetPeersLimit(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1, err := store.Create("/tmp/anchor.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 5; i++ {
+		s, err := store.Create("/tmp/peer.html")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SetCategory(s.ID, "tutorial"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SetCategory(s1.ID, "tutorial"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.GetPeers(s1.ID, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.ByCategory) != 3 {
+		t.Fatalf("expected 3 peers with limit 3, got %d", len(result.ByCategory))
+	}
+}
+
+func TestGetPeersNonexistentSession(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+
+	_, err := store.GetPeers("nonexistent", DefaultPeerLimit)
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound, got %v", err)
 	}
 }

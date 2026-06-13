@@ -105,6 +105,75 @@ func TestInjectMiddlewareSkipsWSPath(t *testing.T) {
 	}
 }
 
+func TestInjectMiddlewareAddsDrawerToHTML(t *testing.T) {
+	t.Parallel()
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<html><head><title>Test</title></head><body>Hello</body></html>`))
+	})
+
+	handler := InjectMiddleware(inner)
+	req := httptest.NewRequest(http.MethodGet, "/s/abc123/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="sth-drawer-btn"`,
+		`id="sth-drawer-panel"`,
+		`id="sth-drawer-content"`,
+		`id="sth-drawer-close"`,
+		"/api/sessions/",
+		"Back to Home",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("HTML response missing %q in body:\n%s", want, body)
+		}
+	}
+}
+
+func TestInjectMiddlewareSkipsDrawerForNonHTML(t *testing.T) {
+	t.Parallel()
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`body { color: red; }`))
+	})
+
+	handler := InjectMiddleware(inner)
+	req := httptest.NewRequest(http.MethodGet, "/s/abc123/style.css", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "sth-drawer-btn") {
+		t.Fatalf("CSS response should not contain the drawer button:\n%s", body)
+	}
+}
+
+func TestInjectMiddlewareSkipsDrawerForNonSessionPath(t *testing.T) {
+	t.Parallel()
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<html><body>Home</body></html>`))
+	})
+
+	handler := InjectMiddleware(inner)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "sth-drawer-btn") {
+		t.Fatalf("home page should not contain the drawer button:\n%s", body)
+	}
+}
+
 func TestHubBroadcast(t *testing.T) {
 	hub := NewHub(nil, nil)
 

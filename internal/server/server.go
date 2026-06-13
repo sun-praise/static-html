@@ -592,6 +592,8 @@ func (s *Server) routes() http.Handler {
 			s.handleClearProject(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/metadata"):
 			s.handleGetMetadata(w, r)
+		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/peers"):
+			s.handleGetPeers(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/download"):
 			s.handleDownloadSession(w, r)
 		case r.Method == http.MethodDelete && isExactSessionPath(r.URL.Path):
@@ -1574,6 +1576,37 @@ func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, meta)
+}
+
+func (s *Server) handleGetPeers(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/peers")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	_, found, err := s.requireSession(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
+		return
+	}
+
+	peers, err := s.store.GetPeers(sessionID, session.DefaultPeerLimit)
+	if err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeJSONError(w, http.StatusNotFound, "Session not found.")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, peers)
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
