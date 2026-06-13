@@ -8,3 +8,5 @@ dist/
 
 .ralph/
 .serena/
+
+.claude/settings.local.json
