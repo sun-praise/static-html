@@ -1121,3 +1121,152 @@ func TestBuildPageURL(t *testing.T) {
 		})
 	}
 }
+
+// createSessionWithMetadata inserts a session with the given category/project
+// directly into the store so peers tests can control metadata precisely.
+func createSessionWithMetadata(t *testing.T, store *session.Store, entryFile, category, project string) string {
+	t.Helper()
+
+	s, err := store.Create(entryFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if category != "" {
+		if err := store.SetCategory(s.ID, category); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if project != "" {
+		if err := store.SetProject(s.ID, project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return s.ID
+}
+
+func TestGetPeersSuccess(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1 := createSessionWithMetadata(t, store, "/tmp/alpha.html", "tutorial", "my-site")
+	s2 := createSessionWithMetadata(t, store, "/tmp/beta.html", "tutorial", "my-site")
+	s3 := createSessionWithMetadata(t, store, "/tmp/gamma.html", "docs", "my-site")
+
+	srv, err := New("127.0.0.1", 0, store, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/" + s1 + "/peers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected status 200, got %d body=%s", resp.StatusCode, body)
+	}
+
+	var result session.PeersResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Current.SessionID != s1 {
+		t.Fatalf("expected current %q, got %q", s1, result.Current.SessionID)
+	}
+	if result.Current.Category != "tutorial" || result.Current.Project != "my-site" {
+		t.Fatalf("unexpected current metadata: %+v", result.Current)
+	}
+
+	if len(result.ByCategory) != 1 || result.ByCategory[0].SessionID != s2 {
+		t.Fatalf("expected byCategory=[%s], got %+v", s2, result.ByCategory)
+	}
+
+	catIDs := map[string]bool{}
+	for _, p := range result.ByProject {
+		catIDs[p.SessionID] = true
+	}
+	if len(result.ByProject) != 2 || !catIDs[s2] || !catIDs[s3] {
+		t.Fatalf("expected byProject to contain %q and %q, got %+v", s2, s3, result.ByProject)
+	}
+}
+
+func TestGetPeersEmpty(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1 := createSessionWithMetadata(t, store, "/tmp/alpha.html", "tutorial", "my-site")
+	// A second session with completely different metadata.
+	createSessionWithMetadata(t, store, "/tmp/beta.html", "docs", "other-app")
+
+	srv, err := New("127.0.0.1", 0, store, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/" + s1 + "/peers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", resp.StatusCode)
+	}
+
+	var result session.PeersResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(result.ByCategory) != 0 || len(result.ByProject) != 0 {
+		t.Fatalf("expected empty peers, got %+v", result)
+	}
+}
+
+func TestGetPeersNotFound(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+
+	srv, err := New("127.0.0.1", 0, store, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/nonexistent/peers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d", resp.StatusCode)
+	}
+}

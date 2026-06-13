@@ -3,6 +3,7 @@ package session
 import (
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -433,4 +434,129 @@ func (s *Store) sessionExists(sessionID string) bool {
 	var exists bool
 	_ = s.db.QueryRow(`SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id = ?)`, sessionID).Scan(&exists)
 	return exists
+}
+
+type PeerEntry struct {
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type PeerCurrent struct {
+	SessionID string `json:"sessionId"`
+	Name      string `json:"name"`
+	Category  string `json:"category"`
+	Project   string `json:"project"`
+}
+
+type PeersResult struct {
+	Current    PeerCurrent `json:"current"`
+	ByCategory []PeerEntry `json:"byCategory"`
+	ByProject  []PeerEntry `json:"byProject"`
+}
+
+const DefaultPeerLimit = 20
+
+// GetPeers returns documents sharing the same category or project as sessionID,
+// ordered by creation time descending. Each group is capped at limit entries
+// (defaulting to 20 when limit <= 0). The session itself and soft-deleted
+// sessions are excluded. Returns ErrSessionNotFound when sessionID does not exist.
+func (s *Store) GetPeers(sessionID string, limit int) (*PeersResult, error) {
+	if limit <= 0 {
+		limit = DefaultPeerLimit
+	}
+
+	current, found, err := s.Get(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, ErrSessionNotFound
+	}
+
+	meta, err := s.GetMetadata(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	entryFile := current.StoredEntryFile
+	if entryFile == "" {
+		entryFile = current.EntryFile
+	}
+
+	result := &PeersResult{
+		Current: PeerCurrent{
+			SessionID: sessionID,
+			Name:      filepath.Base(entryFile),
+			Category:  meta.Category,
+			Project:   meta.Project,
+		},
+		ByCategory: []PeerEntry{},
+		ByProject:  []PeerEntry{},
+	}
+
+	if meta.Category != "" {
+		byCategory, err := s.queryPeers(
+			`SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix
+			 FROM sessions s
+			 JOIN document_categories dc ON s.session_id = dc.session_id
+			 WHERE dc.category = ? AND s.session_id != ? AND s.deleted_at IS NULL
+			 ORDER BY s.created_at_unix DESC
+			 LIMIT ?`,
+			meta.Category, sessionID, limit,
+		)
+		if err != nil {
+			return nil, err
+		}
+		result.ByCategory = byCategory
+	}
+
+	if meta.Project != "" {
+		byProject, err := s.queryPeers(
+			`SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix
+			 FROM sessions s
+			 JOIN document_projects dp ON s.session_id = dp.session_id
+			 WHERE dp.project = ? AND s.session_id != ? AND s.deleted_at IS NULL
+			 ORDER BY s.created_at_unix DESC
+			 LIMIT ?`,
+			meta.Project, sessionID, limit,
+		)
+		if err != nil {
+			return nil, err
+		}
+		result.ByProject = byProject
+	}
+
+	return result, nil
+}
+
+// queryPeers runs a peer lookup query and maps each row to a PeerEntry with the
+// entry-file basename and an RFC3339 creation timestamp.
+func (s *Store) queryPeers(query string, args ...any) ([]PeerEntry, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	peers := []PeerEntry{}
+	for rows.Next() {
+		var (
+			sessionID     string
+			entryFile     string
+			createdAtUnix int64
+		)
+		if err := rows.Scan(&sessionID, &entryFile, &createdAtUnix); err != nil {
+			return nil, err
+		}
+		peers = append(peers, PeerEntry{
+			SessionID: sessionID,
+			Name:      filepath.Base(entryFile),
+			CreatedAt: time.Unix(0, createdAtUnix).UTC().Format(time.RFC3339),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return peers, nil
 }
