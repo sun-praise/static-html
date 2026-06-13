@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.3.0] - 2026-06-13
+
+### Added
+- Realtime HTML update via WebSocket — preview pages now reflect file changes live (#61)
+- `sth watch` subcommand for file-system driven reloads
+- Inject related-documents drawer into preview pages (#62)
+- `internal/live` package: WebSocket hub, file watcher, client, handler, and injection helpers
+- `internal/session/metadata` module for richer session metadata handling
+
+### Fixed
+- Skip directory walk for single file uploads to avoid spurious failures (#57)
+
+### Docs
+- Add FAQ entry for `sth send` upload failure on large directories
+
+### Chore
+- Add OpenSpec specs for realtime-html-update, preview-drawer, and peers-api
+- Add `.claude/settings.local.json`
+
 ## [1.2.0] - 2026-05-15
 
 ### Added
