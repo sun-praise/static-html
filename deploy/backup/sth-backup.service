@@ -1,0 +1,13 @@
+[Unit]
+Description=sth SQLite hot backup
+# Run only when docker is reachable.
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+# The deploy README symlinks the backup script into ~/.local/bin/.
+# Adjust ExecStart if you install it elsewhere.
+ExecStart=%h/.local/bin/sth-backup.sh
+StandardOutput=journal
+StandardError=journal
