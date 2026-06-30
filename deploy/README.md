@@ -208,6 +208,14 @@ docker compose up -d
 | Cert renewal fails | `sudo certbot renew --dry-run`; verify DNS still points at this host |
 | Backup unit fails | `systemctl --user status sth-backup.service`; check `journalctl --user -u sth-backup.service` |
 | Permission denied on `/backup` | The app container runs as uid 1000; the backup script `docker exec`s into it so the same uid must be able to write `/backup` (it can — the volume is owned by the container) |
+| Session URLs have `:3939` suffix | nginx is not setting `X-Forwarded-Port: 443` (the template does by default — check your site conf). For multi-hop proxies or untrusted headers, set `--server-port 443` in `docker-compose.yml` |
+
+## URL generation behind a reverse proxy
+
+The container listens on 3939, but nginx terminates TLS on 443. For generated session URLs to come out as `https://<your-domain>/s/<id>/` (no `:3939`), the server needs to know the public port. Two options:
+
+- **Default (zero-config):** the included `deploy/nginx/example.conf` sets `proxy_set_header X-Forwarded-Port 443;`. Copy it verbatim and URLs work.
+- **Override:** for multi-hop proxies or when you don't trust proxy headers, pass `--server-port 443` in the compose `command:` array. This takes priority over any header.
 
 ## Layout
 

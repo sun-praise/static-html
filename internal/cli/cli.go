@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -56,7 +57,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
-  sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--db /path/to/sessions.db]
+  sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--server-port <n>] [--db /path/to/sessions.db]
   sth send <file.html> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939]
   sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
   sth categorize <session-id> <category> [--db /path/to/sessions.db] [--server http://...]
@@ -102,12 +103,24 @@ func runStart(args []string, stdout io.Writer) error {
 		serverName = value
 	}
 
+	serverPort := 0
+	if value, ok := flags["server-port"]; ok {
+		n, err := strconv.Atoi(value)
+		if err != nil {
+			return errors.New("server-port must be an integer")
+		}
+		if n < 1 || n > 65535 {
+			return fmt.Errorf("server-port must be in range 1-65535, got %d", n)
+		}
+		serverPort = n
+	}
+
 	store, err := openStore(flags)
 	if err != nil {
 		return err
 	}
 
-	srv, err := server.New(bindAddr, port, store, serverName)
+	srv, err := server.New(bindAddr, port, store, serverName, serverPort)
 	if err != nil {
 		return errors.Join(err, store.Close())
 	}
