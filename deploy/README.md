@@ -1,7 +1,9 @@
-# Deploying `sth` to a Linux host
+# Deploying `sth` behind nginx
 
-This guide deploys the `sth` server as a Docker container behind an existing
-host nginx, reachable at `https://sth.sun-praise.com`.
+This is a **reference runbook** for running the `sth` container behind an
+existing host nginx with TLS. It is intentionally generic — substitute your
+own domain, host, and certificate paths wherever you see `<your-domain>` or
+`<host>`.
 
 ```
             ┌───────────────┐  443  ┌──────────────┐  3939  ┌─────────────┐
@@ -12,14 +14,24 @@ Internet ──▶│  host nginx   │──────▶│ docker proxy │
                                                   sth_data:/data │ sth_backup:/backup
 ```
 
+## What stays generic vs. what you customize
+
+| Artifact | Generic (ships in repo) | Yours (don't commit) |
+|---|---|---|
+| `Dockerfile`, `.dockerignore` | ✅ | |
+| `.github/workflows/docker.yml` (GHCR publish) | ✅ | |
+| `docker-compose.yml` | ✅ template | `STH_SERVER_NAME` via `.env` |
+| `deploy/nginx/example.conf` | ✅ template | copy → `<your-domain>.conf` |
+| `deploy/backup/sth-backup.{sh,service,timer}` | ✅ reference | install on host |
+| nginx site config, cert paths, `/opt/sth` path | | ✅ host-local |
+
 ## Prerequisites (host)
 
-The host (referred to as `jd`) must already have:
+The host must already have:
 
 - [x] **Docker 24+** with the **compose v2 plugin** (`docker compose version`)
 - [x] **nginx** with a site-enabled convention (`/etc/nginx/sites-enabled/`)
-- [x] **certbot** (or another ACME client) configured for `sth.sun-praise.com`,
-      writing certs to `/etc/letsencrypt/live/sth.sun-praise.com/`
+- [x] **certbot** (or another ACME client) configured for your domain
 - [x] A user with permission to run `docker` (member of the `docker` group, or
       use `sudo`)
 - [x] **Lingering enabled** for that user so user-level systemd units survive
@@ -28,29 +40,25 @@ The host (referred to as `jd`) must already have:
       sudo loginctl enable-linger "$USER"
       ```
 
-If any of these is missing, install it first; this guide does not cover
-bootstrapping the host.
-
 ## DNS
 
-Add a record at your DNS provider pointing `sth.sun-praise.com` to the host's
+Add a record at your DNS provider pointing `<your-domain>` to the host's
 public IP (A and/or AAAA). Wait for propagation before requesting the
 certificate.
 
 ```bash
-dig +short sth.sun-praise.com   # should print the host IP
+dig +short <your-domain>   # should print the host IP
 ```
 
 ## TLS certificate (first time only)
 
 ```bash
-sudo certbot certonly --nginx -d sth.sun-praise.com
+sudo certbot certonly --nginx -d <your-domain>
 # Verify:
-sudo ls /etc/letsencrypt/live/sth.sun-praise.com/
+sudo ls /etc/letsencrypt/live/<your-domain>/
 ```
 
-certbot's renewal timer (`systemctl status certbot.timer`) will handle renewals;
-the nginx config below reloads nginx automatically via the deploy hook.
+certbot's renewal timer (`systemctl status certbot.timer`) will handle renewals.
 
 ## Deploy steps
 
@@ -62,12 +70,13 @@ git clone https://github.com/sun-praise/static-html.git /opt/sth
 cd /opt/sth
 ```
 
-### 2. Configure the image tag
+### 2. Configure
 
 ```bash
 cp .env.example .env
-# Edit .env to pin a tag if you don't want `latest`:
-#   STH_IMAGE_TAG=1.3.0
+# Edit .env:
+#   STH_SERVER_NAME=<your-domain>
+#   STH_IMAGE_TAG=latest   # or pin to a tag
 ```
 
 ### 3. Pull and start the container
@@ -81,9 +90,12 @@ docker compose logs -f app   # check "HTML server listening on..."
 
 ### 4. Enable the nginx site
 
+Copy the template and substitute your domain:
+
 ```bash
-sudo ln -s /opt/sth/deploy/nginx/sth.sun-praise.com.conf \
-           /etc/nginx/sites-enabled/sth.sun-praise.com.conf
+sudo cp deploy/nginx/example.conf /etc/nginx/sites-available/<your-domain>.conf
+sudo sed -i 's/<your-domain>/<your-domain>/g' /etc/nginx/sites-available/<your-domain>.conf
+sudo ln -s /etc/nginx/sites-available/<your-domain>.conf /etc/nginx/sites-enabled/
 sudo nginx -t
 sudo systemctl reload nginx
 ```
@@ -92,20 +104,23 @@ sudo systemctl reload nginx
 
 ```bash
 # Direct (inside the host) — should return HTML. The Host header makes the
-# container emit session URLs under sth.sun-praise.com instead of 127.0.0.1.
-curl -fsS -H 'Host: sth.sun-praise.com' http://127.0.0.1:3939/ | head -1
+# container emit session URLs under <your-domain> instead of 127.0.0.1.
+curl -fsS -H "Host: <your-domain>" http://127.0.0.1:3939/ | head -1
 
 # Through nginx, over TLS — should return the same HTML
-curl -fsS https://sth.sun-praise.com/ | head -1
+curl -fsS https://<your-domain>/ | head -1
 
 # WebSocket upgrade path should reach the server (101 Switching Protocols)
 curl -fsS -i -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
      -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
      -H 'Sec-WebSocket-Version: 13' \
-     https://sth.sun-praise.com/s/none/ws | head -1 || true
+     https://<your-domain>/s/none/ws | head -1 || true
 ```
 
-### 6. Enable daily backups
+### 6. Enable daily backups (optional)
+
+The backup script + systemd units under `deploy/backup/` are a **reference
+implementation**. Review them, then install on the host:
 
 ```bash
 # Install the backup script somewhere on PATH (the systemd unit assumes ~/.local/bin)
@@ -198,9 +213,9 @@ docker compose up -d
 
 ```
 deploy/
-├── README.md                              # this file
+├── README.md                              # this reference runbook
 ├── nginx/
-│   └── sth.sun-praise.com.conf            # server block (80 + 443, WS-aware)
+│   └── example.conf                       # template server block (80 + 443, WS-aware)
 └── backup/
     ├── sth-backup.sh                      # sqlite3 .backup + 14-day prune
     ├── sth-backup.service                 # oneshot user unit

@@ -1,10 +1,11 @@
 # Docker Compose for the `sth` static-html preview server.
 #
-# Deploy to a single Linux host (e.g. jd) that already has nginx + certbot
-# configured to terminate TLS for sth.sun-praise.com.
+# Deploy to a Linux host that already has nginx + certbot configured to
+# terminate TLS for your domain. Set STH_SERVER_NAME in .env to the public
+# hostname clients will use (it controls the URLs the server emits).
 #
 # Quick start:
-#   cp .env.example .env       # then edit if needed
+#   cp .env.example .env       # then edit STH_SERVER_NAME
 #   docker compose pull
 #   docker compose up -d
 #   docker compose logs -f app
@@ -38,8 +39,10 @@ services:
       - 0.0.0.0
       - --port
       - "3939"
+      # Public hostname the server uses when constructing session URLs.
+      # Must match the server_name in your nginx site block.
       - --server-name
-      - sth.sun-praise.com
+      - ${STH_SERVER_NAME:?STH_SERVER_NAME must be set in .env}
       - --db
       - /data/sessions.db
     healthcheck:
