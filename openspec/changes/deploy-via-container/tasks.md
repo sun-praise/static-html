@@ -32,7 +32,7 @@
 ## 4. 备份：脚本 + systemd 单元
 
 - [x] 4.1 写入 `deploy/backup/sth-backup.sh`，幂等可重入，`set -euo pipefail`
-- [x] 4.2 通过环境变量定位容器 `STH_CONTAINER_NAME`（默认 `sth-app`），校验存在且 running
+- [x] 4.2 通过 label `com.docker.compose.service=app` 定位运行中的容器（Compose 自动注入该 label）；`STH_CONTAINER_NAME` 可显式覆盖；零或多匹配时 fail-loud
 - [x] 4.3 调用 `docker exec` 在容器内跑 `sqlite3 /data/sessions.db ".backup '/backup/<UTC-date>/sessions.db'"`
 - [x] 4.4 不修改 app 镜像：复用 app 镜像自带的 `sqlite3` CLI
 - [x] 4.5 清理 `/backup` 内早于 14 天的目录（`find -mindepth 1 -maxdepth 1 -type d -mtime +14 -exec rm -rf {} +`）

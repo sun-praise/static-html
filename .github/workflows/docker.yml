@@ -53,6 +53,11 @@ jobs:
             org.opencontainers.image.title=static-html
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.licenses=Apache-2.0
+      # metadata-action does not export a `date` output, so derive
+      # BUILD_DATE here and pass it explicitly to the Dockerfile.
+      - name: Record build timestamp
+        id: ts
+        run: echo "date=$(date -u +%FT%TZ)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push (multi-arch)
         uses: docker/build-push-action@v6
@@ -67,4 +72,4 @@ jobs:
           build-args: |
             VERSION=${{ steps.meta.outputs.version }}
             COMMIT=${{ github.sha }}
-            BUILD_DATE=${{ steps.meta.outputs.date }}
+            BUILD_DATE=${{ steps.ts.outputs.date }}

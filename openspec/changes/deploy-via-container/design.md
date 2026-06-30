@@ -87,4 +87,4 @@
 - 升级流程：打 `v*` tag → CI 推镜像 → 服务器 `cd /opt/sth && docker compose pull && docker compose up -d`
 - 紧急回滚：`docker compose down && docker compose up -d ghcr.io/sun-praise/static-html:v1.3.0`
 - 备份验证：随机抽一日的备份 volume 内文件，`sqlite3 sessions.db ".schema"` 验证可读
-- 健康检查：`/health` 由 server 提供（与 README 中 `wget -qO- http://localhost:3939/` 路径一致）
+- 健康检查：`/` 由 server 提供（与 README 中的本地 smoke test 一致；服务未单独暴露 `/health` 端点）

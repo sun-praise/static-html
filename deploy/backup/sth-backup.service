@@ -1,8 +1,10 @@
 [Unit]
 Description=sth SQLite hot backup
-# Run only when docker is reachable.
-After=docker.service
-Wants=docker.service
+# This is a user unit; we cannot order against the system-level docker.service
+# across the user/system boundary. The script uses ConditionPathExists below +
+# checks `docker inspect` for a running container, so we tolerate the daemon
+# not yet being ready without failing the whole boot.
+ConditionPathExists=/var/run/docker.sock
 
 [Service]
 Type=oneshot

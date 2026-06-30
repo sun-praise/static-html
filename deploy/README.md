@@ -91,8 +91,9 @@ sudo systemctl reload nginx
 ### 5. Verify end-to-end
 
 ```bash
-# Direct (inside the host) — should return HTML
-curl -fsS http://127.0.0.1:3939/ | head -1
+# Direct (inside the host) — should return HTML. The Host header makes the
+# container emit session URLs under sth.sun-praise.com instead of 127.0.0.1.
+curl -fsS -H 'Host: sth.sun-praise.com' http://127.0.0.1:3939/ | head -1
 
 # Through nginx, over TLS — should return the same HTML
 curl -fsS https://sth.sun-praise.com/ | head -1
