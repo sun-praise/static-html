@@ -1,0 +1,63 @@
+# Docker Compose for the `sth` static-html preview server.
+#
+# Deploy to a single Linux host (e.g. jd) that already has nginx + certbot
+# configured to terminate TLS for sth.sun-praise.com.
+#
+# Quick start:
+#   cp .env.example .env       # then edit if needed
+#   docker compose pull
+#   docker compose up -d
+#   docker compose logs -f app
+#
+# Upgrade:
+#   docker compose pull && docker compose up -d
+#
+# Rollback (pin to a known tag):
+#   STH_IMAGE_TAG=1.3.0 docker compose pull app
+#   STH_IMAGE_TAG=1.3.0 docker compose up -d
+#
+name: sth
+
+services:
+  app:
+    image: ghcr.io/sun-praise/static-html:${STH_IMAGE_TAG:-latest}
+    container_name: sth-app
+    restart: unless-stopped
+    pull_policy: always
+    ports:
+      # Bind only to loopback so the host nginx is the only ingress.
+      - "127.0.0.1:3939:3939"
+    volumes:
+      # sth_data:  sessions.db + per-session upload snapshots (persisted across restarts)
+      # sth_backup: target for the daily sqlite3 .backup (writable by app process)
+      - sth_data:/data
+      - sth_backup:/backup
+    command:
+      - start
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "3939"
+      - --server-name
+      - sth.sun-praise.com
+      - --db
+      - /data/sessions.db
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3939/"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+    labels:
+      com.sun-praise.sth.role: app
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  sth_data:
+    name: sth_data
+  sth_backup:
+    name: sth_backup

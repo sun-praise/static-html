@@ -1,0 +1,13 @@
+[Unit]
+Description=Run sth backup daily at 03:00
+
+[Timer]
+# Fire at 03:00 every day. AccuracySec avoids waking the system just for
+# the timer check; 5 minutes is plenty for a backup job.
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+AccuracySec=5min
+Unit=sth-backup.service
+
+[Install]
+WantedBy=timers.target
