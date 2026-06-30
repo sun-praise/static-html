@@ -40,11 +40,18 @@ go build -o dist/sth ./cmd/html-server
 
 `send` 命令会将 HTML 文件及其同目录下的所有常规文件打包为 zip 压缩包上传，然后输出一个会话 URL。在浏览器中打开该 URL 即可查看 HTML 文件，其关联的静态资源也会从服务器上传的快照中提供。
 
+默认以文件所在父目录作为打包根目录。提供两个可选 flag，让这个行为显式且可覆盖：
+
+- `--single` —— 只打包该文件本身，跳过父目录遍历。当文件位于一个很大或无关的目录（如 home 目录、下载文件夹）时使用，避免把无关同级文件一起打包。
+- `--root <dir>` —— 用 `<dir>` 作为打包根目录，替代默认的父目录。入口文件可以嵌套在 `<dir>` 的任意子路径下，服务器会根据上报的相对路径定位它。适用于多文件站点、入口不在打包根的情形。
+
+两个 flag 互斥，不能同时使用。
+
 ## 命令
 
 ```bash
 sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
-sth send <file.html> [--server http://127.0.0.1:3939]
+sth send <file.html> [--server http://127.0.0.1:3939] [--single] [--root <dir>]
 sth tag [--rm] <session-id> <tag...>
 sth categorize <session-id> [category]
 sth project <session-id> [project]
