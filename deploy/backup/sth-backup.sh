@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
 #
-# Hot backup of the `sth` SQLite database.
+# Hot backup of the `sth` data directory: the SQLite database plus the
+# uploaded session snapshots.
 #
-# Runs as a systemd user unit (see sth-backup.{service,timer}). Uses the
-# SQLite Online Backup API (sqlite3 .backup) to take a consistent snapshot
-# while the app is serving requests.
+# Runs as a systemd user unit (see sth-backup.{service,timer}). The DB uses
+# the SQLite Online Backup API (sqlite3 .backup) for a consistent snapshot
+# while the app is serving requests; the uploads tree is copied with
+# `cp -a` (preserves perms, copies recursively).
 #
 # Output goes to the `sth_backup` docker volume, mounted at /backup inside
-# the app container. Old snapshots are pruned (default: > 14 days).
+# the app container:
+#
+#   /backup/<YYYY-MM-DD>/sessions.db   (hot backup)
+#   /backup/<YYYY-MM-DD>/uploads/      (recursive copy of the uploads tree)
+#
+# Old snapshots are pruned (default: > 14 days), whole date-stamped
+# directories at a time so the DB and uploads for a given day stay in sync.
 #
 # Requirements:
 #   * docker on PATH, with permission to talk to the daemon
@@ -25,6 +33,12 @@ CONTAINER_LABEL="${STH_CONTAINER_LABEL:-com.docker.compose.service=app}"
 # Allow explicit override (e.g. when running outside compose).
 CONTAINER_NAME="${STH_CONTAINER_NAME:-}"
 DB_PATH="${STH_DB_PATH:-/data/sessions.db}"
+# Directory where the app stores uploaded session snapshots. MUST match the
+# --upload-root flag passed to the server (docker-compose.yml sets it to
+# /data/uploads). Set STH_BACKUP_UPLOADS=0 to skip the uploads copy entirely
+# (e.g. for deployments that intentionally keep uploads off the data volume).
+UPLOADS_PATH="${STH_UPLOADS_PATH:-/data/uploads}"
+BACKUP_UPLOADS="${STH_BACKUP_UPLOADS:-1}"
 BACKUP_DIR="${STH_BACKUP_DIR:-/backup}"
 RETENTION_DAYS="${STH_BACKUP_RETENTION_DAYS:-14}"
 # -------------------------------------------------------------------------
@@ -75,24 +89,58 @@ if ! docker exec "${target}" test -f "${DB_PATH}"; then
     exit 1
 fi
 
-# 3. Take the hot backup.
+# 4. Prepare the date-stamped target directory.
 date_stamp="$(date -u +%F)"   # YYYY-MM-DD
 target_dir="${BACKUP_DIR%/}/${date_stamp}"
-target_file="${target_dir}/sessions.db"
+target_db="${target_dir}/sessions.db"
+target_uploads="${target_dir}/uploads"
 
-log "writing ${target_file}"
+# 5. Take the hot DB backup and verify it is a readable SQLite database.
+log "writing ${target_db}"
 docker exec "${target}" \
-    sh -c "mkdir -p '${target_dir}' && sqlite3 '${DB_PATH}' \".backup '${target_file}'\""
+    sh -c "mkdir -p '${target_dir}' && sqlite3 '${DB_PATH}' \".backup '${target_db}'\""
 
-# 4. Verify the backup is a readable SQLite database.
 integrity="$(docker exec "${target}" \
-    sh -c "sqlite3 '${target_file}' 'PRAGMA integrity_check;'")"
+    sh -c "sqlite3 '${target_db}' 'PRAGMA integrity_check;'")"
 if [[ "${integrity}" != "ok" ]]; then
-    log "ERROR: integrity_check failed for ${target_file}: ${integrity}"
+    log "ERROR: integrity_check failed for ${target_db}: ${integrity}"
     exit 2
 fi
 
-# 5. Prune old backups (best-effort; do not fail the run).
+# 6. Copy the uploads tree so session files survive a container rebuild.
+#    The uploads directory is created on demand by the app, so a missing
+#    directory means no sessions have been uploaded yet — skip silently in
+#    that case rather than failing the backup.
+if [[ "${BACKUP_UPLOADS}" == "1" ]]; then
+    if docker exec "${target}" test -d "${UPLOADS_PATH}"; then
+        # Count session directories at the source so we can verify the copy.
+        src_count="$(docker exec "${target}" \
+            sh -c "find '${UPLOADS_PATH}' -mindepth 1 -maxdepth 1 -type d -name 'session-*' 2>/dev/null | wc -l")"
+        src_count="${src_count// /}"
+
+        log "copying ${UPLOADS_PATH} -> ${target_uploads} (${src_count} session dir(s))"
+        docker exec "${target}" \
+            sh -c "rm -rf '${target_uploads}' && cp -a '${UPLOADS_PATH}' '${target_uploads}'"
+
+        # Verify the copy has the same session directory count. A mismatch
+        # means files were added/removed mid-copy — warn but don't fail the
+        # whole run, since the DB snapshot is still valid and useful.
+        dst_count="$(docker exec "${target}" \
+            sh -c "find '${target_uploads}' -mindepth 1 -maxdepth 1 -type d -name 'session-*' 2>/dev/null | wc -l")"
+        dst_count="${dst_count// /}"
+        if [[ "${src_count}" != "${dst_count}" ]]; then
+            log "WARNING: uploads copy count mismatch (source=${src_count}, backup=${dst_count}); concurrent session create/delete likely — DB snapshot is unaffected"
+        fi
+    else
+        log "uploads dir ${UPLOADS_PATH} does not exist; skipping uploads copy"
+    fi
+else
+    log "BACKUP_UPLOADS=0; skipping uploads copy"
+fi
+
+# 7. Prune old backups (best-effort; do not fail the run). Whole date
+#    directories are removed, so the DB and uploads for a given day expire
+#    together.
 if [[ "${RETENTION_DAYS}" =~ ^[0-9]+$ ]] && [[ "${RETENTION_DAYS}" -gt 0 ]]; then
     log "pruning backups older than ${RETENTION_DAYS} days"
     docker exec "${target}" \

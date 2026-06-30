@@ -178,15 +178,19 @@ docker compose down -v           # ⚠️ also deletes sth_data and sth_backup
 
 ### Restore from backup
 
-Backups live in the `sth_backup` volume under `/backup/<YYYY-MM-DD>/sessions.db`.
+Backups live in the `sth_backup` volume under `/backup/<YYYY-MM-DD>/` and contain both `sessions.db` and the `uploads/` tree (one snapshot per day, kept in sync).
 
 ```bash
 # 1. Stop the app so no writes race the restore
 docker compose stop app
 
-# 2. Copy the chosen backup over the live DB
+# 2. Copy the chosen backup over the live DB and uploads tree.
+#    (Omit the uploads line if that day's backup has no uploads/ dir, e.g.
+#    the instance predates --upload-root.)
 docker run --rm -v sth_data:/data -v sth_backup:/backup alpine \
-    sh -c 'cp /backup/2026-06-28/sessions.db /data/sessions.db'
+    sh -c 'cp /backup/2026-06-28/sessions.db /data/sessions.db &&
+           rm -rf /data/uploads &&
+           cp -a /backup/2026-06-28/uploads /data/uploads'
 
 # 3. Restart
 docker compose up -d
@@ -225,7 +229,7 @@ deploy/
 ├── nginx/
 │   └── example.conf                       # template server block (80 + 443, WS-aware)
 └── backup/
-    ├── sth-backup.sh                      # sqlite3 .backup + 14-day prune
+    ├── sth-backup.sh                      # sqlite3 .backup + uploads cp + 14-day prune
     ├── sth-backup.service                 # oneshot user unit
     └── sth-backup.timer                   # daily 03:00 trigger
 ```
