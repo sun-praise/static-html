@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -48,6 +49,9 @@ type Server struct {
 	host       string
 	port       int
 	serverName string
+	// serverPort, when > 0, overrides the port used in generated URLs.
+	// 0 means "derive from X-Forwarded-Port header or fall back to port".
+	serverPort int
 	store      *session.Store
 	httpServer *http.Server
 	listener   net.Listener
@@ -418,7 +422,8 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
   </body>
 </html>`))
 
-func New(host string, port int, store *session.Store, serverName string) (*Server, error) {
+
+func New(host string, port int, store *session.Store, serverName string, serverPort int) (*Server, error) {
 	if host == "" {
 		host = DefaultHost
 	}
@@ -429,6 +434,11 @@ func New(host string, port int, store *session.Store, serverName string) (*Serve
 		}
 	}
 
+	if serverPort < 0 || serverPort > 65535 {
+		return nil, fmt.Errorf("server: --server-port must be in range 1-65535, got %d", serverPort)
+	}
+
+
 	if store == nil {
 		return nil, errors.New("server: store must not be nil")
 	}
@@ -437,6 +447,7 @@ func New(host string, port int, store *session.Store, serverName string) (*Serve
 		host:       host,
 		port:       port,
 		serverName: serverName,
+		serverPort: serverPort,
 		store:      store,
 		liveMgr: live.NewManager(func(sessionID, dir string, notify func()) (context.CancelFunc, error) {
 			return live.WatchDir(context.Background(), dir, notify)
@@ -1371,12 +1382,7 @@ func (s *Server) serverBaseURL(r *http.Request) string {
 	defer s.mu.RUnlock()
 
 	if s.serverName != "" {
-		port := s.port
-		if s.listener != nil {
-			if addr, ok := s.listener.Addr().(*net.TCPAddr); ok {
-				port = addr.Port
-			}
-		}
+		port := resolveExternalPort(r, s.serverPort, s.port, s.listener)
 		scheme := determineScheme(r)
 		if (scheme == "http" && port == 80) || (scheme == "https" && port == 443) {
 			return fmt.Sprintf("%s://%s", scheme, s.serverName)
@@ -1385,6 +1391,27 @@ func (s *Server) serverBaseURL(r *http.Request) string {
 	}
 
 	return baseURL(r)
+}
+
+// resolveExternalPort picks the port to use in generated URLs.
+// Priority: --server-port flag > X-Forwarded-Port header > listener port.
+// An invalid or out-of-range header is silently ignored (falls back).
+func resolveExternalPort(r *http.Request, serverPort, listenerPort int, listener net.Listener) int {
+	if serverPort > 0 {
+		return serverPort
+	}
+	if h := r.Header.Get("X-Forwarded-Port"); h != "" {
+		if p, err := strconv.Atoi(h); err == nil && p > 0 && p <= 65535 {
+			return p
+		}
+	}
+	port := listenerPort
+	if listener != nil {
+		if addr, ok := listener.Addr().(*net.TCPAddr); ok {
+			port = addr.Port
+		}
+	}
+	return port
 }
 
 func hasPrefixSuffix(path, prefix, suffix string) bool {
