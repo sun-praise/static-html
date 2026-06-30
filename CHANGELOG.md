@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.4.0] - 2026-06-30
+
+### Added
+- Container deployment support: Dockerfile, docker-compose.yml, and `:latest` image publish workflow
+- Reverse-proxy public port resolution for clean URLs behind nginx (#69)
+- Deploy documentation with nginx reverse-proxy example and systemd backup units
+
+### Docs
+- Add live demo link to READMEs (#67)
+
+### Chore
+- OpenSpec proposal for `public-url` / reverse-proxy port resolution (#68)
+- CI publishes `:latest` Docker tag on default branch
+
 ## [1.3.0] - 2026-06-13
 
 ### Added
