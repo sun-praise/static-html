@@ -7,6 +7,8 @@
 
 本地 HTML 预览服务器，提供 CLI 工具将 HTML 文件注册为可在浏览器中查看的会话。
 
+**在线演示**：<https://sth.sun-praise.com> — 查看[示例会话](https://sth.sun-praise.com/s/985f96abaaf933aab01acc50cbd62e6b/)。
+
 [English](README.md)
 
 ## 环境要求

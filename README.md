@@ -7,6 +7,8 @@
 
 A local HTML preview server with a CLI for registering HTML files as browser-viewable sessions.
 
+**Live demo:** <https://sth.sun-praise.com> — browse a [sample session](https://sth.sun-praise.com/s/985f96abaaf933aab01acc50cbd62e6b/).
+
 [中文](README.cn.md)
 
 ## Requirements
