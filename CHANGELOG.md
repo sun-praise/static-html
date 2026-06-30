@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.0] - 2026-06-30
+
+### Fixed
+- Upload files lost on every container rebuild: uploaded session snapshots were written to the ephemeral container layer, so `docker compose pull && up -d` destroyed all files while metadata survived. Added `--upload-root` flag (symmetric with `--db`); `docker-compose.yml` now sets `--upload-root /data/uploads` so uploads persist on the `sth_data` volume (#70)
+
+### Added
+- Daily backup now snapshots the uploads tree alongside `sessions.db` into `/backup/<date>/uploads/`, with a session-count sanity check. New env knobs `STH_UPLOADS_PATH` and `STH_BACKUP_UPLOADS=0` (#73)
+
 ## [1.4.0] - 2026-06-30
 
 ### Added
