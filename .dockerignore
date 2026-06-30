@@ -1,7 +1,38 @@
+# Version control
 .git
+.gitignore
+
+# Node tooling (skills installer, etc.)
 node_modules
+
+# Build outputs
 dist
+
+# Test fixtures (not needed inside the runtime image)
 /fixtures
+
+# Agent / IDE / planning state
 .claude
+.opencode
+.ralph
+.worktrees
+openspec
+
+# GitHub Actions, deployment manifests, and skills are repo-side only.
+.github
+deploy
+skills
+
+# Docs & legal — not referenced by the binary
 /*.md
 /LICENSE
+
+# Local compose state — never bake into the image
+.env
+.env.*
+docker-compose*.yml
+
+# Dockerfiles themselves (build inputs, not runtime)
+Dockerfile
+Dockerfile.*
+.dockerignore
