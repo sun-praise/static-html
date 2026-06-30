@@ -58,7 +58,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--server-port <n>] [--db /path/to/sessions.db] [--upload-root /path/to/uploads]
-  sth send <file.html> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939]
+  sth send <file.html> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939] [--single] [--root <dir>]
   sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
   sth categorize <session-id> <category> [--db /path/to/sessions.db] [--server http://...]
   sth project <session-id> <project> [--db /path/to/sessions.db] [--server http://...]
@@ -168,6 +168,11 @@ func openStore(flags map[string]string) (*session.Store, error) {
 }
 
 func runSend(args []string, stdout io.Writer) error {
+	args, forceSingle, err := popBoolFlag(args, "single")
+	if err != nil {
+		return err
+	}
+
 	flags, positionals, err := parseArgs(args)
 	if err != nil {
 		return err
@@ -180,6 +185,7 @@ func runSend(args []string, stdout io.Writer) error {
 	tag := flags["tag"]
 	category := flags["category"]
 	project := flags["project"]
+	rootArg, hasRoot := flags["root"]
 
 	if tag == "" {
 		return errors.New("--tag is required")
@@ -189,6 +195,10 @@ func runSend(args []string, stdout io.Writer) error {
 	}
 	if project == "" {
 		return errors.New("--project is required")
+	}
+
+	if forceSingle && hasRoot {
+		return errors.New("--single and --root are mutually exclusive")
 	}
 
 	entryFile, err := filepath.Abs(positionals[0])
@@ -206,6 +216,36 @@ func runSend(args []string, stdout io.Writer) error {
 		return err
 	}
 
+	rootDir := filepath.Dir(entryFile)
+	entryPath := filepath.Base(entryFile)
+
+	if hasRoot {
+		if rootArg == "" {
+			return errors.New("--root must not be empty")
+		}
+		absRoot, err := filepath.Abs(rootArg)
+		if err != nil {
+			return fmt.Errorf("failed to resolve --root path: %w", err)
+		}
+		info, err := os.Stat(absRoot)
+		if err != nil {
+			return fmt.Errorf("--root directory does not exist: %q", absRoot)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("--root must be a directory: %q", absRoot)
+		}
+		rel, err := filepath.Rel(absRoot, entryFile)
+		if err != nil {
+			return fmt.Errorf("failed to locate entry file under --root: %w", err)
+		}
+		relSlash := filepath.ToSlash(rel)
+		if rel == ".." || strings.HasPrefix(relSlash, "../") {
+			return fmt.Errorf("entry file %q is outside --root %q", entryFile, absRoot)
+		}
+		rootDir = absRoot
+		entryPath = relSlash
+	}
+
 	serverURL := server.DefaultServerURL
 	if value, ok := flags["server"]; ok {
 		serverURL = value
@@ -218,7 +258,7 @@ func runSend(args []string, stdout io.Writer) error {
 
 	tags := strings.Split(tag, ",")
 
-	requestBody, contentType, err := newUploadRequestBody(entryFile, tags, category, project)
+	requestBody, contentType, err := newUploadRequestBody(entryFile, rootDir, entryPath, forceSingle, tags, category, project)
 	if err != nil {
 		return err
 	}
@@ -260,10 +300,9 @@ func runSend(args []string, stdout io.Writer) error {
 	return nil
 }
 
-func newUploadRequestBody(entryFile string, tags []string, category, project string) (io.Reader, string, error) {
-	rootDir := filepath.Dir(entryFile)
-	entryPath := filepath.Base(entryFile)
-	uploadName := filepath.Base(entryPath)
+func newUploadRequestBody(entryFile, rootDir, entryPath string, forceSingle bool, tags []string, category, project string) (io.Reader, string, error) {
+	uploadName := filepath.Base(entryFile)
+	entryPathSlash := filepath.ToSlash(entryPath)
 
 	reader, writer := io.Pipe()
 	formWriter := multipart.NewWriter(writer)
@@ -275,7 +314,7 @@ func newUploadRequestBody(entryFile string, tags []string, category, project str
 			_ = writer.CloseWithError(err)
 			return
 		}
-		if err := formWriter.WriteField("entryPath", filepath.ToSlash(entryPath)); err != nil {
+		if err := formWriter.WriteField("entryPath", entryPathSlash); err != nil {
 			_ = writer.CloseWithError(err)
 			return
 		}
@@ -300,7 +339,12 @@ func newUploadRequestBody(entryFile string, tags []string, category, project str
 			return
 		}
 
-		if err := writeZIPArchive(rootDir, archiveWriter); err != nil {
+		if forceSingle {
+			if err := writeForcedSingleEntry(archiveWriter, entryFile, entryPathSlash); err != nil {
+				_ = writer.CloseWithError(err)
+				return
+			}
+		} else if err := writeZIPArchive(rootDir, archiveWriter); err != nil {
 			_ = writer.CloseWithError(err)
 			return
 		}
@@ -379,6 +423,38 @@ func writeSingleFileEntry(archive *zip.Writer, dir string, entries []os.DirEntry
 		return closeErr
 	}
 	return fmt.Errorf("no web asset found in directory")
+}
+
+// writeForcedSingleEntry archives only the entry file itself, storing it under
+// archiveName. It skips the parent-directory walk entirely so the upload never
+// pulls in unrelated sibling files (e.g. when the file lives in a large dir).
+func writeForcedSingleEntry(target io.Writer, entryFile, archiveName string) error {
+	archive := zip.NewWriter(target)
+
+	sourceFile, err := os.Open(entryFile)
+	if err != nil {
+		_ = archive.Close()
+		return err
+	}
+
+	w, err := archive.Create(archiveName)
+	if err != nil {
+		_ = sourceFile.Close()
+		_ = archive.Close()
+		return err
+	}
+
+	_, copyErr := io.Copy(w, sourceFile)
+	closeErr := sourceFile.Close()
+	if copyErr != nil {
+		_ = archive.Close()
+		return copyErr
+	}
+	if closeErr != nil {
+		_ = archive.Close()
+		return closeErr
+	}
+	return archive.Close()
 }
 
 func writeDirEntries(archive *zip.Writer, rootDir string) error {
@@ -505,6 +581,46 @@ func parseArgs(args []string) (map[string]string, []string, error) {
 	}
 
 	return flags, positionals, nil
+}
+
+// popBoolFlag removes a boolean flag (e.g. --single or --single=true/false) from
+// args, returning the remaining args and the resolved value. Unlike parseArgs,
+// it supports value-less boolean flags.
+func popBoolFlag(args []string, name string) ([]string, bool, error) {
+	flagName := "--" + name
+	out := make([]string, 0, len(args))
+	seen := false
+	value := false
+
+	for _, a := range args {
+		if a == flagName {
+			if seen {
+				return nil, false, fmt.Errorf("duplicate flag --%s", name)
+			}
+			seen = true
+			value = true
+			continue
+		}
+		if strings.HasPrefix(a, flagName+"=") {
+			if seen {
+				return nil, false, fmt.Errorf("duplicate flag --%s", name)
+			}
+			raw := strings.TrimPrefix(a, flagName+"=")
+			switch strings.ToLower(raw) {
+			case "true", "1":
+				value = true
+			case "false", "0":
+				value = false
+			default:
+				return nil, false, fmt.Errorf("invalid value for --%s: %q (expected true or false)", name, raw)
+			}
+			seen = true
+			continue
+		}
+		out = append(out, a)
+	}
+
+	return out, value, nil
 }
 
 func runDelete(args []string, stdout io.Writer) error {

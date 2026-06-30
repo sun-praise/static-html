@@ -40,11 +40,18 @@ Register an HTML file:
 
 The `send` command uploads the HTML file and all regular files under the same source directory as a zip archive, then prints a session URL. Open that URL in a browser to view the HTML file with its relative assets served from the uploaded snapshot on the server.
 
+By default the file's parent directory is treated as the archive root. Two optional flags make this behavior explicit and overridable:
+
+- `--single` — archive only the entry file itself, skipping the parent-directory walk. Use this when the file lives in a large or unrelated directory (e.g. your home dir, a downloads folder) to avoid bundling unrelated siblings.
+- `--root <dir>` — use `<dir>` as the archive root instead of the entry's parent. The entry may be nested anywhere under `<dir>`; the server locates it via the reported relative path. Useful for multi-file sites where the entry is not at the package root.
+
+The two flags are mutually exclusive.
+
 ## Commands
 
 ```bash
 sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
-sth send <file.html> [--server http://127.0.0.1:3939]
+sth send <file.html> [--server http://127.0.0.1:3939] [--single] [--root <dir>]
 sth tag [--rm] <session-id> <tag...>
 sth categorize <session-id> [category]
 sth project <session-id> [project]
