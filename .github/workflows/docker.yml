@@ -49,6 +49,9 @@ jobs:
             type=semver,pattern={{major}}
             type=ref,event=branch
             type=sha,prefix=sha-,format=short
+            # Rolling `latest` tag tracking the default branch, so that
+            # docker-compose.yml's default `STH_IMAGE_TAG=latest` resolves.
+            type=raw,value=latest,enable={{is_default_branch}}
           labels: |
             org.opencontainers.image.title=static-html
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
