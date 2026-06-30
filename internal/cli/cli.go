@@ -57,7 +57,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
-  sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--server-port <n>] [--db /path/to/sessions.db]
+  sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--server-port <n>] [--db /path/to/sessions.db] [--upload-root /path/to/uploads]
   sth send <file.html> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939]
   sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
   sth categorize <session-id> <category> [--db /path/to/sessions.db] [--server http://...]
@@ -115,12 +115,17 @@ func runStart(args []string, stdout io.Writer) error {
 		serverPort = n
 	}
 
+	uploadRoot := ""
+	if value, ok := flags["upload-root"]; ok {
+		uploadRoot = value
+	}
+
 	store, err := openStore(flags)
 	if err != nil {
 		return err
 	}
 
-	srv, err := server.New(bindAddr, port, store, serverName, serverPort)
+	srv, err := server.New(bindAddr, port, store, serverName, serverPort, uploadRoot)
 	if err != nil {
 		return errors.Join(err, store.Close())
 	}

@@ -23,7 +23,7 @@ import (
 func TestNewRequiresStore(t *testing.T) {
 	t.Parallel()
 
-	_, err := New("127.0.0.1", 0, nil, "", 0)
+	_, err := New("127.0.0.1", 0, nil, "", 0, "")
 	if err == nil {
 		t.Fatal("expected nil store to be rejected")
 	}
@@ -33,7 +33,7 @@ func TestServerNameOverridesOrigin(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "192.168.2.14", 0)
+	srv, err := New("127.0.0.1", 0, store, "192.168.2.14", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestServerNameDomain(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "myhost.local", 0)
+	srv, err := New("127.0.0.1", 0, store, "myhost.local", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestServerNameEmptyFallsBack(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestServerNameValidation(t *testing.T) {
 		"a..b",
 		"host..domain.com",
 	} {
-		_, err := New("127.0.0.1", 0, store, invalid, 0)
+		_, err := New("127.0.0.1", 0, store, invalid, 0, "")
 		if err == nil {
 			t.Errorf("expected serverName %q to be rejected", invalid)
 		}
@@ -151,7 +151,7 @@ func TestServerNameUsedInSessionURL(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "192.168.2.14", 0)
+	srv, err := New("127.0.0.1", 0, store, "192.168.2.14", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestServerNameValidationAcceptsValid(t *testing.T) {
 		"255.255.255.255",
 		"host123",
 	} {
-		_, err := New("127.0.0.1", 0, store, valid, 0)
+		_, err := New("127.0.0.1", 0, store, valid, 0, "")
 		if err != nil {
 			t.Errorf("expected serverName %q to be accepted, got error: %v", valid, err)
 		}
@@ -250,7 +250,7 @@ func TestServerBaseURLDefaultPort(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := newTestStore(t)
-			srv, err := New("127.0.0.1", tt.port, store, tt.serverName, 0)
+			srv, err := New("127.0.0.1", tt.port, store, tt.serverName, 0, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -272,7 +272,7 @@ func TestServerBaseURLFallback(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 3939, store, "", 0)
+	srv, err := New("127.0.0.1", 3939, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +288,7 @@ func TestServerBaseURLForwardedProto(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 443, store, "secure.example.com", 0)
+	srv, err := New("127.0.0.1", 443, store, "secure.example.com", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestServerBaseURLForwardedPort(t *testing.T) {
 	// Server listens on 3939 behind nginx on 443. X-Forwarded-Port: 443
 	// must make the generated URL drop the port suffix.
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 3939, store, "sth.example.com", 0)
+	srv, err := New("127.0.0.1", 3939, store, "sth.example.com", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestServerBaseURLServerPortFlagOverridesHeader(t *testing.T) {
 
 	// --server-port 8443 must override both X-Forwarded-Port and listener.
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 3939, store, "sth.example.com", 8443)
+	srv, err := New("127.0.0.1", 3939, store, "sth.example.com", 8443, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestServerBaseURLNoFlagNoHeaderFallsBackToListener(t *testing.T) {
 
 	// No flag, no header: listener port 3939 wins (current behavior preserved).
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 3939, store, "sth.example.com", 0)
+	srv, err := New("127.0.0.1", 3939, store, "sth.example.com", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +366,7 @@ func TestServerBaseURLInvalidForwardedPortIgnored(t *testing.T) {
 
 	// Non-numeric / out-of-range X-Forwarded-Port must fall back silently.
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 3939, store, "sth.example.com", 0)
+	srv, err := New("127.0.0.1", 3939, store, "sth.example.com", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestCreateSessionAndServeAssets(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestTraversalIsRejected(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +552,7 @@ func TestCreateUploadedSessionAndServeAssets(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -670,6 +670,123 @@ func TestCreateUploadedSessionAndServeAssets(t *testing.T) {
 	}
 }
 
+// TestUploadRootPlacesSessionUnderConfiguredDir verifies that when New() is
+// given a non-empty uploadRoot, uploaded session snapshots land under that
+// directory (not the platform default). This is the contract container
+// deployments rely on to persist uploads across restarts.
+func TestUploadRootPlacesSessionUnderConfiguredDir(t *testing.T) {
+	t.Parallel()
+
+	uploadRoot := t.TempDir()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store, "", 0, uploadRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	// Build a minimal archive with a single index.html.
+	body := &bytes.Buffer{}
+	formWriter := multipart.NewWriter(body)
+	if err := formWriter.WriteField("entryPath", "index.html"); err != nil {
+		t.Fatal(err)
+	}
+	if err := formWriter.WriteField("category", "uploaded"); err != nil {
+		t.Fatal(err)
+	}
+	if err := formWriter.WriteField("project", "test-proj"); err != nil {
+		t.Fatal(err)
+	}
+	if err := formWriter.WriteField("tags", "upload"); err != nil {
+		t.Fatal(err)
+	}
+	archivePart, err := formWriter.CreateFormFile("archive", "site.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveWriter := zip.NewWriter(archivePart)
+	fileWriter, err := archiveWriter.Create("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(fileWriter, "<!doctype html><h1>root-test</h1>"); err != nil {
+		t.Fatal(err)
+	}
+	if err := archiveWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := formWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	createResp, err := http.Post(srv.Origin()+"/api/sessions", formWriter.FormDataContentType(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		responseBody, _ := io.ReadAll(createResp.Body)
+		t.Fatalf("unexpected create status: %d body=%s", createResp.StatusCode, responseBody)
+	}
+
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+
+	// The upload root must now contain exactly one session-* directory.
+	entries, err := os.ReadDir(uploadRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sessionDir string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() && strings.HasPrefix(name, "session-") {
+			if sessionDir != "" {
+				t.Fatalf("expected exactly one session dir under upload root, found multiple (%q and %q)", sessionDir, name)
+			}
+			sessionDir = name
+		}
+	}
+	if sessionDir == "" {
+		t.Fatalf("expected a session-* directory under upload root %q, found none (entries=%v)", uploadRoot, entries)
+	}
+
+	// The uploaded index.html must live inside that session dir.
+	servedEntry := filepath.Join(uploadRoot, sessionDir, "index.html")
+	if _, err := os.Stat(servedEntry); err != nil {
+		t.Fatalf("expected uploaded entry at %q: %v", servedEntry, err)
+	}
+
+	// And the preview URL must serve it.
+	htmlResp, err := http.Get(payload.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer htmlResp.Body.Close()
+	htmlBytes, err := io.ReadAll(htmlResp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if htmlResp.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected preview status: %d", htmlResp.StatusCode)
+	}
+	if !bytes.Contains(htmlBytes, []byte("root-test")) {
+		t.Fatalf("preview html missing expected content: %s", string(htmlBytes))
+	}
+}
+
 func newTestStore(t *testing.T) *session.Store {
 	t.Helper()
 
@@ -730,7 +847,7 @@ func TestDeleteSessionSuccess(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -774,7 +891,7 @@ func TestDeleteSessionNotFound(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -813,7 +930,7 @@ func TestSearchByFileContent(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -858,7 +975,7 @@ func TestSearchNoResults(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -904,7 +1021,7 @@ func TestSearchContentNoDuplicate(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -950,7 +1067,7 @@ func TestDeleteSessionIdempotent(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -992,7 +1109,7 @@ func TestDownloadSession(t *testing.T) {
 	}
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1050,7 +1167,7 @@ func TestDownloadSessionNotFound(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t)
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1234,7 +1351,7 @@ func TestGetPeersSuccess(t *testing.T) {
 	s2 := createSessionWithMetadata(t, store, "/tmp/beta.html", "tutorial", "my-site")
 	s3 := createSessionWithMetadata(t, store, "/tmp/gamma.html", "docs", "my-site")
 
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1291,7 +1408,7 @@ func TestGetPeersEmpty(t *testing.T) {
 	// A second session with completely different metadata.
 	createSessionWithMetadata(t, store, "/tmp/beta.html", "docs", "other-app")
 
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1329,7 +1446,7 @@ func TestGetPeersNotFound(t *testing.T) {
 
 	store := newTestStore(t)
 
-	srv, err := New("127.0.0.1", 0, store, "", 0)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}

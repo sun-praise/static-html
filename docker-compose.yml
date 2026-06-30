@@ -45,6 +45,12 @@ services:
       - ${STH_SERVER_NAME:?STH_SERVER_NAME must be set in .env}
       - --db
       - /data/sessions.db
+      # Where uploaded session snapshots are extracted. MUST live on the
+      # persisted sth_data volume — the default (~/.local/state/sth/uploads
+      # inside the container) is ephemeral and would vanish on every
+      # `docker compose pull`, losing every session's files.
+      - --upload-root
+      - /data/uploads
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:3939/"]
       interval: 30s
