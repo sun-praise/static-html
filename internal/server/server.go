@@ -52,6 +52,12 @@ type Server struct {
 	// serverPort, when > 0, overrides the port used in generated URLs.
 	// 0 means "derive from X-Forwarded-Port header or fall back to port".
 	serverPort int
+	// uploadRoot, when non-empty, overrides the directory used to store
+	// uploaded session snapshots. Empty falls back to the platform default
+	// (~/.local/state/sth/uploads under $XDG_STATE_HOME or $HOME). Set via
+	// --upload-root so container deployments can place uploads on a
+	// persistent volume alongside the DB.
+	uploadRoot string
 	store      *session.Store
 	httpServer *http.Server
 	listener   net.Listener
@@ -423,7 +429,7 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
 </html>`))
 
 
-func New(host string, port int, store *session.Store, serverName string, serverPort int) (*Server, error) {
+func New(host string, port int, store *session.Store, serverName string, serverPort int, uploadRoot string) (*Server, error) {
 	if host == "" {
 		host = DefaultHost
 	}
@@ -449,6 +455,7 @@ func New(host string, port int, store *session.Store, serverName string, serverP
 		serverName: serverName,
 		serverPort: serverPort,
 		store:      store,
+		uploadRoot: uploadRoot,
 		liveMgr: live.NewManager(func(sessionID, dir string, notify func()) (context.CancelFunc, error) {
 			return live.WatchDir(context.Background(), dir, notify)
 		}),
@@ -943,7 +950,7 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	uploadRoot, err := defaultUploadRoot()
+	uploadRoot, err := s.resolveUploadRoot()
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1208,6 +1215,18 @@ func defaultUploadRoot() (string, error) {
 	}
 
 	return filepath.Join(stateDir, "sth", "uploads"), nil
+}
+
+// resolveUploadRoot returns the directory used to store uploaded session
+// snapshots. It uses s.uploadRoot when set (via --upload-root), otherwise
+// falls back to the platform default. Container deployments must set
+// --upload-root to a path on a persistent volume so uploads survive
+// container restarts alongside the DB.
+func (s *Server) resolveUploadRoot() (string, error) {
+	if s.uploadRoot != "" {
+		return s.uploadRoot, nil
+	}
+	return defaultUploadRoot()
 }
 
 func normalizeArchivePath(value string) (string, error) {
