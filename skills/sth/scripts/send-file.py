@@ -32,6 +32,10 @@ def usage(code=1):
 
 
 def trim(value):
+    """Normalize an option value: strip surrounding whitespace and collapse newlines to spaces.
+
+    Only formats the value; emptiness is NOT validated here and must be checked by the caller.
+    """
     value = value.strip()
     value = value.replace("\n", " ")
     return value
@@ -49,15 +53,15 @@ def parse_args(argv):
     if argv[0] in ("--help", "-h"):
         usage(0)
 
+    def need_value(name, val):
+        if val is None:
+            print(f"Error: {name} requires a value", file=sys.stderr)
+            usage(1)
+        return trim(val)
+
     i = 0
     while i < len(argv):
         arg = argv[i]
-
-        def need_value(name, val):
-            if val is None:
-                print(f"Error: {name} requires a value", file=sys.stderr)
-                usage(1)
-            return trim(val)
 
         if arg in ("--help", "-h"):
             usage(0)
@@ -184,6 +188,8 @@ def main():
     script_dir = Path(__file__).resolve().parent
     repo_dir = bootstrap_repo(script_dir)
     sth_bin = repo_dir / "dist" / "sth"
+    if not sth_bin.is_file():
+        die(f"Error: sth binary not found: {sth_bin}. Did bootstrap-repo.sh build successfully?")
 
     with tempfile.TemporaryDirectory(prefix="send-file-") as tmpdir:
         tmp_path = Path(tmpdir)
