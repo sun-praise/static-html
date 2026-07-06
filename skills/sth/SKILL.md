@@ -37,12 +37,12 @@ Defaults:
 3. Register an HTML file:
 
 ```bash
-bash scripts/send-file.sh /absolute/or/relative/file.html --tag TAG --category CAT --project PROJ [--server URL]
+python3 scripts/send-file.py /absolute/or/relative/file.html --tag TAG --category CAT --project PROJ [--server URL]
 ```
 
 The command copies the HTML file to an isolated temporary directory (avoiding packaging unrelated files), uploads it, and prints a session URL like `http://192.168.2.14:3939/s/<id>/`.
 
-If you need to include sibling resources (CSS, JS, images) alongside the HTML file, use `sth send` directly with the directory containing those resources instead of `send-file.sh`:
+If you need to include sibling resources (CSS, JS, images) alongside the HTML file, use `sth send` directly with the directory containing those resources instead of `send-file.py`:
 
 ```bash
 sth send ./my-project-dir --tag demo --category preview --project myproj [--server URL]
@@ -90,7 +90,7 @@ All metadata commands accept `--db /path/to/sessions.db` to override the databas
 - `STATIC_HTML_SKIP_UPDATE`: default `1` (skip fetch/pull). Set to `0` to enable auto-update on each invocation
 - `STATIC_HTML_HOST`: server host, default auto-detected LAN IP (e.g. `192.168.2.14`)
 - `STATIC_HTML_PORT`: default port for `start-server.sh`
-- `STATIC_HTML_SERVER_URL`: default server URL for `send-file.sh`
+- `STATIC_HTML_SERVER_URL`: default server URL for `send-file.py`
 
 ## FAQ
 
@@ -126,10 +126,10 @@ mkdir /tmp/report-dir && cp report.html /tmp/report-dir/
 sth send /tmp/report-dir/report.html --tag test --category cat --project proj
 ```
 
-或者直接使用 `send-file.sh`，它会自动处理隔离：
+或者直接使用 `send-file.py`，它会自动处理隔离：
 
 ```bash
-bash scripts/send-file.sh report.html --tag test --category cat --project proj
+python3 scripts/send-file.py report.html --tag test --category cat --project proj
 ```
 
 如果 HTML 文件有同目录的兄弟资源（CSS/JS/图片），`sth send` 会自动检测并一起打包，无需手动处理。
