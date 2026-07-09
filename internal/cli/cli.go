@@ -50,6 +50,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runDelete(args[1:], stdout)
 	case "watch":
 		return runWatch(args[1:], stdout)
+	case "user":
+		return runUser(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -57,18 +59,35 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
-  sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--server-port <n>] [--db /path/to/sessions.db] [--upload-root /path/to/uploads]
-  sth send <file.html> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939] [--single] [--root <dir>]
+  sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--server-port <n>] [--db /path/to/sessions.db] [--upload-root /path/to/uploads] [--auth] [--protect-previews]
+  sth send <file.html> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939] [--single] [--root <dir>] [--api-key <key>]
   sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
   sth categorize <session-id> <category> [--db /path/to/sessions.db] [--server http://...]
   sth project <session-id> <project> [--db /path/to/sessions.db] [--server http://...]
   sth list [--tag <tag>] [--category <cat>] [--project <proj>] [--limit <n>] [--offset <n>] [--db /path/to/sessions.db]
   sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>] [--limit <n>] [--offset <n>] [--db /path/to/sessions.db]
   sth delete <session-id> [--db /path/to/sessions.db]
-  sth watch <path> --session <id> [--server http://127.0.0.1:3939]`)
+  sth watch <path> --session <id> [--server http://127.0.0.1:3939] [--api-key <key>]
+  sth user <add <name> | issue-key <name> | revoke-key <id|prefix> | list> [--db /path/to/sessions.db]
+
+Authentication:
+  --auth                 Enable API-key auth on the server (or STH_AUTH=true). Default off.
+  --protect-previews     Require a key for /s/<id>/ previews too (implies --auth).
+  --api-key <key>        API key for send/watch (or STH_API_KEY env var).`)
 }
 
 func runStart(args []string, stdout io.Writer) error {
+	// popBoolFlagWithPresence handles value-less, =value, and presence
+	// detection so --auth=false can override STH_AUTH=true.
+	args, authSet, authFlag, err := popBoolFlagWithPresence(args, "auth")
+	if err != nil {
+		return err
+	}
+	args, protectSet, protectPreviewsFlag, err := popBoolFlagWithPresence(args, "protect-previews")
+	if err != nil {
+		return err
+	}
+
 	flags, _, err := parseArgs(args)
 	if err != nil {
 		return err
@@ -130,6 +149,31 @@ func runStart(args []string, stdout io.Writer) error {
 		return errors.Join(err, store.Close())
 	}
 
+	// Resolve auth posture: explicit flag wins, else env, else false.
+	authEnabled := resolveBool(authSet, authFlag, "STH_AUTH")
+	protectPreviews := resolveBool(protectSet, protectPreviewsFlag, "STH_PROTECT_PREVIEWS")
+
+	// protectPreviews implies authEnabled (relies on auth's key infra). Set
+	// protect first so its setter force-enables auth regardless.
+	if protectPreviews {
+		srv.SetProtectPreviews(true)
+		// If the user did not explicitly request auth, surface the implicit
+		// enablement so the running posture is unambiguous.
+		if !authEnabled && !authSet {
+			fmt.Fprintln(os.Stderr, "note: --protect-previews implies --auth; authentication is enabled.")
+		}
+	} else if authEnabled {
+		srv.SetAuthEnabled(true)
+	}
+
+	if srv.AuthEnabled() {
+		users, _ := store.ListUsers()
+		fmt.Fprintf(os.Stderr, "auth: enabled (protect-previews=%t, users=%d)\n", srv.ProtectPreviews(), len(users))
+		if len(users) == 0 {
+			fmt.Fprintln(os.Stderr, "note: no users exist yet. Create one with `sth user add <name>` before requiring auth.")
+		}
+	}
+
 	if err := srv.Start(); err != nil {
 		return errors.Join(err, store.Close())
 	}
@@ -165,6 +209,24 @@ func openStore(flags map[string]string) (*session.Store, error) {
 	}
 
 	return session.NewStore()
+}
+
+// resolveBool resolves a boolean setting with explicit-flag-overrides-env
+// semantics. When the flag was explicitly set, its value wins; otherwise the
+// named environment variable is consulted (accepting true/1/false/0); when
+// neither is set, the default false is returned.
+func resolveBool(flagSet, flagValue bool, envVar string) bool {
+	if flagSet {
+		return flagValue
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(envVar))) {
+	case "true", "1":
+		return true
+	case "false", "0":
+		return false
+	default:
+		return false
+	}
 }
 
 func runSend(args []string, stdout io.Writer) error {
@@ -268,6 +330,12 @@ func runSend(args []string, stdout io.Writer) error {
 	}
 	request.Header.Set("Content-Type", contentType)
 
+	// Attach API key when provided (flag or env). The server decides whether
+	// to enforce; the client simply forwards whatever credential it has.
+	if apiKey := resolveAPIKey(flags); apiKey != "" {
+		request.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
 	client := &http.Client{Timeout: 60 * time.Second}
 	response, err := client.Do(request)
 	if err != nil {
@@ -289,6 +357,9 @@ func runSend(args []string, stdout io.Writer) error {
 		return errors.New("server returned an invalid response")
 	}
 
+	if response.StatusCode == http.StatusUnauthorized {
+		return errors.New("server requires authentication (401). Provide a valid API key via --api-key or the STH_API_KEY environment variable.")
+	}
 	if response.StatusCode >= http.StatusBadRequest {
 		if resp.Error != "" {
 			return errors.New(resp.Error)
@@ -298,6 +369,15 @@ func runSend(args []string, stdout io.Writer) error {
 
 	fmt.Fprintln(stdout, resp.URL)
 	return nil
+}
+
+// resolveAPIKey returns the API key from --api-key (flag) when set, otherwise
+// from the STH_API_KEY environment variable, otherwise empty. Flag precedence.
+func resolveAPIKey(flags map[string]string) string {
+	if v, ok := flags["api-key"]; ok {
+		return v
+	}
+	return os.Getenv("STH_API_KEY")
 }
 
 func newUploadRequestBody(entryFile, rootDir, entryPath string, forceSingle bool, tags []string, category, project string) (io.Reader, string, error) {
@@ -621,6 +701,46 @@ func popBoolFlag(args []string, name string) ([]string, bool, error) {
 	}
 
 	return out, value, nil
+}
+
+// popBoolFlagWithPresence is like popBoolFlag but also reports whether the flag
+// was present at all, so callers can distinguish "--auth=false" (explicitly
+// disabled, overrides env) from the flag being absent (fall back to env).
+func popBoolFlagWithPresence(args []string, name string) (remaining []string, present, value bool, err error) {
+	flagName := "--" + name
+	out := make([]string, 0, len(args))
+	seen := false
+	v := false
+
+	for _, a := range args {
+		if a == flagName {
+			if seen {
+				return nil, false, false, fmt.Errorf("duplicate flag --%s", name)
+			}
+			seen = true
+			v = true
+			continue
+		}
+		if strings.HasPrefix(a, flagName+"=") {
+			if seen {
+				return nil, false, false, fmt.Errorf("duplicate flag --%s", name)
+			}
+			raw := strings.TrimPrefix(a, flagName+"=")
+			switch strings.ToLower(raw) {
+			case "true", "1":
+				v = true
+			case "false", "0":
+				v = false
+			default:
+				return nil, false, false, fmt.Errorf("invalid value for --%s: %q (expected true or false)", name, raw)
+			}
+			seen = true
+			continue
+		}
+		out = append(out, a)
+	}
+
+	return out, seen, v, nil
 }
 
 func runDelete(args []string, stdout io.Writer) error {

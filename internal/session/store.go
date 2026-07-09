@@ -246,7 +246,11 @@ func (s *Store) init() error {
 		return err
 	}
 
-	return s.initMetadata()
+	if err := s.initMetadata(); err != nil {
+		return err
+	}
+
+	return s.initAuth()
 }
 
 func (s *Store) ensureColumns() error {
@@ -287,6 +291,14 @@ func (s *Store) ensureColumns() error {
 	}
 	if !columns["deleted_at"] {
 		if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN deleted_at INTEGER DEFAULT NULL`); err != nil {
+			return err
+		}
+	}
+	// user_id is nullable: NULL for sessions created while auth is disabled
+	// (backward compatible) or before the column existed; set to a user id
+	// when a session is created under --auth.
+	if !columns["user_id"] {
+		if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN user_id TEXT DEFAULT NULL`); err != nil {
 			return err
 		}
 	}

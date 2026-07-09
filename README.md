@@ -108,6 +108,65 @@ Performs full-text matching across session metadata (tags, category, project, fi
 - `sth search <query>` does full-text matching across session content.
 - They can be combined: `sth search <query> --tag <tag>` narrows text results to a specific tag.
 
+## Authentication
+
+By default `sth` runs **without authentication**, which is fine for local
+single-user previewing. For shared or multi-user deployments, enable optional
+API-key authentication.
+
+### Enabling auth
+
+Start the server with `--auth` (or `STH_AUTH=true`):
+
+```bash
+sth start --auth
+# or: STH_AUTH=true sth start
+```
+
+When auth is on, all mutating endpoints and list/search/peers/download require
+a valid `Authorization: Bearer <key>` header. `/s/<id>/` previews stay **open**
+by default so you can still share preview links. To also require a key for
+previews, add `--protect-previews` (implies `--auth`):
+
+```bash
+sth start --auth --protect-previews
+```
+
+### Managing users and API keys
+
+`sth user` operates directly on the local database (no running server needed):
+
+```bash
+sth user add alice                 # create a user
+sth user issue-key alice           # print a new API key (shown ONCE)
+sth user list                      # list users and active key counts
+sth user revoke-key <id|prefix>    # revoke a key (fails closed on ambiguous prefix)
+```
+
+The plaintext key is printed only at issue time. Only a salted SHA-256 hash is
+stored; there is no way to recover a key after it is issued.
+
+### Sending with a key
+
+`sth send` and `sth watch` accept `--api-key` or the `STH_API_KEY` environment
+variable (the flag wins):
+
+```bash
+sth send index.html --tag t --category c --project p --api-key sth_xxxx
+# or: export STH_API_KEY=sth_xxxx && sth send ...
+```
+
+If the server has auth on and no key is provided, the client reports a 401 with
+an actionable hint pointing at `--api-key` / `STH_API_KEY`.
+
+### Owner isolation
+
+When auth is on, each session is owned by the user who created it. Users can
+only list, search, read, modify, or download their own sessions. Sessions
+created before auth was enabled have no owner and are not accessible to any
+authenticated user — re-upload them after enabling auth if you need to keep
+them.
+
 ## Test
 
 ```bash
