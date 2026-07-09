@@ -236,3 +236,25 @@ func TestRequireOwner_AuthOffPermissive(t *testing.T) {
 		t.Fatal("requireOwner should pass through when auth is off")
 	}
 }
+
+// TestRequireOwner_MissingSessionIs404Not403: under auth, a session that does
+// not exist must return 404 (not 403), so a client can distinguish "not found"
+// from "exists but not yours".
+func TestRequireOwner_MissingSessionIs404Not403(t *testing.T) {
+	t.Parallel()
+	srv, store := newAuthServer(t, true, false)
+
+	user, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, _, err := store.IssueAPIKey(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := doReq(t, srv.httpServer.Handler, http.MethodGet, "/api/sessions/does-not-exist/metadata", key)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing session under auth, got %d", rec.Code)
+	}
+}

@@ -1,9 +1,11 @@
 package session
 
 import (
+	"database/sql"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func newAuthTestStore(t *testing.T) *Store {
@@ -139,43 +141,91 @@ func TestVerifyAPIKey_Garbage(t *testing.T) {
 	}
 }
 
-func TestRevokeAPIKey_PrefixAmbiguousFailsClosed(t *testing.T) {
+// insertAPIKeyRow inserts a raw api_keys row with a controlled key_prefix so
+// tests can deterministically reproduce prefix collisions (IssueAPIKey uses
+// random prefixes that never collide in practice).
+func insertAPIKeyRow(t *testing.T, store *Store, id, userID, prefix string) {
+	t.Helper()
+	_, err := store.db.Exec(
+		`INSERT INTO api_keys (id, user_id, key_hash, salt, hash_algo, key_prefix, created_at)
+		 VALUES (?, ?, 'deadbeef', 'salt', 'sha256', ?, ?)`,
+		id, userID, prefix, time.Now().UTC().UnixNano(),
+	)
+	if err != nil {
+		t.Fatalf("insert api_keys row: %v", err)
+	}
+}
+
+func TestRevokeAPIKey_AmbiguousPrefixFailsClosed(t *testing.T) {
 	t.Parallel()
 	store := newAuthTestStore(t)
 	user, err := store.CreateUser("alice")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Issue several keys; their random prefixes will differ, so revoke by a
-	// single-character prefix that is very likely to match none — but to
-	// deterministically test ambiguity we instead revoke one by id and then
-	// check the ambiguous path via a shared empty-prefix is impossible.
-	// Instead: issue 2 keys and revoke by exact id, confirming prefix path
-	// works for unique matches.
-	p1, _, err := store.IssueAPIKey(user.ID)
+	// Two active keys sharing the same prefix → ambiguous.
+	insertAPIKeyRow(t, store, "k1", user.ID, "sth_sharedprefix")
+	insertAPIKeyRow(t, store, "k2", user.ID, "sth_sharedprefix")
+
+	err = store.RevokeAPIKey("sth_shared")
+	if !errors.Is(err, ErrAPIKeyAmbiguous) {
+		t.Fatalf("expected ErrAPIKeyAmbiguous, got %v", err)
+	}
+	// Neither key should have been revoked (fail closed).
+	for _, id := range []string{"k1", "k2"} {
+		var revoked sql.NullInt64
+		if e := store.db.QueryRow(`SELECT revoked_at FROM api_keys WHERE id = ?`, id).Scan(&revoked); e != nil {
+			t.Fatal(e)
+		}
+		if revoked.Valid {
+			t.Fatalf("key %s was revoked despite ambiguity", id)
+		}
+	}
+}
+
+func TestRevokeAPIKey_PrefixAndNotFound(t *testing.T) {
+	t.Parallel()
+	store := newAuthTestStore(t)
+	user, err := store.CreateUser("alice")
 	if err != nil {
 		t.Fatal(err)
-	}
-	p2, _, err := store.IssueAPIKey(user.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p1 == p2 {
-		t.Fatal("two issued keys are identical")
 	}
 
-	// Exact-id revoke works.
-	if err := store.RevokeAPIKey(p1[:KeyPrefixLen]); err != nil {
+	plaintext, rec, err := store.IssueAPIKey(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Revoke by a unique prefix of the issued key.
+	prefix := plaintext[:KeyPrefixLen]
+	if err := store.RevokeAPIKey(prefix); err != nil {
 		t.Fatalf("revoke by prefix: %v", err)
 	}
-
-	// A second revoke of the same prefix now finds nothing (already revoked).
-	if err := store.RevokeAPIKey(p1[:KeyPrefixLen]); err == nil {
+	// Second revoke of the same prefix → already revoked → not found.
+	if err := store.RevokeAPIKey(prefix); err == nil {
 		t.Fatal("expected error revoking already-revoked prefix")
 	}
-
-	// Garbage id => not found.
+	// Re-revoke by exact id is also not-found now.
+	if err := store.RevokeAPIKey(rec.ID); err == nil {
+		t.Fatal("expected error re-revoking by exact id")
+	}
+	// Garbage → not found.
 	if err := store.RevokeAPIKey("definitely-not-a-key"); err == nil {
 		t.Fatal("expected error for unknown key")
+	}
+}
+
+func TestRevokeAPIKey_EscapesLikeWildcards(t *testing.T) {
+	t.Parallel()
+	store := newAuthTestStore(t)
+	user, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A key whose prefix contains a LIKE wildcard ('%'). Revoke must match it
+	// literally, not as a wildcard.
+	insertAPIKeyRow(t, store, "k1", user.ID, "sth_%_weird")
+	if err := store.RevokeAPIKey("sth_%_wei"); err != nil {
+		t.Fatalf("revoke literal-prefix-with-wildcard: %v", err)
 	}
 }

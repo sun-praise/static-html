@@ -244,12 +244,29 @@ func (s *Store) VerifyAPIKey(plaintext string) (userID string, ok bool, err erro
 	return "", false, rows.Err()
 }
 
+// escapeLikeForPrefix escapes SQLite LIKE wildcards in a user-supplied prefix
+// so characters like % and _ in a key prefix are matched literally. The
+// backslash is the ESCAPE character.
+func escapeLikeForPrefix(p string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(p)
+}
+
 // RevokeAPIKey revokes the key matching the given id or unique plaintext
 // prefix. If multiple non-revoked keys match the prefix, it fails closed with
-// ErrAPIKeyAmbiguous.
+// ErrAPIKeyAmbiguous. The ambiguity check and the revocation run inside a
+// single transaction so a concurrent issue/revocation cannot introduce a race
+// (TOCTOU) between counting matches and applying the update. LIKE wildcards in
+// the prefix are escaped so they match literally.
 func (s *Store) RevokeAPIKey(idOrPrefix string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
 	// Try exact id first.
-	res, err := s.db.Exec(
+	res, err := tx.Exec(
 		`UPDATE api_keys SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`,
 		time.Now().UTC().UnixNano(), idOrPrefix,
 	)
@@ -257,14 +274,18 @@ func (s *Store) RevokeAPIKey(idOrPrefix string) error {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n > 0 {
-		return nil
+		return tx.Commit()
 	}
 
-	// Fall back to prefix match.
+	// Fall back to prefix match. Escape LIKE metacharacters so a prefix
+	// containing % or _ is matched literally.
+	escaped := escapeLikeForPrefix(idOrPrefix)
+	pattern := escaped + "%"
+
 	var count int
-	if e := s.db.QueryRow(
-		`SELECT COUNT(*) FROM api_keys WHERE key_prefix LIKE ? AND revoked_at IS NULL`,
-		idOrPrefix+"%",
+	if e := tx.QueryRow(
+		`SELECT COUNT(*) FROM api_keys WHERE key_prefix LIKE ? ESCAPE '\' AND revoked_at IS NULL`,
+		pattern,
 	).Scan(&count); e != nil {
 		return e
 	}
@@ -275,11 +296,13 @@ func (s *Store) RevokeAPIKey(idOrPrefix string) error {
 		return ErrAPIKeyAmbiguous
 	}
 
-	_, err = s.db.Exec(
-		`UPDATE api_keys SET revoked_at = ? WHERE key_prefix LIKE ? AND revoked_at IS NULL`,
-		time.Now().UTC().UnixNano(), idOrPrefix+"%",
-	)
-	return err
+	if _, err := tx.Exec(
+		`UPDATE api_keys SET revoked_at = ? WHERE key_prefix LIKE ? ESCAPE '\' AND revoked_at IS NULL`,
+		time.Now().UTC().UnixNano(), pattern,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ErrAPIKeyNotFound is returned when no key matches a revoke request.
@@ -307,19 +330,35 @@ func (s *Store) SetSessionOwner(sessionID, userID string) error {
 	return err
 }
 
-// SessionOwner returns the userID owning a session and whether one is set.
-func (s *Store) SessionOwner(sessionID string) (userID string, ok bool, err error) {
+// OwnerStatus distinguishes the three states a session can be in with respect
+// to ownership, so handlers can return the correct status code:
+//   - OwnerOwned:    session exists and has an owner (check userID for match)
+//   - OwnerUnowned:  session exists but has no owner (auth-on: forbidden)
+//   - OwnerMissing:  session does not exist (404)
+type OwnerStatus int
+
+const (
+	OwnerOwned OwnerStatus = iota
+	OwnerUnowned
+	OwnerMissing
+)
+
+// SessionOwner returns the ownership state of a session. For OwnerOwned the
+// userID of the owner is also returned. Distinct from the prior bool form,
+// this lets callers tell "session not found" (404) apart from "session has no
+// owner" (403 under auth).
+func (s *Store) SessionOwner(sessionID string) (userID string, status OwnerStatus, err error) {
 	var uid sql.NullString
 	if e := s.db.QueryRow(`SELECT user_id FROM sessions WHERE session_id = ?`, sessionID).Scan(&uid); e != nil {
 		if errors.Is(e, sql.ErrNoRows) {
-			return "", false, nil
+			return "", OwnerMissing, nil
 		}
-		return "", false, e
+		return "", OwnerMissing, e
 	}
 	if !uid.Valid || uid.String == "" {
-		return "", false, nil
+		return "", OwnerUnowned, nil
 	}
-	return uid.String, true, nil
+	return uid.String, OwnerOwned, nil
 }
 
 // generateAPIKey returns a new random key with the "sth_" prefix followed by

@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"strings"
+
+	"github.com/sun-praise/static-html/internal/session"
 )
 
 // ctxKey is an unexported type to avoid context-key collisions.
@@ -81,40 +83,48 @@ func currentUser(r *http.Request) (userID string, ok bool) {
 
 // assignOwnerIfNeeded stamps the authenticated user as the owner of a newly
 // created session. It is a no-op when auth is disabled (no user in context),
-// preserving the legacy unowned-session behavior.
-func (s *Server) assignOwnerIfNeeded(r *http.Request, sessionID string) {
+// preserving the legacy unowned-session behavior. Returns an error if the
+// owner stamp fails so create handlers can fail loudly instead of silently
+// leaking an unowned session under auth.
+func (s *Server) assignOwnerIfNeeded(r *http.Request, sessionID string) error {
 	uid, ok := currentUser(r)
 	if !ok {
-		return
+		return nil
 	}
-	_ = s.store.SetSessionOwner(sessionID, uid)
+	return s.store.SetSessionOwner(sessionID, uid)
 }
 
 // requireOwner checks that the authenticated user owns sessionID. It writes a
-// 403 response and returns false when the user is authenticated but does not
-// own the session. It returns true when ownership is confirmed OR when auth is
-// disabled (no user in context) — callers gate the whole flow on authEnabled
-// via the middleware, so a missing user here means auth-off, which is
-// permissive by design for backward compatibility.
+// response and returns false when the check fails:
+//   - 404 when the session does not exist (distinct from ownership denial)
+//   - 403 when the session exists but has no owner (auth-on) or a different
+//     owner
+//
+// It returns true when ownership is confirmed OR when auth is disabled (no
+// user in context) — callers gate the whole flow on authEnabled via the
+// middleware, so a missing user here means auth-off, which is permissive by
+// design for backward compatibility.
 func (s *Server) requireOwner(w http.ResponseWriter, r *http.Request, sessionID string) bool {
 	uid, ok := currentUser(r)
 	if !ok {
 		// Auth disabled: no ownership enforcement.
 		return true
 	}
-	owner, hasOwner, err := s.store.SessionOwner(sessionID)
+	owner, status, err := s.store.SessionOwner(sessionID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return false
 	}
-	// Sessions created while auth was off have no owner; in auth mode treat
-	// them as unowned (not accessible to any authenticated user).
-	if !hasOwner || owner == "" {
-		http.Error(w, "Forbidden: session has no owner in this deployment.", http.StatusForbidden)
+	switch status {
+	case session.OwnerMissing:
+		http.NotFound(w, r)
+		return false
+	case session.OwnerUnowned:
+		http.Error(w, "Forbidden: session has no owner in this deployment", http.StatusForbidden)
 		return false
 	}
 	if owner != uid {
-		http.Error(w, "Forbidden: you do not own this session.", http.StatusForbidden)
+		http.Error(w, "Forbidden: you do not own this session", http.StatusForbidden)
 		return false
 	}
 	return true

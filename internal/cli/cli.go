@@ -352,7 +352,7 @@ func runSend(args []string, stdout io.Writer) error {
 	// Check 401 before JSON parsing: the auth middleware returns plain text,
 	// not JSON, so an unmarshal failure would mask the actionable hint.
 	if response.StatusCode == http.StatusUnauthorized {
-		return errors.New("server requires authentication (401). Provide a valid API key via --api-key or the STH_API_KEY environment variable.")
+		return errors.New("server requires authentication (401). Provide a valid API key via --api-key or the STH_API_KEY environment variable")
 	}
 
 	var resp struct {

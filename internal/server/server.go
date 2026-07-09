@@ -482,11 +482,16 @@ func New(host string, port int, store *session.Store, serverName string, serverP
 // SetAuthEnabled toggles API-key authentication. It must be called before
 // Start. When enabled, mutating endpoints and list/search/peers/download
 // require a valid Bearer key; previews remain open unless protectPreviews
-// is also true.
+// is also true. Disabling auth also clears protectPreviews, since preview
+// protection relies on the auth key-verification infrastructure — the two
+// must never be in a state where previews are "protected" but auth is off.
 func (s *Server) SetAuthEnabled(enabled bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.authEnabled = enabled
+	if !enabled {
+		s.protectPreviews = false
+	}
 }
 
 // SetProtectPreviews toggles preview protection. Implies authEnabled: when
@@ -935,7 +940,10 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	s.assignOwnerIfNeeded(r, session.ID)
+	if err := s.assignOwnerIfNeeded(r, session.ID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to assign session owner.")
+		return
+	}
 
 	if err := s.setSessionMetadata(session.ID, req.Tags, req.Category, req.Project); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -1057,7 +1065,10 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 	}
 	cleanupSessionDir = false
 
-	s.assignOwnerIfNeeded(r, session.ID)
+	if err := s.assignOwnerIfNeeded(r, session.ID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to assign session owner.")
+		return
+	}
 
 	if err := s.setSessionMetadata(session.ID, tags, category, project); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())

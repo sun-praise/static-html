@@ -81,14 +81,14 @@ func validateSession(serverURL, sessionID, apiKey string) error {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
 		return fmt.Errorf("could not reach server at %s: %w", parsedURL.Host, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return errors.New("server requires authentication (401). Provide a valid API key via --api-key or STH_API_KEY.")
+		return errors.New("server requires authentication (401). Provide a valid API key via --api-key or STH_API_KEY")
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		return fmt.Errorf("session %q not found", sessionID)
@@ -255,7 +255,7 @@ func uploadFiles(serverURL, sessionID, apiKey, watchRoot string, paths []string)
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		return errors.New("server requires authentication (401). Provide a valid API key via --api-key or STH_API_KEY.")
+		return errors.New("server requires authentication (401). Provide a valid API key via --api-key or STH_API_KEY")
 	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("server returned %d", resp.StatusCode)

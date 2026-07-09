@@ -217,10 +217,14 @@ def main():
             "--project",
             project,
         ]
+        # Pass the API key via the child environment (STH_API_KEY) rather than
+        # as an argv element, so it is not visible in `ps`/process listings.
+        child_env = None
         if api_key:
-            cmd += ["--api-key", api_key]
+            child_env = dict(os.environ)
+            child_env["STH_API_KEY"] = api_key
 
-        completed = subprocess.run(cmd, cwd=str(repo_dir))
+        completed = subprocess.run(cmd, cwd=str(repo_dir), env=child_env)
         sys.exit(completed.returncode)
 
 

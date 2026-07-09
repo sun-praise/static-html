@@ -187,8 +187,9 @@ func TestE2E_AuthFullFlow(t *testing.T) {
 	}
 	aliceSessionURL := parseSendURL(t, out)
 
-	// Alice can fetch her own metadata over HTTP.
-	if code, _ := fx2.httpDo(http.MethodGet, sessionMetaPath(aliceSessionURL), aliceKey); code == http.StatusUnauthorized || code == http.StatusForbidden {
+	// Alice can fetch her own metadata over HTTP (must succeed, not just
+	// avoid 401/403 — a 404/500 would slip past a weaker assertion).
+	if code, _ := fx2.httpDo(http.MethodGet, sessionMetaPath(aliceSessionURL), aliceKey); code != http.StatusOK {
 		t.Fatalf("alice should access her own metadata, got %d", code)
 	}
 	fx2.t.Log("stage 2 (auth on, alice) OK")
@@ -243,15 +244,15 @@ func TestE2E_PreviewProtection(t *testing.T) {
 	}
 
 	// Preview with a valid key → passes (API-key-only, no owner gate).
-	if code, _ := fx.httpDo(http.MethodGet, previewURL, aliceKey); code == http.StatusUnauthorized {
-		t.Fatalf("protected preview with valid key: expected to pass, got 401")
+	if code, _ := fx.httpDo(http.MethodGet, previewURL, aliceKey); code != http.StatusOK {
+		t.Fatalf("protected preview with valid key: expected 200, got %d", code)
 	}
 
 	// A different user's key also passes (preview is not owner-scoped).
 	fx.cliUser("add", "carol")
 	carolKey := extractKey(t, fx.cliUser("issue-key", "carol"))
-	if code, _ := fx.httpDo(http.MethodGet, previewURL, carolKey); code == http.StatusUnauthorized {
-		t.Fatalf("protected preview with carol's key: expected to pass, got 401")
+	if code, _ := fx.httpDo(http.MethodGet, previewURL, carolKey); code != http.StatusOK {
+		t.Fatalf("protected preview with carol's key: expected 200, got %d", code)
 	}
 }
 

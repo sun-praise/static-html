@@ -302,6 +302,11 @@ func (s *Store) ensureColumns() error {
 			return err
 		}
 	}
+	// Index for owner-scoped list/search queries when auth is enabled. Created
+	// here (rather than in init) so existing databases get it on upgrade too.
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`); err != nil {
+		return err
+	}
 
 	return nil
 }
