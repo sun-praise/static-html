@@ -44,7 +44,7 @@
 ### D4: 身份落在 `sessions.user_id`，迁移走既有 `ensureColumns`
 **选择**：`sessions` 新增可空 `user_id` 列；鉴权开启时创建 session 必填当前 user id，关闭时为 NULL；新增 `users`、`api_keys` 两表，幂等建表。
 **理由**：复用 `ensureColumns`（`store.go`）既有迁移模式，无需引入独立 migration 框架；NULL 表示"无 owner / 鉴权关闭时创建"，语义清晰，不破坏旧行。
-**隔离实现**：所有 list/search/peers 查询在鉴权模式分支里加 `WHERE user_id = ?`；变更类接口先 `SELECT user_id FROM sessions WHERE session_id=?` 校验归属，不匹配返回 403。
+**隔离实现**：所有 list/search/peers 查询在鉴权模式分支里加 `WHERE user_id = ?`；所有按 `session_id` 寻址的接口（变更类增量写/删除/改元数据，**以及下载 `handleDownload`**）先 `SELECT user_id FROM sessions WHERE session_id=?` 校验归属，不匹配返回 403。下载与变更同等对待，避免鉴权开启后仍可通过 `/api/sessions/<id>/download` 跨用户读取他人 session 归档。预览接口（`handlePreview`、`/s/<id>/ws`）不受 owner 校验约束，仅受 D2 的 key 校验约束——预览的本意是给人看，不属于 owner 私有读。
 
 ### D5: 鉴权作为独立中间件，置于 `live.InjectMiddleware` 之前
 **选择**：新增 `authMiddleware`，包裹 `routes()`，在路由匹配前后、业务 handler 前完成身份解析；解析出的 user 通过 `context.Context` 注入下游 handler。

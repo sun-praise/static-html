@@ -26,7 +26,7 @@
 
 ### Requirement: 用户与 API key 数据模型
 
-系统 SHALL 维护 `users` 表，每行代表一个用户，至少包含：唯一内部 id、唯一用户名、创建时间。系统 SHALL 维护 `api_keys` 表，每行代表一把 API key，至少包含：唯一 key 标识（仅在校验时使用）、key 的哈希值（非明文）、所属 user id、创建时间、可选的吊销/禁用标记。系统 MUST 仅存储 key 的单向哈希，不得以明文持久化 key。
+系统 SHALL 维护 `users` 表，每行代表一个用户，至少包含：唯一内部 id、唯一用户名、创建时间。系统 SHALL 维护 `api_keys` 表，每行代表一把 API key，至少包含：唯一 key 标识（仅在校验时使用）、key 的哈希值（非明文）、生成该哈希所用的**盐（salt）**、记录哈希**算法标识（hash_algo，如 `sha256`）**、所属 user id、创建时间、可选的吊销/禁用标记。salt 与 hash_algo 必须逐行持久化，使每把 key 可独立校验、并支持未来平滑切换哈希算法。系统 MUST 仅存储 key 的单向哈希，不得以明文持久化 key。
 
 #### Scenario: API key 仅存哈希
 - **WHEN** 签发一把新 API key 并写入数据库
@@ -78,7 +78,9 @@
 
 ### Requirement: 预览保护策略
 
-预览接口（`GET /s/<id>/...` 与 `GET /s/<id>/ws`）的鉴权 SHALL 独立于其他接口配置。系统 MUST 提供一个 `--protect-previews` 开关（默认关闭）。当 `--protect-previews` 未启用时，即使 `--auth` 已开启，预览接口也 MUST 保持开放，以保留"上传后分享 `/s/<id>/` 链接"的核心用法。当 `--protect-previews` 启用时，预览接口 MUST 同样要求有效 API key。
+预览接口（`GET /s/<id>/...` 与 `GET /s/<id>/ws`）的鉴权 SHALL 独立于其他接口配置。系统 MUST 提供一个 `--protect-previews` 开关（默认关闭）。当 `--protect-previews` 未启用时，即使 `--auth` 已开启，预览接口也 MUST 保持开放，以保留"上传后分享 `/s/<id>/` 链接"的核心用法。当 `--protect-previews` 启用时，预览接口 MUST 要求携带**任意一把有效 API key**（通过 `Authorization: Bearer <key>`），但不 MUST 校验该 key 是否为该 session 的 owner——预览的本意是被分享查看，任何持有有效 key 的用户即可访问。
+
+`--protect-previews` 依赖 `--auth` 提供的 key 校验基础设施。为避免产生"开启预览保护却未开鉴权"的无定义状态，启用 `--protect-previews` SHALL 隐含启用 `--auth`：若调用方仅设置 `--protect-previews` 而未显式设置 `--auth`，系统 MUST 视同 `--auth` 已开启并启动。`--auth` 关闭且 `--protect-previews` 未启用时，预览接口不读取、不校验任何凭据（与所有其他接口一致）。
 
 #### Scenario: 鉴权开启但预览默认开放
 - **WHEN** 以 `--auth` 启动但未加 `--protect-previews`，任何人用浏览器访问 `/s/<id>/`
@@ -87,6 +89,18 @@
 #### Scenario: 显式收紧预览保护
 - **WHEN** 以 `--auth --protect-previews` 启动，未携带有效 key 访问 `/s/<id>/`
 - **THEN** 系统 MUST 返回 `401 Unauthorized`
+
+#### Scenario: 预览保护只校验有效 key，不校验 owner
+- **WHEN** 以 `--auth --protect-previews` 启动，user A 用自己的有效 key 访问 user B 拥有的 session 的 `/s/<id>/`
+- **THEN** 系统 MUST 正常返回预览内容（预览不归属隔离）
+
+#### Scenario: 预览保护隐含开启鉴权
+- **WHEN** 仅设置 `--protect-previews` 而未显式设置 `--auth` 启动
+- **THEN** 系统 MUST 视同 `--auth` 已开启：所有受保护接口（含预览）均要求有效 key
+
+#### Scenario: 鉴权完全关闭时预览不读取凭据
+- **WHEN** 未设置 `--auth` 也未设置 `--protect-previews` 启动，访问 `/s/<id>/`
+- **THEN** 系统 MUST 不读取或校验任何 `Authorization` 头，直接返回预览内容
 
 ### Requirement: CLI 凭据传递
 
@@ -110,7 +124,7 @@
 
 ### Requirement: 用户与 key 管理子命令
 
-系统 SHALL 提供 `sth user` 子命令用于在开启了鉴权的服务端本地管理用户与 API key，至少支持：创建用户（`sth user add <name>`）、为用户签发新 key（`sth user issue-key <name>`，明文 key 仅在签发时一次性输出）、吊销 key（`sth user revoke-key <key-prefix|id>`）、列出用户（`sth user list`）。签发 key 时 MUST 仅在终端输出一次明文，之后不可再读取。
+系统 SHALL 提供 `sth user` 子命令用于在开启了鉴权的服务端本地管理用户与 API key，至少支持：创建用户（`sth user add <name>`）、为用户签发新 key（`sth user issue-key <name>`，明文 key 仅在签发时一次性输出）、吊销 key（`sth user revoke-key <key-prefix|id>`）、列出用户（`sth user list`）。签发 key 时 MUST 仅在终端输出一次明文，之后不可再读取。`revoke-key` 的参数 MUST 解析为某个 key 的唯一精确 id 或唯一前缀：当给定前缀匹配多条 key 时，命令 MUST **fail closed**（拒绝吊销任何 key），并提示用户提供更长的前缀或完整标识，以避免误吊销。
 
 #### Scenario: 创建用户
 - **WHEN** 执行 `sth user add alice`
@@ -120,6 +134,10 @@
 - **WHEN** 执行 `sth user issue-key alice`
 - **THEN** 系统 MUST 生成新 key，在终端输出一次明文，并在数据库仅存储其哈希
 
-#### Scenario: 吊销 key
-- **WHEN** 执行 `sth user revoke-key <标识>` 吊销某 key
-- **THEN** 该 key 此后鉴权 MUST 失败（返回 401）
+#### Scenario: 按唯一标识吊销 key
+- **WHEN** 执行 `sth user revoke-key <唯一前缀或精确 id>`，且该标识恰好匹配一把未吊销 key
+- **THEN** 系统 MUST 吊销该 key，此后该 key 鉴权失败（返回 401）
+
+#### Scenario: 前缀歧义时 fail closed
+- **WHEN** 执行 `sth user revoke-key <前缀>`，该前缀匹配多把 key
+- **THEN** 系统 MUST 拒绝吊销任何 key 并返回错误，提示使用更长的前缀或完整 id

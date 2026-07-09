@@ -24,13 +24,13 @@
 - [ ] 3.2 `handleUpdateFiles`、`handleDeleteSession`、`handleAddTags`、`handleSetCategory`、`handleSetProject`：鉴权模式下先校验 session 归属，非 owner 返回 403
 - [ ] 3.3 列表/搜索/peers 查询（`store.go` 的 `ListRecent`、`metadata.go` 的 `ListDocuments`/`SearchDocuments`/peers）：鉴权模式下追加 `WHERE user_id = ?` 分支
 - [ ] 3.4 下载接口 `handleDownload`：鉴权模式下校验 owner，非 owner 返回 403
-- [ ] 3.5 预览 `handlePreview` 与 `/s/<id>/ws`：仅当 `protectPreviews` 时走鉴权与 owner 校验
+- [ ] 3.5 预览 `handlePreview` 与 `/s/<id>/ws`：仅当 `protectPreviews` 时走 **API-key-only** 校验（要求任意有效 key，**不**做 owner 校验）
 
 ## 4. 启动配置：flag / 环境变量
 
 - [ ] 4.1 `parseArgs`（`internal/cli/cli.go`）与 `runStart` 新增 `--auth`、`--protect-previews` flag
 - [ ] 4.2 新增 `STH_AUTH`、`STH_PROTECT_PREVIEWS` 环境变量读取，flag 优先级高于 env
-- [ ] 4.3 校验：开启 `--protect-previews` 时若未开 `--auth`，启动报错或自动隐含开启（明确选定一种并在日志说明）
+- [ ] 4.3 校验：`--protect-previews` 依赖 `--auth` 的 key 校验基础设施，二者关系为**隐含**而非互斥——启用 `--protect-previews` 时若未显式设置 `--auth`，系统 MUST 自动视同 `--auth` 已开启并启动（而非报错）；在启动日志中说明该隐含行为
 
 ## 5. CLI：send / watch 凭据传递
 
@@ -50,9 +50,9 @@
 
 ## 7. 部署与配置文件
 
-- [ ] 7.1 `docker-compose.yml` 的 server 服务 command / environment 暴露 `STH_AUTH`、`STH_PROTECT_PREVIEWS`、`STH_API_KEY`
-- [ ] 7.2 `.env.example` 补充上述变量及注释说明
-- [ ] 7.3 `Dockerfile` 无需改动则确认并记录；如需注入 env 则更新
+- [ ] 7.1 `docker-compose.yml` 的 **server** 服务 command / environment 仅暴露服务端配置：`STH_AUTH`、`STH_PROTECT_PREVIEWS`（`STH_API_KEY` 是**客户端**凭据，供 `send`/`watch` 使用，不属于 server 运行时配置，不得注入 server 容器）
+- [ ] 7.2 `.env.example` 补充服务端变量（`STH_AUTH`、`STH_PROTECT_PREVIEWS`）的注释说明；若示例涵盖客户端用法，把 `STH_API_KEY` 明确归类到客户端部分
+- [ ] 7.3 `Dockerfile` 无需改动则确认并记录；如需注入 server 端 env 则更新
 
 ## 8. 测试与文档
 
