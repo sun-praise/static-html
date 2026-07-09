@@ -349,6 +349,12 @@ func runSend(args []string, stdout io.Writer) error {
 		return err
 	}
 
+	// Check 401 before JSON parsing: the auth middleware returns plain text,
+	// not JSON, so an unmarshal failure would mask the actionable hint.
+	if response.StatusCode == http.StatusUnauthorized {
+		return errors.New("server requires authentication (401). Provide a valid API key via --api-key or the STH_API_KEY environment variable.")
+	}
+
 	var resp struct {
 		URL   string `json:"url"`
 		Error string `json:"error"`
@@ -357,8 +363,11 @@ func runSend(args []string, stdout io.Writer) error {
 		return errors.New("server returned an invalid response")
 	}
 
-	if response.StatusCode == http.StatusUnauthorized {
-		return errors.New("server requires authentication (401). Provide a valid API key via --api-key or the STH_API_KEY environment variable.")
+	if response.StatusCode == http.StatusForbidden {
+		if resp.Error != "" {
+			return errors.New(resp.Error)
+		}
+		return errors.New("forbidden: the API key does not own this session")
 	}
 	if response.StatusCode >= http.StatusBadRequest {
 		if resp.Error != "" {
