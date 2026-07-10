@@ -56,27 +56,40 @@ func runWatch(args []string, stdout io.Writer) error {
 		return errors.New("watch path must be a directory")
 	}
 
-	if err := validateSession(serverURL, sessionID); err != nil {
+	apiKey := resolveAPIKey(flags)
+
+	if err := validateSession(serverURL, sessionID, apiKey); err != nil {
 		return err
 	}
 
 	fmt.Fprintf(stdout, "Watching %s → session %s\n", watchPath, sessionID)
 
-	return watchAndSync(context.Background(), watchPath, sessionID, serverURL, stdout)
+	return watchAndSync(context.Background(), watchPath, sessionID, serverURL, apiKey, stdout)
 }
 
-func validateSession(serverURL, sessionID string) error {
+func validateSession(serverURL, sessionID, apiKey string) error {
 	parsedURL, err := url.Parse(serverURL)
 	if err != nil {
 		return fmt.Errorf("invalid server URL: %w", err)
 	}
 
-	resp, err := http.Get(parsedURL.ResolveReference(&url.URL{Path: "/api/sessions/" + sessionID + "/metadata"}).String())
+	req, err := http.NewRequest(http.MethodGet, parsedURL.ResolveReference(&url.URL{Path: "/api/sessions/" + sessionID + "/metadata"}).String(), nil)
+	if err != nil {
+		return err
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
 		return fmt.Errorf("could not reach server at %s: %w", parsedURL.Host, err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		return errors.New("server requires authentication (401). Provide a valid API key via --api-key or STH_API_KEY")
+	}
 	if resp.StatusCode == http.StatusNotFound {
 		return fmt.Errorf("session %q not found", sessionID)
 	}
@@ -86,7 +99,7 @@ func validateSession(serverURL, sessionID string) error {
 	return nil
 }
 
-func watchAndSync(ctx context.Context, dir, sessionID, serverURL string, stdout io.Writer) error {
+func watchAndSync(ctx context.Context, dir, sessionID, serverURL, apiKey string, stdout io.Writer) error {
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("failed to create file watcher: %w", err)
@@ -121,7 +134,7 @@ func watchAndSync(ctx context.Context, dir, sessionID, serverURL string, stdout 
 			return
 		}
 
-		if err := uploadFiles(serverURL, sessionID, dir, paths); err != nil {
+		if err := uploadFiles(serverURL, sessionID, apiKey, dir, paths); err != nil {
 			fmt.Fprintf(stdout, "Error syncing %d file(s): %v\n", len(paths), err)
 		} else {
 			for _, p := range paths {
@@ -180,7 +193,7 @@ func addWatchDirs(w *fsnotify.Watcher, root string) error {
 	})
 }
 
-func uploadFiles(serverURL, sessionID, watchRoot string, paths []string) error {
+func uploadFiles(serverURL, sessionID, apiKey, watchRoot string, paths []string) error {
 	pr, pw := io.Pipe()
 	mpw := multipart.NewWriter(pw)
 
@@ -230,6 +243,9 @@ func uploadFiles(serverURL, sessionID, watchRoot string, paths []string) error {
 		return err
 	}
 	req.Header.Set("Content-Type", mpw.FormDataContentType())
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -238,6 +254,9 @@ func uploadFiles(serverURL, sessionID, watchRoot string, paths []string) error {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		return errors.New("server requires authentication (401). Provide a valid API key via --api-key or STH_API_KEY")
+	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("server returned %d", resp.StatusCode)
 	}

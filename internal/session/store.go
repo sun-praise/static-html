@@ -246,7 +246,11 @@ func (s *Store) init() error {
 		return err
 	}
 
-	return s.initMetadata()
+	if err := s.initMetadata(); err != nil {
+		return err
+	}
+
+	return s.initAuth()
 }
 
 func (s *Store) ensureColumns() error {
@@ -289,6 +293,19 @@ func (s *Store) ensureColumns() error {
 		if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN deleted_at INTEGER DEFAULT NULL`); err != nil {
 			return err
 		}
+	}
+	// user_id is nullable: NULL for sessions created while auth is disabled
+	// (backward compatible) or before the column existed; set to a user id
+	// when a session is created under --auth.
+	if !columns["user_id"] {
+		if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN user_id TEXT DEFAULT NULL`); err != nil {
+			return err
+		}
+	}
+	// Index for owner-scoped list/search queries when auth is enabled. Created
+	// here (rather than in init) so existing databases get it on upgrade too.
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)`); err != nil {
+		return err
 	}
 
 	return nil

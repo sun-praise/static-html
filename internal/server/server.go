@@ -58,6 +58,17 @@ type Server struct {
 	// --upload-root so container deployments can place uploads on a
 	// persistent volume alongside the DB.
 	uploadRoot string
+	// authEnabled gates API-key authentication. When false (the default),
+	// no credentials are read or checked anywhere, preserving the legacy
+	// open behavior. When true, mutating endpoints and list/search/peers/
+	// download require a valid Bearer key; previews remain open unless
+	// protectPreviews is also set.
+	authEnabled bool
+	// protectPreviews, when true (implies authEnabled), additionally
+	// requires a valid API key for GET /s/<id>/... and /s/<id>/ws. The key
+	// need not belong to the session owner — preview access is gated only
+	// by key validity, not ownership.
+	protectPreviews bool
 	store      *session.Store
 	httpServer *http.Server
 	listener   net.Listener
@@ -462,10 +473,53 @@ func New(host string, port int, store *session.Store, serverName string, serverP
 	}
 
 	srv.httpServer = &http.Server{
-		Handler: live.InjectMiddleware(srv.routes()),
+		Handler: srv.authMiddleware(live.InjectMiddleware(srv.routes())),
 	}
 
 	return srv, nil
+}
+
+// SetAuthEnabled toggles API-key authentication. It must be called before
+// Start. When enabled, mutating endpoints and list/search/peers/download
+// require a valid Bearer key; previews remain open unless protectPreviews
+// is also true. Disabling auth also clears protectPreviews, since preview
+// protection relies on the auth key-verification infrastructure — the two
+// must never be in a state where previews are "protected" but auth is off.
+func (s *Server) SetAuthEnabled(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authEnabled = enabled
+	if !enabled {
+		s.protectPreviews = false
+	}
+}
+
+// SetProtectPreviews toggles preview protection. Implies authEnabled: when
+// protectPreviews is true, auth is force-enabled regardless of the prior
+// authEnabled value, because preview protection relies on the auth key
+// verification infrastructure.
+func (s *Server) SetProtectPreviews(protect bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.protectPreviews = protect
+	if protect {
+		s.authEnabled = true
+	}
+}
+
+// AuthEnabled reports whether authentication is active (read-only accessor
+// for handlers/middleware and startup logging).
+func (s *Server) AuthEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.authEnabled
+}
+
+// ProtectPreviews reports whether preview endpoints also require a key.
+func (s *Server) ProtectPreviews() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.protectPreviews
 }
 
 func (s *Server) Start() error {
@@ -640,6 +694,10 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// When auth is on, scope every query to the authenticated user so the
+	// home page only lists that user's own sessions.
+	ownerID, _ := currentUser(r)
+
 	var items []homePageSession
 	var total int
 	var totalPages int
@@ -653,6 +711,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			Tag:      filterTag,
 			Category: filterCat,
 			Project:  filterProj,
+			OwnerID:  ownerID,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -668,6 +727,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			Tag:      filterTag,
 			Category: filterCat,
 			Project:  filterProj,
+			OwnerID:  ownerID,
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -706,6 +766,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			Tag:      filterTag,
 			Category: filterCat,
 			Project:  filterProj,
+			OwnerID:  ownerID,
 		}
 		var err error
 		total, err = s.store.CountDocuments(countFilter)
@@ -726,6 +787,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			Tag:      filterTag,
 			Category: filterCat,
 			Project:  filterProj,
+			OwnerID:  ownerID,
 			Limit:    defaultPageSize,
 			Offset:   (page - 1) * defaultPageSize,
 		})
@@ -878,6 +940,11 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if err := s.assignOwnerIfNeeded(r, session.ID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to assign session owner.")
+		return
+	}
+
 	if err := s.setSessionMetadata(session.ID, req.Tags, req.Category, req.Project); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -998,6 +1065,11 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 	}
 	cleanupSessionDir = false
 
+	if err := s.assignOwnerIfNeeded(r, session.ID); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "Failed to assign session owner.")
+		return
+	}
+
 	if err := s.setSessionMetadata(session.ID, tags, category, project); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1076,6 +1148,10 @@ func (s *Server) handleDownloadSession(w http.ResponseWriter, r *http.Request) {
 
 	if !found {
 		http.Error(w, "Session not found.", http.StatusNotFound)
+		return
+	}
+
+	if !s.requireOwner(w, r, sessionID) {
 		return
 	}
 
@@ -1509,6 +1585,10 @@ func (s *Server) handleAddTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.requireOwner(w, r, sessionID) {
+		return
+	}
+
 	var req tagsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Request body must be valid JSON.")
@@ -1531,6 +1611,10 @@ func (s *Server) handleRemoveTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.requireOwner(w, r, sessionID) {
+		return
+	}
+
 	var req tagsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Request body must be valid JSON.")
@@ -1550,6 +1634,10 @@ func (s *Server) handleSetCategory(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/category")
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	if !s.requireOwner(w, r, sessionID) {
 		return
 	}
 
@@ -1576,6 +1664,10 @@ func (s *Server) handleSetProject(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/project")
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	if !s.requireOwner(w, r, sessionID) {
 		return
 	}
 
@@ -1615,6 +1707,10 @@ func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.requireOwner(w, r, sessionID) {
+		return
+	}
+
 	meta, err := s.store.GetMetadata(sessionID)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -1642,7 +1738,12 @@ func (s *Server) handleGetPeers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	peers, err := s.store.GetPeers(sessionID, session.DefaultPeerLimit)
+	if !s.requireOwner(w, r, sessionID) {
+		return
+	}
+
+	ownerID, _ := currentUser(r)
+	peers, err := s.store.GetPeersForOwner(sessionID, session.DefaultPeerLimit, ownerID)
 	if err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
 			writeJSONError(w, http.StatusNotFound, "Session not found.")
@@ -1657,6 +1758,10 @@ func (s *Server) handleGetPeers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+
+	if !s.requireOwner(w, r, sessionID) {
+		return
+	}
 
 	err := s.store.SoftDelete(sessionID)
 	if err != nil {
@@ -1677,6 +1782,10 @@ func (s *Server) handleUpdateFiles(w http.ResponseWriter, r *http.Request) {
 	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/files")
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	if !s.requireOwner(w, r, sessionID) {
 		return
 	}
 

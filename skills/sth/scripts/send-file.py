@@ -15,6 +15,7 @@ Options:
   --category CAT     Category for the session (required)
   --project PROJ     Project for the session (required)
   --server URL       Server URL (default: $STATIC_HTML_SERVER_URL or http://127.0.0.1:3939)
+  --api-key KEY      API key for authenticated servers (default: $STH_API_KEY)
 
 Note: Only the specified HTML file is uploaded. If you need to include sibling
 resources (CSS/JS/images), use 'sth send' directly with the appropriate directory.
@@ -47,6 +48,7 @@ def parse_args(argv):
     tag = ""
     category = ""
     project = ""
+    api_key = os.environ.get("STH_API_KEY", "")
 
     if not argv:
         usage(1)
@@ -101,6 +103,12 @@ def parse_args(argv):
                 print("Error: --server requires a value", file=sys.stderr)
                 usage(1)
             i += 1
+        elif arg == "--api-key":
+            api_key = need_value("--api-key", argv[i + 1] if i + 1 < len(argv) else None)
+            i += 2
+        elif arg.startswith("--api-key="):
+            api_key = trim(arg[len("--api-key="):])
+            i += 1
         elif arg == "--":
             i += 1
             break
@@ -139,7 +147,7 @@ def parse_args(argv):
         print("Error: --project is required", file=sys.stderr)
         usage(1)
 
-    return target_file, server_url, tag, category, project
+    return target_file, server_url, tag, category, project, api_key
 
 
 def resolve_target(target_file):
@@ -182,7 +190,7 @@ def bootstrap_repo(script_dir):
 
 
 def main():
-    target_file, server_url, tag, category, project = parse_args(sys.argv[1:])
+    target_file, server_url, tag, category, project, api_key = parse_args(sys.argv[1:])
     resolved, filename = resolve_target(target_file)
 
     script_dir = Path(__file__).resolve().parent
@@ -196,22 +204,27 @@ def main():
         os.chmod(tmp_path, 0o700)
         shutil.copy2(resolved, tmp_path / filename)
 
-        completed = subprocess.run(
-            [
-                str(sth_bin),
-                "send",
-                str(tmp_path / filename),
-                "--server",
-                server_url,
-                "--tag",
-                tag,
-                "--category",
-                category,
-                "--project",
-                project,
-            ],
-            cwd=str(repo_dir),
-        )
+        cmd = [
+            str(sth_bin),
+            "send",
+            str(tmp_path / filename),
+            "--server",
+            server_url,
+            "--tag",
+            tag,
+            "--category",
+            category,
+            "--project",
+            project,
+        ]
+        # Pass the API key via the child environment (STH_API_KEY) rather than
+        # as an argv element, so it is not visible in `ps`/process listings.
+        child_env = None
+        if api_key:
+            child_env = dict(os.environ)
+            child_env["STH_API_KEY"] = api_key
+
+        completed = subprocess.run(cmd, cwd=str(repo_dir), env=child_env)
         sys.exit(completed.returncode)
 
 

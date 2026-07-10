@@ -23,6 +23,9 @@ type FilterOptions struct {
 	Project  string
 	Limit    int
 	Offset   int
+	// OwnerID, when non-empty, scopes results to sessions owned by that user.
+	// Empty means "no owner filtering" (auth disabled or unscoped).
+	OwnerID string
 }
 
 type DocumentInfo struct {
@@ -214,6 +217,10 @@ func (s *Store) CountDocuments(filter FilterOptions) (int, error) {
 
 	conditions = append(conditions, `s.deleted_at IS NULL`)
 
+	if filter.OwnerID != "" {
+		conditions = append(conditions, `s.user_id = ?`)
+		args = append(args, filter.OwnerID)
+	}
 	if filter.Tag != "" {
 		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_tags WHERE tag = ?)`)
 		args = append(args, filter.Tag)
@@ -255,6 +262,10 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 
 	conditions = append(conditions, `s.deleted_at IS NULL`)
 
+	if filter.OwnerID != "" {
+		conditions = append(conditions, `s.user_id = ?`)
+		args = append(args, filter.OwnerID)
+	}
 	if filter.Tag != "" {
 		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_tags WHERE tag = ?)`)
 		args = append(args, filter.Tag)
@@ -339,6 +350,11 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 	var args []any
 
 	conditions = append(conditions, `s.deleted_at IS NULL`)
+
+	if filter.OwnerID != "" {
+		conditions = append(conditions, `s.user_id = ?`)
+		args = append(args, filter.OwnerID)
+	}
 
 	conditions = append(conditions, `(COALESCE(s.stored_entry_file, s.entry_file) LIKE ? ESCAPE '\'
 	   OR s.session_id IN (
@@ -461,7 +477,18 @@ const DefaultPeerLimit = 20
 // ordered by creation time descending. Each group is capped at limit entries
 // (defaulting to 20 when limit <= 0). The session itself and soft-deleted
 // sessions are excluded. Returns ErrSessionNotFound when sessionID does not exist.
+// GetPeers returns documents sharing the same category or project as sessionID,
+// ordered by creation time descending. Each group is capped at limit entries
+// (defaulting to 20 when limit <= 0). The session itself and soft-deleted
+// sessions are excluded. Returns ErrSessionNotFound when sessionID does not exist.
 func (s *Store) GetPeers(sessionID string, limit int) (*PeersResult, error) {
+	return s.GetPeersForOwner(sessionID, limit, "")
+}
+
+// GetPeersForOwner is the owner-scoped variant of GetPeers. When ownerID is
+// non-empty, peer candidates are additionally restricted to sessions owned by
+// that user. The current session's own metadata is returned regardless.
+func (s *Store) GetPeersForOwner(sessionID string, limit int, ownerID string) (*PeersResult, error) {
 	if limit <= 0 {
 		limit = DefaultPeerLimit
 	}
@@ -495,15 +522,22 @@ func (s *Store) GetPeers(sessionID string, limit int) (*PeersResult, error) {
 		ByProject:  []PeerEntry{},
 	}
 
+	ownerClause := ""
+	ownerArgs := []any{}
+	if ownerID != "" {
+		ownerClause = ` AND s.user_id = ?`
+		ownerArgs = []any{ownerID}
+	}
+
 	if meta.Category != "" {
 		byCategory, err := s.queryPeers(
 			`SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix
 			 FROM sessions s
 			 JOIN document_categories dc ON s.session_id = dc.session_id
-			 WHERE dc.category = ? AND s.session_id != ? AND s.deleted_at IS NULL
+			 WHERE dc.category = ? AND s.session_id != ? AND s.deleted_at IS NULL`+ownerClause+`
 			 ORDER BY s.created_at_unix DESC
 			 LIMIT ?`,
-			meta.Category, sessionID, limit,
+			append([]any{meta.Category, sessionID}, append(ownerArgs, limit)...)...,
 		)
 		if err != nil {
 			return nil, err
@@ -516,10 +550,10 @@ func (s *Store) GetPeers(sessionID string, limit int) (*PeersResult, error) {
 			`SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix
 			 FROM sessions s
 			 JOIN document_projects dp ON s.session_id = dp.session_id
-			 WHERE dp.project = ? AND s.session_id != ? AND s.deleted_at IS NULL
+			 WHERE dp.project = ? AND s.session_id != ? AND s.deleted_at IS NULL`+ownerClause+`
 			 ORDER BY s.created_at_unix DESC
 			 LIMIT ?`,
-			meta.Project, sessionID, limit,
+			append([]any{meta.Project, sessionID}, append(ownerArgs, limit)...)...,
 		)
 		if err != nil {
 			return nil, err
