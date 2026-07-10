@@ -39,7 +39,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		userID, ok := s.verifyBearer(r)
+		userID, ok, err := s.verifyBearer(r)
+		if err != nil {
+			// Store/query failure, not a bad key — report as 500 so an outage
+			// isn't misdiagnosed as invalid credentials.
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="sth"`)
 			http.Error(w, "Unauthorized: a valid API key is required.", http.StatusUnauthorized)
@@ -53,21 +59,27 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 // verifyBearer extracts the Bearer token from the Authorization header and
 // verifies it against the store. Returns the owning userID on success.
-func (s *Server) verifyBearer(r *http.Request) (string, bool) {
+// The error is non-nil only for store/query failures (distinct from an invalid
+// key, which is reported as ok=false with a nil error) so callers can return
+// 500 for outages and 401 only for genuinely bad credentials.
+func (s *Server) verifyBearer(r *http.Request) (userID string, ok bool, err error) {
 	header := r.Header.Get("Authorization")
 	const prefix = "Bearer "
 	if !strings.HasPrefix(header, prefix) {
-		return "", false
+		return "", false, nil
 	}
 	token := strings.TrimSpace(strings.TrimPrefix(header, prefix))
 	if token == "" {
-		return "", false
+		return "", false, nil
 	}
 	uid, ok, err := s.store.VerifyAPIKey(token)
-	if err != nil || !ok {
-		return "", false
+	if err != nil {
+		return "", false, err
 	}
-	return uid, true
+	if !ok {
+		return "", false, nil
+	}
+	return uid, true, nil
 }
 
 // currentUser returns the authenticated userID from the request context, if

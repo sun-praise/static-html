@@ -163,11 +163,12 @@ func TestRevokeAPIKey_AmbiguousPrefixFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Two active keys sharing the same prefix → ambiguous.
-	insertAPIKeyRow(t, store, "k1", user.ID, "sth_sharedprefix")
-	insertAPIKeyRow(t, store, "k2", user.ID, "sth_sharedprefix")
+	// Two active keys sharing the same prefix (>= KeyPrefixLen) → ambiguous.
+	sharedPrefix := "sth_collideXYZ"
+	insertAPIKeyRow(t, store, "k1", user.ID, sharedPrefix)
+	insertAPIKeyRow(t, store, "k2", user.ID, sharedPrefix)
 
-	err = store.RevokeAPIKey("sth_shared")
+	err = store.RevokeAPIKey("sth_collideX") // 13 chars, >= KeyPrefixLen, matches both
 	if !errors.Is(err, ErrAPIKeyAmbiguous) {
 		t.Fatalf("expected ErrAPIKeyAmbiguous, got %v", err)
 	}
@@ -223,9 +224,35 @@ func TestRevokeAPIKey_EscapesLikeWildcards(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A key whose prefix contains a LIKE wildcard ('%'). Revoke must match it
-	// literally, not as a wildcard.
-	insertAPIKeyRow(t, store, "k1", user.ID, "sth_%_weird")
-	if err := store.RevokeAPIKey("sth_%_wei"); err != nil {
+	// literally, not as a wildcard. Prefix length >= KeyPrefixLen to clear the
+	// minimum-length guard.
+	wildPrefix := "sth_%_weirdXY"
+	insertAPIKeyRow(t, store, "k1", user.ID, wildPrefix)
+	if err := store.RevokeAPIKey("sth_%_weirdX"); err != nil {
 		t.Fatalf("revoke literal-prefix-with-wildcard: %v", err)
+	}
+}
+
+func TestRevokeAPIKey_TooShortFailsClosed(t *testing.T) {
+	t.Parallel()
+	store := newAuthTestStore(t)
+	user, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An active key exists, but a short/empty prefix must not match it.
+	insertAPIKeyRow(t, store, "k1", user.ID, "sth_realtoken12")
+	for _, bad := range []string{"", "sth", "sth_real"} {
+		if err := store.RevokeAPIKey(bad); err == nil {
+			t.Fatalf("expected error for too-short prefix %q, got nil", bad)
+		}
+	}
+	// The key must remain unrevoked.
+	var revoked sql.NullInt64
+	if e := store.db.QueryRow(`SELECT revoked_at FROM api_keys WHERE id = ?`, "k1").Scan(&revoked); e != nil {
+		t.Fatal(e)
+	}
+	if revoked.Valid {
+		t.Fatal("key was revoked despite short-prefix guard")
 	}
 }

@@ -259,6 +259,12 @@ func escapeLikeForPrefix(p string) string {
 // (TOCTOU) between counting matches and applying the update. LIKE wildcards in
 // the prefix are escaped so they match literally.
 func (s *Store) RevokeAPIKey(idOrPrefix string) error {
+	// Reject empty or too-short inputs before building the LIKE pattern, which
+	// would otherwise match every active key (e.g. "" → "%"). Fail closed.
+	if len(idOrPrefix) < KeyPrefixLen {
+		return ErrAPIKeyNotFound
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
