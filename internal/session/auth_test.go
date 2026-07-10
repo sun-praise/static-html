@@ -168,7 +168,7 @@ func TestRevokeAPIKey_AmbiguousPrefixFailsClosed(t *testing.T) {
 	insertAPIKeyRow(t, store, "k1", user.ID, sharedPrefix)
 	insertAPIKeyRow(t, store, "k2", user.ID, sharedPrefix)
 
-	err = store.RevokeAPIKey("sth_collideX") // 13 chars, >= KeyPrefixLen, matches both
+	err = store.RevokeAPIKey("sth_collideX") // 12 chars, >= KeyPrefixLen, matches both
 	if !errors.Is(err, ErrAPIKeyAmbiguous) {
 		t.Fatalf("expected ErrAPIKeyAmbiguous, got %v", err)
 	}
