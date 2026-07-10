@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.0.0] - 2026-07-10
+
+### Added
+- Optional API-key authentication (`--auth` / `STH_AUTH`, default off for backward compatibility). When enabled, all mutating endpoints and list/search/peers/download require a valid `Authorization: Bearer <key>` header (#78)
+- `users` and `api_keys` tables; API keys are stored only as salted SHA-256 hashes (never plaintext) (#78)
+- Session ownership (`sessions.user_id`): each session is owned by its creator; users can only read/modify/download their own sessions under auth (#78)
+- `--protect-previews` to additionally gate `/s/<id>/` previews behind a key (implies `--auth`) (#78)
+- `sth user` subcommand: `add`, `issue-key`, `revoke-key`, `list` for local user/API-key management (#78)
+- CLI credential passing for `sth send` / `sth watch` via `--api-key` or `STH_API_KEY` (flag wins over env) (#78)
+
+### Security
+- `RevokeAPIKey` escapes LIKE wildcards and runs count+update in a transaction (TOCTOU-safe); fails closed on ambiguous or too-short prefixes (#78)
+- Session-not-found returns 404 (not 403) under auth, so clients distinguish "missing" from "forbidden" (#78)
+- Store/query failures during key verification return 500, not 401, so DB outages aren't misreported as bad credentials (#78)
+- `send-file.py` passes the API key via child environment, not argv, to avoid exposure in process listings (#78)
+- `idx_sessions_user_id` for owner-scoped query performance (#78)
+
+### Changed
+- **BREAKING** (opt-in): with `--auth` enabled, requests without a valid API key are rejected (401); non-owners get 403 on others' sessions (#78)
+
+### Docs
+- README: new Authentication section (#78)
+- `docker-compose.yml` exposes `STH_AUTH` / `STH_PROTECT_PREVIEWS` to the server container (`STH_API_KEY` intentionally excluded as it is a client credential) (#78)
+- Refresh OpenSpec Claude tooling to v1.5.0 (#77)
+
+## [1.6.0] - 2026-07-08
+
+### Added
+- `sth send` packaging flags: `--single` (upload only the entry file) and `--root <dir>` (archive relative to a directory) (#75)
+
+### Changed
+- `send-file.sh` skill helper ported to Python (stdlib only), preserving behavior (#76)
+
 ## [1.5.0] - 2026-06-30
 
 ### Fixed
