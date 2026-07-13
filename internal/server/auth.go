@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/sun-praise/static-html/internal/session"
@@ -13,16 +14,25 @@ type ctxKey int
 
 const userCtxKey ctxKey = iota
 
-// authMiddleware enforces API-key authentication when authEnabled is on.
+// authMiddleware enforces authentication when authEnabled is on.
 // When auth is off (the default), it is a no-op pass-through so behavior is
 // byte-for-byte identical to the legacy open server.
 //
-// Path classification:
+// Path/method classification (auth enabled):
+//   - Auth pages ("/login", "/register", "/logout") are always open so an
+//     unauthenticated user can reach the login form.
 //   - Preview paths ("/s/...") are gated ONLY by protectPreviews. When
 //     protectPreviews is off, previews stay open even under --auth, to
 //     preserve the "upload then share the /s/<id>/ link" workflow.
-//   - Every other path (home/list, POST/PUT/DELETE session mutations, GET
-//     metadata/peers/download) requires a valid Bearer key when authEnabled.
+//   - Mutating methods (POST/PUT/DELETE) accept ONLY a Bearer API key. The
+//     session cookie is deliberately ignored here to make CSRF structurally
+//     impossible: a cross-site request cannot set a custom Authorization
+//     header, so it can never satisfy this check. Browser users browse with
+//     the cookie; writes still go through CLI (sth send --api-key).
+//   - Read methods (GET/HEAD) on other paths accept EITHER a valid session
+//     cookie OR a Bearer key, so both browsers and API clients work. When
+//     neither is present and the client wants HTML (a browser), we redirect
+//     to /login?next=<path> instead of returning a bare 401.
 //
 // On success the authenticated userID is stored in the request context for
 // handlers to read via currentUser.
@@ -33,28 +43,89 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		// Auth pages are always reachable; they handle their own logic.
+		if isAuthPage(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		isPreview := strings.HasPrefix(r.URL.Path, "/s/")
 		if isPreview && !s.ProtectPreviews() {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		userID, ok, err := s.verifyBearer(r)
+		// Mutating requests: Bearer only (CSRF-safe). The session cookie is
+		// intentionally NOT consulted, so a stolen/leaked cookie cannot be
+		// used to perform writes via a cross-site request.
+		if isMutatingMethod(r.Method) {
+			s.requireBearer(w, r, next)
+			return
+		}
+
+		// Read requests: try cookie first, then Bearer. Either is sufficient.
+		uid, ok, err := s.verifySessionCookie(r)
 		if err != nil {
-			// Store/query failure, not a bad key — report as 500 so an outage
-			// isn't misdiagnosed as invalid credentials.
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if !ok {
+			uid, ok, err = s.verifyBearer(r)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		if !ok {
+			// Browser clients get redirected to the login page; API clients
+			// (curl, sth CLI) get the original 401 + WWW-Authenticate.
+			if acceptsHTML(r) {
+				target := "/login?next=" + url.QueryEscape(r.URL.Path)
+				http.Redirect(w, r, target, http.StatusFound)
+				return
+			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="sth"`)
 			http.Error(w, "Unauthorized: a valid API key is required.", http.StatusUnauthorized)
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), userCtxKey, userID)
+		ctx := context.WithValue(r.Context(), userCtxKey, uid)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// requireBearer handles the mutating-method path: accept only a valid Bearer
+// key and inject the user, otherwise 401. Extracted so the read-path branch
+// stays readable.
+func (s *Server) requireBearer(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	uid, ok, err := s.verifyBearer(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="sth"`)
+		http.Error(w, "Unauthorized: a valid API key is required.", http.StatusUnauthorized)
+		return
+	}
+	ctx := context.WithValue(r.Context(), userCtxKey, uid)
+	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// isAuthPage reports whether path is one of the browser auth pages that must
+// stay reachable without credentials (so a logged-out user can sign in).
+func isAuthPage(path string) bool {
+	return path == "/login" || path == "/register" || path == "/logout"
+}
+
+// isMutatingMethod reports whether the HTTP method can change server state and
+// therefore must use the CSRF-safe Bearer path only.
+func isMutatingMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodPatch:
+		return true
+	}
+	return false
 }
 
 // verifyBearer extracts the Bearer token from the Authorization header and

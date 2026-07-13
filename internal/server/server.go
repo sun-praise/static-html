@@ -69,6 +69,11 @@ type Server struct {
 	// need not belong to the session owner — preview access is gated only
 	// by key validity, not ownership.
 	protectPreviews bool
+	// allowRegistration gates the /register page. It is meaningful only when
+	// authEnabled is true (when auth is off the whole auth layer is a no-op).
+	// Defaults to true via SetAllowRegistration so deployments are open by
+	// default; set false to require CLI-managed accounts only.
+	allowRegistration bool
 	store      *session.Store
 	httpServer *http.Server
 	listener   net.Listener
@@ -522,6 +527,23 @@ func (s *Server) ProtectPreviews() bool {
 	return s.protectPreviews
 }
 
+// SetAllowRegistration toggles whether the /register page creates accounts.
+// Must be called before Start. Default is true (open registration); set false
+// to restrict account creation to the CLI (sth user add). Has no effect when
+// auth is disabled, since the entire auth layer is then a no-op.
+func (s *Server) SetAllowRegistration(allow bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.allowRegistration = allow
+}
+
+// AllowRegistration reports whether self-service registration is permitted.
+func (s *Server) AllowRegistration() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.allowRegistration
+}
+
 func (s *Server) Start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -627,6 +649,16 @@ func (s *Server) Origins() []string {
 func (s *Server) routes() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/login":
+			s.handleLoginGet(w, r)
+		case r.Method == http.MethodPost && r.URL.Path == "/login":
+			s.handleLoginPost(w, r)
+		case r.Method == http.MethodGet && r.URL.Path == "/register":
+			s.handleRegisterGet(w, r)
+		case r.Method == http.MethodPost && r.URL.Path == "/register":
+			s.handleRegisterPost(w, r)
+		case r.Method == http.MethodPost && r.URL.Path == "/logout":
+			s.handleLogout(w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			s.handleHome(w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions":

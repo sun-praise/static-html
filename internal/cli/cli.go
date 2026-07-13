@@ -87,6 +87,10 @@ func runStart(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	args, regSet, allowRegFlag, err := popBoolFlagWithPresence(args, "allow-registration")
+	if err != nil {
+		return err
+	}
 
 	flags, _, err := parseArgs(args)
 	if err != nil {
@@ -166,11 +170,22 @@ func runStart(args []string, stdout io.Writer) error {
 		srv.SetAuthEnabled(true)
 	}
 
+	// Registration defaults to open (resolveBoolDefaultTrue) but is meaningful
+	// only under --auth; when auth is off the whole auth layer is a no-op and
+	// the /register page is never gated, so we skip applying it to keep the
+	// startup log clean.
+	if srv.AuthEnabled() {
+		allowReg := resolveBoolDefaultTrue(regSet, allowRegFlag, "STH_ALLOW_REGISTRATION")
+		srv.SetAllowRegistration(allowReg)
+	}
+
 	if srv.AuthEnabled() {
 		users, _ := store.ListUsers()
-		fmt.Fprintf(os.Stderr, "auth: enabled (protect-previews=%t, users=%d)\n", srv.ProtectPreviews(), len(users))
-		if len(users) == 0 {
-			fmt.Fprintln(os.Stderr, "note: no users exist yet. Create one with `sth user add <name>` before requiring auth.")
+		fmt.Fprintf(os.Stderr, "auth: enabled (protect-previews=%t, allow-registration=%t, users=%d)\n", srv.ProtectPreviews(), srv.AllowRegistration(), len(users))
+		if len(users) == 0 && srv.AllowRegistration() {
+			fmt.Fprintln(os.Stderr, "note: no users exist yet. Visit /register in your browser, or create one with `sth user add <name>`.")
+		} else if len(users) == 0 {
+			fmt.Fprintln(os.Stderr, "note: no users exist yet. Create one with `sth user add <name>` (registration is disabled).")
 		}
 	}
 
@@ -226,6 +241,23 @@ func resolveBool(flagSet, flagValue bool, envVar string) bool {
 		return false
 	default:
 		return false
+	}
+}
+
+// resolveBoolDefaultTrue is the open-by-default twin of resolveBool: when
+// neither flag nor env is set, it returns true. Used for --allow-registration
+// so self-service sign-up is the out-of-the-box posture.
+func resolveBoolDefaultTrue(flagSet, flagValue bool, envVar string) bool {
+	if flagSet {
+		return flagValue
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(envVar))) {
+	case "false", "0":
+		return false
+	case "true", "1":
+		return true
+	default:
+		return true
 	}
 }
 
