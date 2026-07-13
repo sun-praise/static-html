@@ -5,7 +5,15 @@
 [![GitHub release](https://img.shields.io/github/v/release/sun-praise/static-html?include_prereleases)](https://github.com/sun-praise/static-html/releases)
 [![License](https://img.shields.io/github/license/sun-praise/static-html)](https://github.com/sun-praise/static-html/blob/main/LICENSE)
 
-A local HTML preview server with a CLI for registering HTML files as browser-viewable sessions.
+**The inbox for HTML your coding agent produces** — a local server where your agent drops the pages it generates, and you open them in the browser.
+
+sth doesn't generate HTML. It's only the place those pages land.
+
+| Who               | Does what                                  |
+| ----------------- | ------------------------------------------ |
+| Your coding agent | Generates HTML, runs `sth` to publish      |
+| **sth**           | Stores, serves, indexes, isolates by user  |
+| You               | Browse, search, share                      |
 
 **Live demo:** <https://sth.sun-praise.com> — browse a [sample session](https://sth.sun-praise.com/s/985f96abaaf933aab01acc50cbd62e6b/).
 

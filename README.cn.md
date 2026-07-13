@@ -5,7 +5,15 @@
 [![GitHub release](https://img.shields.io/github/v/release/sun-praise/static-html?include_prereleases)](https://github.com/sun-praise/static-html/releases)
 [![License](https://img.shields.io/github/license/sun-praise/static-html)](https://github.com/sun-praise/static-html/blob/main/LICENSE)
 
-本地 HTML 预览服务器，提供 CLI 工具将 HTML 文件注册为可在浏览器中查看的会话。
+**你的 coding agent 生成的 HTML 的收件箱** —— 一个本地服务器：agent 把它生成的页面发到这里，你在浏览器里打开查看。
+
+sth 自己不生成 HTML。它只是这些页面落地的地方。
+
+| 角色              | 职责                                    |
+| ----------------- | --------------------------------------- |
+| 你的 coding agent | 生成 HTML，运行 `sth` 发布              |
+| **sth**           | 存储、提供访问、索引、按用户隔离        |
+| 你                | 浏览、搜索、分享                        |
 
 **在线演示**：<https://sth.sun-praise.com> — 查看[示例会话](https://sth.sun-praise.com/s/985f96abaaf933aab01acc50cbd62e6b/)。
 
