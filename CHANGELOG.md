@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.1.0] - 2026-07-14
+
+### Added
+- Browser-friendly username/password authentication on top of the existing API-key system: sign in via a web form instead of a bare 401 (#82)
+  - `GET/POST /login` — sign in with username + password
+  - `GET/POST /register` — self-service sign-up (open by default, closeable via `--allow-registration=false` / `STH_ALLOW_REGISTRATION=false`)
+  - `POST /logout` — invalidate the session cookie
+- Homepage shows a top-right "Signed in as `<name>`" + "Sign out" control for logged-in browser users (auth-enabled only) (#82)
+- `Store.FindUserByID` to resolve the username from the authenticated user id in the request context (#82)
+
+### Security
+- Passwords are bcrypt-hashed in a new `user_credentials` table; API keys keep their SHA-256 path — the two are independent by entropy profile (#82)
+- Server-side session cookies (new `login_sessions` table) store only `SHA-256(token)`; a DB leak does not yield live cookies. Cookies are `HttpOnly` + `SameSite=Lax` + `Secure` (HTTPS) (#82)
+- CSRF is structural, not token-based: mutating methods accept ONLY a Bearer key and ignore the cookie, so cross-site writes can never authenticate. No CSRF-token library introduced (#82)
+- Unknown user and wrong password return the same generic error (no user enumeration) (#82)
+- Open-redirect safe: the `?next=` / `?return=` parameter is validated to start with a single `/` (rejects `//host`, `https://...`, `/\`) (#82)
+
+### Changed
+- `--auth` enabled GET requests without credentials redirect browsers to `/login?next=<path>` (instead of a bare 401); non-HTML clients (curl, CLI) still receive `401 + WWW-Authenticate: Bearer` (#82)
+- Dependency: `golang.org/x/crypto v0.35.0` (pinned, requires go>=1.23) for bcrypt — deliberately kept below v0.54.0 so the project's `go 1.24.1` directive is not forced upward (#82)
+
+### Docs
+- README repositioned as an "agent-published, human-viewed" HTML registry: coding agents publish HTML via the CLI, humans browse/search/share it in the browser (#81)
+
 ## [2.0.0] - 2026-07-10
 
 ### Added
