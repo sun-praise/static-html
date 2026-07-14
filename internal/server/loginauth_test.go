@@ -275,6 +275,49 @@ func TestMiddleware_CookieAuthorizesGet(t *testing.T) {
 	}
 }
 
+// TestHome_ShowsLogoutBarWhenLoggedIn asserts the homepage renders the logout
+// control (username + Sign out form posting to /logout) for an authenticated
+// browser session, and omits it entirely when auth is off.
+func TestHome_ShowsLogoutBarWhenLoggedIn(t *testing.T) {
+	t.Parallel()
+	srv, _ := newLoginServer(t, true)
+	cookieVal := registerAndLogin(t, srv, "alice", "secret123")
+
+	rec := doReqWithCookie(t, srv.httpServer.Handler, http.MethodGet, "/", cookieVal)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="logout-bar"`,
+		`Signed in as`,
+		`<strong>alice</strong>`,
+		`action="/logout"`,
+		`Sign out`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("homepage body missing %q for logged-in user", want)
+		}
+	}
+}
+
+func TestHome_NoLogoutBarWhenAuthOff(t *testing.T) {
+	t.Parallel()
+	srv, _ := newLoginServer(t, false)
+	// No login possible (auth off). The homepage must not render any logout UI.
+	rec := doReq(t, srv.httpServer.Handler, http.MethodGet, "/", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	// The .logout-bar CSS rule is always in <style>; assert on the rendered DOM
+	// element + label instead, which only exist for a logged-in user.
+	for _, marker := range []string{`class="logout-bar"`, `Signed in as`, `action="/logout"`} {
+		if strings.Contains(rec.Body.String(), marker) {
+			t.Fatalf("homepage must not show logout UI when auth is off; found %q", marker)
+		}
+	}
+}
+
 func TestMiddleware_CookieDoesNotAuthorizeMutating(t *testing.T) {
 	t.Parallel()
 	srv, _ := newLoginServer(t, true)
