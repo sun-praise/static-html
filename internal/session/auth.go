@@ -147,6 +147,28 @@ func (s *Store) FindUserByUsername(username string) (User, error) {
 	return u, nil
 }
 
+// FindUserByID looks up a user by internal id. Returns ErrUserNotFound when no
+// user has the given id. Used by handlers that only have the authenticated
+// user's id (from the request context) and need to display the username.
+func (s *Store) FindUserByID(userID string) (User, error) {
+	var (
+		u           User
+		createdUnix int64
+	)
+	err := s.db.QueryRow(
+		`SELECT id, username, created_at FROM users WHERE id = ?`,
+		userID,
+	).Scan(&u.ID, &u.Username, &createdUnix)
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrUserNotFound
+	}
+	if err != nil {
+		return User{}, err
+	}
+	u.CreatedAt = time.Unix(0, createdUnix).UTC()
+	return u, nil
+}
+
 // IssueAPIKey generates a new high-entropy API key for the given user,
 // persists only its salted hash, and returns the plaintext key (only visible
 // at this moment) along with the stored record.

@@ -250,7 +250,15 @@ func (s *Store) init() error {
 		return err
 	}
 
-	return s.initAuth()
+	if err := s.initAuth(); err != nil {
+		return err
+	}
+
+	if err := s.initCredentials(); err != nil {
+		return err
+	}
+
+	return s.initLoginSessions()
 }
 
 func (s *Store) ensureColumns() error {
