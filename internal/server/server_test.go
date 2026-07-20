@@ -1469,3 +1469,189 @@ func TestGetPeersNotFound(t *testing.T) {
 		t.Fatalf("expected status 404, got %d", resp.StatusCode)
 	}
 }
+
+// createChainedSession is the chain-aware analogue of createSessionWithMetadata:
+// it creates a session, attaches metadata, then links it into the chain for
+// (project, entryFile basename). Returns the session id.
+func createChainedSession(t *testing.T, store *session.Store, entryFile, category, project string, tags ...string) string {
+	t.Helper()
+
+	s, err := store.CreateUploaded(entryFile, entryFile)
+	if err != nil {
+		t.Fatalf("CreateUploaded(%q): %v", entryFile, err)
+	}
+	if len(tags) > 0 {
+		if err := store.AddTags(s.ID, tags...); err != nil {
+			t.Fatalf("AddTags: %v", err)
+		}
+	}
+	if category != "" {
+		if err := store.SetCategory(s.ID, category); err != nil {
+			t.Fatalf("SetCategory: %v", err)
+		}
+	}
+	if project != "" {
+		if err := store.SetProject(s.ID, project); err != nil {
+			t.Fatalf("SetProject: %v", err)
+		}
+	}
+	if _, _, err := store.LinkToChain(s.ID, project, entryFile, ""); err != nil {
+		t.Fatalf("LinkToChain: %v", err)
+	}
+	return s.ID
+}
+
+func TestGetChainSuccess(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1 := createChainedSession(t, store, "/work/index.html", "c1", "proj", "a", "b")
+	s2 := createChainedSession(t, store, "/work/index.html", "c2", "proj", "a", "c")
+	s3 := createChainedSession(t, store, "/work/index.html", "c2", "proj", "a", "d", "e")
+
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/" + s3 + "/chain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
+	}
+
+	var result chainResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+
+	if result.Chain.Project != "proj" || result.Chain.EntryFile != "index.html" {
+		t.Fatalf("unexpected chain identity: %+v", result.Chain)
+	}
+	if result.Chain.VersionNum != 3 {
+		t.Fatalf("expected 3 versions; got %d", result.Chain.VersionNum)
+	}
+	if len(result.Versions) != 3 {
+		t.Fatalf("expected 3 version rows; got %d", len(result.Versions))
+	}
+	// Ordered ascending by version_no.
+	want := []string{s1, s2, s3}
+	for i, v := range result.Versions {
+		if v.SessionID != want[i] {
+			t.Fatalf("versions[%d] = %q, want %q", i, v.SessionID, want[i])
+		}
+		if v.VersionNo != i+1 {
+			t.Fatalf("versions[%d].VersionNo = %d, want %d", i, v.VersionNo, i+1)
+		}
+	}
+	if !result.Versions[2].Current {
+		t.Fatalf("expected requested session %q to be marked current", s3)
+	}
+	if result.Current.SessionID != s3 {
+		t.Fatalf("current mismatch: got %q want %q", result.Current.SessionID, s3)
+	}
+
+	if len(result.MetadataDiff) != 3 {
+		t.Fatalf("expected 3 diff rows; got %d", len(result.MetadataDiff))
+	}
+	// v2 vs v1 should show category c1->c2.
+	v2diff := result.MetadataDiff[1]
+	if v2diff.CategoryOld != "c1" || v2diff.CategoryNew != "c2" {
+		t.Fatalf("v2 category transition wrong: %+v", v2diff)
+	}
+}
+
+func TestGetChainSingleVersion(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	// Create a session but DO NOT link it; the endpoint should still return
+	// a synthesized single-version view.
+	s, err := store.CreateUploaded("/work/once.html", "/work/once.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetProject(s.ID, "solo"); err != nil {
+		t.Fatal(err)
+	}
+
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/" + s.ID + "/chain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
+	}
+
+	var result chainResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Versions) != 1 {
+		t.Fatalf("expected synthesized 1-version view; got %d", len(result.Versions))
+	}
+	if !result.Versions[0].Current {
+		t.Fatal("sole version should be flagged current")
+	}
+	if result.Versions[0].Project != "solo" {
+		t.Fatalf("synthesized version should carry metadata; project=%q", result.Versions[0].Project)
+	}
+	// No chain row => no diffs.
+	if len(result.MetadataDiff) != 0 {
+		t.Fatalf("expected no diffs for unlinked session; got %d", len(result.MetadataDiff))
+	}
+}
+
+func TestGetChainNotFound(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/nonexistent/chain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}

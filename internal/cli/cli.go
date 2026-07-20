@@ -35,7 +35,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 	case "start":
 		return runStart(args[1:], stdout)
 	case "send":
-		return runSend(args[1:], stdout)
+		return runSend(args[1:], stdout, stderr)
 	case "tag":
 		return runTag(args[1:], stdout)
 	case "categorize":
@@ -261,7 +261,7 @@ func resolveBoolDefaultTrue(flagSet, flagValue bool, envVar string) bool {
 	}
 }
 
-func runSend(args []string, stdout io.Writer) error {
+func runSend(args []string, stdout, stderr io.Writer) error {
 	args, forceSingle, err := popBoolFlag(args, "single")
 	if err != nil {
 		return err
@@ -388,8 +388,10 @@ func runSend(args []string, stdout io.Writer) error {
 	}
 
 	var resp struct {
-		URL   string `json:"url"`
-		Error string `json:"error"`
+		URL       string `json:"url"`
+		Error     string `json:"error"`
+		ChainID   string `json:"chainId"`
+		VersionNo int    `json:"versionNo"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return errors.New("server returned an invalid response")
@@ -409,6 +411,11 @@ func runSend(args []string, stdout io.Writer) error {
 	}
 
 	fmt.Fprintln(stdout, resp.URL)
+	// Version-chain context is informational; surface it on stderr so it
+	// never pollutes piped URL capture on stdout.
+	if resp.ChainID != "" {
+		fmt.Fprintf(stderr, "version: v%d of chain %s\n", resp.VersionNo, resp.ChainID)
+	}
 	return nil
 }
 
