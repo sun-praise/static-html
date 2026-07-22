@@ -58,6 +58,14 @@ func (s *Store) initMetadata() error {
 			project TEXT NOT NULL
 		);
 
+		-- document_chains groups sessions into version chains. Note that
+		-- SQLite's UNIQUE(project, entry_file, user_id) treats NULL user_id
+		-- values as distinct, so it only enforces one-chain-per-owner for
+		-- authenticated owners (user_id NOT NULL). The anonymous path
+		-- (user_id NULL, i.e. --auth disabled) is instead serialized by
+		-- LinkToChain's BEGIN IMMEDIATE write lock. No separate lookup index
+		-- is needed: the UNIQUE constraint already provides a
+		-- (project, entry_file, user_id) index.
 		CREATE TABLE IF NOT EXISTS document_chains (
 			chain_id TEXT PRIMARY KEY,
 			project TEXT NOT NULL,
@@ -66,8 +74,6 @@ func (s *Store) initMetadata() error {
 			created_at_unix INTEGER NOT NULL,
 			UNIQUE(project, entry_file, user_id)
 		);
-		CREATE INDEX IF NOT EXISTS idx_document_chains_lookup
-		ON document_chains(project, entry_file, user_id);
 	`)
 	return err
 }

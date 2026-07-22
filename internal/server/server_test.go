@@ -1655,3 +1655,52 @@ func TestGetChainNotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
 }
+
+// TestGetChainSoftDeletedRequestReturns404 is the HTTP-level regression guard
+// for the CodeRabbit finding: requesting the chain of a soft-deleted session
+// must return 404, not a fabricated "current" version synthesized from the
+// remaining live chain members.
+func TestGetChainSoftDeletedRequestReturns404(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	target := createChainedSession(t, store, "/work/index.html", "c1", "proj", "a")
+	createChainedSession(t, store, "/work/index.html", "c1", "proj", "a")
+	createChainedSession(t, store, "/work/index.html", "c1", "proj", "a")
+
+	// Sanity: the chain is multi-version before the delete.
+	_, versions, err := store.GetChainOfSession(target)
+	if err != nil {
+		t.Fatalf("pre-delete GetChainOfSession: %v", err)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("expected 3 versions pre-delete; got %d", len(versions))
+	}
+
+	if err := store.SoftDelete(target); err != nil {
+		t.Fatalf("SoftDelete: %v", err)
+	}
+
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/" + target + "/chain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 404 for soft-deleted session, got %d body=%s", resp.StatusCode, body)
+	}
+}

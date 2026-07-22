@@ -1903,9 +1903,14 @@ func (s *Server) handleGetChain(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	// Fallback: if no version was flagged (degenerate path), synthesize one.
-	if current.SessionID == "" && len(versions) > 0 {
-		current = versions[len(versions)-1]
+	// GetChainOfSession returns ErrSessionNotFound for missing or soft-deleted
+	// sessions, so reaching here with no current version means the chain row
+	// exists but holds no live versions (e.g. every member was soft-deleted
+	// via a path that bypassed the chain lookup). Treat as not-found rather
+	// than fabricating a "current" version from stale data.
+	if current.SessionID == "" {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
+		return
 	}
 
 	metadataDiff := []session.VersionMetadataDiff{}

@@ -56,9 +56,15 @@ type VersionMetadataDiff struct {
 // of "/path/a/index.html" and "/other/b/index.html" under the same project
 // land on the same chain, matching the user-visible identity ("index.html").
 //
-// The entire operation runs in a single transaction. Callers that do not
-// require chain membership (e.g. graceful degradation on upload) should
-// ignore the returned error.
+// The entire operation runs in a single IMMEDIATE transaction so that
+// concurrent uploads (notably the anonymous / auth-disabled path, where
+// SQLite's UNIQUE(project, entry_file, user_id) does NOT enforce NULL-owner
+// uniqueness — SQL treats each NULL as distinct) are serialized at the write
+// lock and cannot split one (project, entry_file) into two chains. The
+// chain row itself is created via INSERT ... ON CONFLICT DO NOTHING, then
+// re-read, so the authenticated-owner path is additionally backed by the
+// UNIQUE constraint. Callers that do not require chain membership (e.g.
+// graceful degradation on upload) should ignore the returned error.
 func (s *Store) LinkToChain(sessionID, project, entryFile, ownerID string) (chainID string, versionNo int, err error) {
 	if !s.sessionExists(sessionID) {
 		return "", 0, ErrSessionNotFound
@@ -69,11 +75,19 @@ func (s *Store) LinkToChain(sessionID, project, entryFile, ownerID string) (chai
 		return "", 0, errors.New("project and entry file are required for chain linking")
 	}
 
-	tx, err := s.db.Begin()
-	if err != nil {
+	// BEGIN IMMEDIATE acquires the RESERVED lock up front, serializing this
+	// whole read-modify-write against any other writer. This is what makes
+	// the anonymous-owner path race-free even though the UNIQUE constraint
+	// does not cover NULL user_id.
+	if _, err = s.db.Exec(`BEGIN IMMEDIATE`); err != nil {
 		return "", 0, err
 	}
-	defer func() { _ = tx.Rollback() }()
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = s.db.Exec(`ROLLBACK`)
+		}
+	}()
 
 	// ownerID NULL needs IS for SQL equality semantics. sqlite maps a Go nil
 	// arg to NULL; a Go "" would be the empty string and must not collide.
@@ -84,50 +98,54 @@ func (s *Store) LinkToChain(sessionID, project, entryFile, ownerID string) (chai
 		ownerArg = ownerID
 	}
 
-	row := tx.QueryRow(
-		`SELECT dc.chain_id, COALESCE(MAX(s.version_no), 0)
-		 FROM document_chains dc
-		 LEFT JOIN sessions s ON s.chain_id = dc.chain_id AND s.deleted_at IS NULL
-		 WHERE dc.project = ? AND dc.entry_file = ? AND dc.user_id IS ?
-		 GROUP BY dc.chain_id`,
-		project, entryBase, ownerArg,
-	)
-
-	var existingChainID string
-	var maxVersion int
-	scanErr := row.Scan(&existingChainID, &maxVersion)
-
-	switch {
-	case scanErr == nil:
-		chainID = existingChainID
-		versionNo = maxVersion + 1
-	case errors.Is(scanErr, sql.ErrNoRows):
-		chainID, err = generateID()
-		if err != nil {
-			return "", 0, err
-		}
-		versionNo = 1
-		if _, err = tx.Exec(
-			`INSERT INTO document_chains (chain_id, project, entry_file, user_id, created_at_unix)
-			 VALUES (?, ?, ?, ?, ?)`,
-			chainID, project, entryBase, ownerArg, time.Now().UnixNano(),
-		); err != nil {
-			return "", 0, err
-		}
-	default:
-		return "", 0, scanErr
+	// Try to insert a new chain row. For authenticated owners the UNIQUE
+	// constraint makes this a no-op when the chain already exists; for the
+	// anonymous (NULL owner) path the IMMEDIATE lock above is the actual
+	// guard. We then unconditionally SELECT the chain id back.
+	newChainID, idErr := generateID()
+	if idErr != nil {
+		return "", 0, idErr
+	}
+	if _, err = s.db.Exec(
+		`INSERT INTO document_chains (chain_id, project, entry_file, user_id, created_at_unix)
+		 VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(project, entry_file, user_id) DO NOTHING`,
+		newChainID, project, entryBase, ownerArg, time.Now().UnixNano(),
+	); err != nil {
+		return "", 0, err
 	}
 
-	if _, err = tx.Exec(
+	err = s.db.QueryRow(
+		`SELECT chain_id FROM document_chains
+		 WHERE project = ? AND entry_file = ? AND user_id IS ?`,
+		project, entryBase, ownerArg,
+	).Scan(&chainID)
+	if err != nil {
+		return "", 0, err
+	}
+
+	err = s.db.QueryRow(
+		`SELECT COALESCE(MAX(version_no), 0)
+		 FROM sessions
+		 WHERE chain_id = ? AND deleted_at IS NULL`,
+		chainID,
+	).Scan(&versionNo)
+	if err != nil {
+		return "", 0, err
+	}
+	versionNo++
+
+	if _, err = s.db.Exec(
 		`UPDATE sessions SET chain_id = ?, version_no = ? WHERE session_id = ?`,
 		chainID, versionNo, sessionID,
 	); err != nil {
 		return "", 0, err
 	}
 
-	if err = tx.Commit(); err != nil {
+	if _, err = s.db.Exec(`COMMIT`); err != nil {
 		return "", 0, err
 	}
+	committed = true
 	return chainID, versionNo, nil
 }
 
@@ -157,13 +175,22 @@ func (s *Store) GetChainOfSession(sessionID string) (ChainInfo, []ChainVersion, 
 	var (
 		chainID   sql.NullString
 		versionNo sql.NullInt64
+		deletedAt sql.NullInt64
 	)
 	err = s.db.QueryRow(
-		`SELECT chain_id, version_no FROM sessions WHERE session_id = ?`,
+		`SELECT chain_id, version_no, deleted_at FROM sessions WHERE session_id = ?`,
 		sessionID,
-	).Scan(&chainID, &versionNo)
+	).Scan(&chainID, &versionNo, &deletedAt)
 	if err != nil {
 		return ChainInfo{}, nil, err
+	}
+	// A soft-deleted session is invisible: consistent with listChainVersions
+	// (which filters deleted_at IS NULL) and with the rest of the app's
+	// soft-delete semantics. Surface it as not-found so the chain handler
+	// returns 404 instead of fabricating a "current" version from the rest
+	// of the chain.
+	if deletedAt.Valid {
+		return ChainInfo{}, nil, ErrSessionNotFound
 	}
 
 	currentVersion := 0
@@ -198,15 +225,6 @@ func (s *Store) GetChainOfSession(sessionID string) (ChainInfo, []ChainVersion, 
 	for i := range versions {
 		if versions[i].SessionID == sessionID {
 			versions[i].Current = true
-		}
-	}
-	if currentVersion == 0 && len(versions) > 0 {
-		// Fallback when the column hasn't been populated yet.
-		for i := range versions {
-			if versions[i].SessionID == sessionID {
-				versions[i].Current = true
-				break
-			}
 		}
 	}
 

@@ -31,7 +31,15 @@
 
 ## 6. 文档与校验
 - [x] 6.1 撰写 OpenSpec change：`openspec/changes/version-chain-sessions/` 全套（`.openspec.yaml` / `proposal.md` / `design.md` / `tasks.md` / `specs/version-chain/spec.md`）。
-- [ ] 6.2 `go test ./...` 全绿。
-- [ ] 6.3 `go vet ./...` 无警告。
-- [ ] 6.4 `openspec validate version-chain-sessions` 通过。
+- [x] 6.2 `go test ./...` 全绿。
+- [x] 6.3 `go vet ./...` 无警告。
+- [x] 6.4 `openspec validate version-chain-sessions` 通过。
 - [ ] 6.5 PR 合并后执行 `openspec archive version-chain-sessions`。
+
+## 7. PR review 修复（#83 CodeRabbit 评审）
+- [x] 7.1 `handleGetChain` 对软删 session 返回 404：`GetChainOfSession` 读 `deleted_at`，软删直接返 `ErrSessionNotFound`；handler 去掉"fabricate current"兜底，改为 `current.SessionID == ""` 即 404。
+- [x] 7.2 `LinkToChain` 原子化：改用 `BEGIN IMMEDIATE` 写锁 + `INSERT ... ON CONFLICT DO NOTHING` upsert + 再 SELECT，根除 anonymous（NULL owner）竞态。
+- [x] 7.3 删除 `version.go` 冗余 `currentVersion == 0` fallback 循环。
+- [x] 7.4 删除冗余 `idx_document_chains_lookup` 索引（UNIQUE 约束已自带 `(project, entry_file, user_id)` 索引），并在 `metadata.go` 文档化 UNIQUE 对 NULL owner 不生效的限制。
+- [x] 7.5 新增回归测试：`TestGetChainOfSession_RequestedSessionSoftDeleted_ReturnsNotFound`（store 层）+ `TestGetChainSoftDeletedRequestReturns404`（HTTP 层）。
+- [x] 7.6 同步更新 `design.md` D17 与 Risks 的事务安全说明（从 `SetMaxOpenConns(1)` 改述为 `BEGIN IMMEDIATE`）。

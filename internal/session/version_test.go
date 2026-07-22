@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -263,6 +264,29 @@ func TestGetChainOfSession_SkipsSoftDeleted(t *testing.T) {
 	}
 	if info.ChainID != cid {
 		t.Fatal("chain identity lost")
+	}
+}
+
+// TestGetChainOfSession_RequestedSessionSoftDeleted_ReturnsNotFound is the
+// regression guard for the CodeRabbit finding: requesting the chain of a
+// soft-deleted session must surface ErrSessionNotFound (rather than silently
+// returning the rest of the chain and fabricating a "current" version).
+func TestGetChainOfSession_RequestedSessionSoftDeleted_ReturnsNotFound(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+
+	target, _, _ := createLinkedSession(t, store, "/work/index.html", "proj", "cat", "")
+	createLinkedSession(t, store, "/work/index.html", "proj", "cat", "")
+	createLinkedSession(t, store, "/work/index.html", "proj", "cat", "")
+
+	if err := store.SoftDelete(target); err != nil {
+		t.Fatalf("SoftDelete: %v", err)
+	}
+
+	_, _, err := store.GetChainOfSession(target)
+	if !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound for soft-deleted session, got %v", err)
 	}
 }
 

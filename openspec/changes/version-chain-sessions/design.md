@@ -55,7 +55,7 @@
 ### D17: diff 范围——v1 仅元数据（tags/category/project），HTML 内容 diff 留下版
 **选择**：`DiffChainMetadata(chainID)` 仅计算相邻版本的 tags 集合差（增/删）与 category / project 字符串变更。v1 与空基线对比（让首版的初始 metadata 也呈现为"added"）。**不**读取任何版本的实际 HTML 文件内容做文本/DOM diff。
 **理由**：HTML 内容 diff 是非平凡工程——需要决定 diff 粒度（行/字/AST）、需要沙箱化渲染对比、需要考虑大文件性能、需要决定 inline diff vs 并排预览。把它和链化耦合在一个 change 里会让 PR 过大、风险过高、周期过长。元数据 diff 已经能回答"这次迭代改了哪些 tag / 换了 category 没"这类高频问题，性价比最高。
-**`MAX(version_no)+1` 的事务安全**：`LinkToChain` 在单个事务内 `SELECT ... MAX(version_no)` + `INSERT/UPDATE`，配合 `Store` 的 `SetMaxOpenConns(1)` 单写者模型，不存在并发竞态。
+**`MAX(version_no)+1` 的事务安全**：`LinkToChain` 在 `BEGIN IMMEDIATE` 事务内执行，立即获取 SQLite RESERVED 写锁，把整个"找链或建链 → 算版本号 → UPDATE sessions"串行化，根除并发竞态。这一点对 anonymous（`--auth` 关闭、`user_id NULL`）路径尤其关键：SQLite 的 `UNIQUE(project, entry_file, user_id)` 对 NULL 不生效（SQL 标准里 NULL ≠ NULL），认证 owner 路径靠 UNIQUE + `INSERT ... ON CONFLICT DO NOTHING` 兜底，而 anonymous 路径完全依赖 `BEGIN IMMEDIATE` 的写锁串行化。链行创建用 upsert（`ON CONFLICT DO NOTHING`）+ 再 SELECT，保证无论新建还是已存在都拿到同一个 `chain_id`。
 **备选**：(a) v1 一次性做完含 HTML 内容 diff——否决，PR 过大；(b) 完全不做 diff，只列版本——否决，"看上一版改了啥"是用户最直接的需求，不做等于功能不完整。
 
 ### D18: 时间线 UI——复用 `internal/live.InjectMiddleware` 的注入路径，仿照 peers drawer
@@ -69,7 +69,7 @@
 
 - **同名 entry_file 误归链**：两个完全不同的产物恰好 project 同名 + entry_file 同名（如都是 `report.html`）会被错误归到一条链。→ 缓解：项目名是用户/agent 显式传的 `--project`，碰撞概率低；且即便碰撞，时间线只是聚合视图，不损坏任何 session 数据，用户可换 project 名重新组织。HTML 内容 diff（下版）会让用户立即发现"这条链里混了无关产物"。
 - **probe 请求开销**：每次预览页加载多发一次 `/api/sessions/{id}/chain` 请求。→ 缓解：仅 JSON、走同一 handler、SQLite WAL 读极快；若实测成问题，可改为只在 peers drawer 已加载时附带返回 chain 字段（一次请求双用）。
-- **`MAX(version_no)+1` 的并发安全**：理论上多请求同时 send 同一产物时 version_no 可能撞号。→ 已缓解：`Store.SetMaxOpenConns(1)` 单写者模型 + 事务内 SELECT MAX 再 UPDATE，不存在真并发；SQLite 写锁也兜底。
+- **`MAX(version_no)+1` 的并发安全**：理论上多请求同时 send 同一产物时 version_no 可能撞号。→ 已缓解：`LinkToChain` 用 `BEGIN IMMEDIATE` 立即拿写锁，把整个读-改-写串行化；认证 owner 路径额外有 `UNIQUE(project, entry_file, user_id)` + upsert 兜底；anonymous 路径（NULL owner，UNIQUE 不生效）完全靠写锁串行化。
 - **老 session 永不自动入链**：升级后老 session 的 `chain_id` / `version_no` 为 NULL，时间线显示为单版本视图。→ 接受：强行迁移需要回溯推断"哪些老 session 应该串成链"，启发式不可靠；下次 send 同产物时新版本从 v1 起算（老 session 视为链外），可接受。
 
 ## Migration Plan
