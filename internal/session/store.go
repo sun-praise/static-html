@@ -316,6 +316,23 @@ func (s *Store) ensureColumns() error {
 		return err
 	}
 
+	// chain_id / version_no: nullable; populated by LinkToChain after metadata
+	// is attached. NULL means the session is not yet linked to a version chain
+	// (older sessions, or chain-linking failed gracefully).
+	if !columns["chain_id"] {
+		if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN chain_id TEXT DEFAULT NULL`); err != nil {
+			return err
+		}
+	}
+	if !columns["version_no"] {
+		if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN version_no INTEGER DEFAULT NULL`); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_chain ON sessions(chain_id, version_no)`); err != nil {
+		return err
+	}
+
 	return nil
 }
 

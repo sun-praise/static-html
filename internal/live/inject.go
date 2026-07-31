@@ -134,8 +134,161 @@ const drawerJS = `<script>
 })();
 </script>`
 
+// versionDrawerCSS / versionDrawerHTML / versionDrawerJS render the version
+// timeline floating button and side drawer. They mirror the related-docs
+// drawer's design: a floating badge that shows the current version number
+// (e.g. "v3"), and a slide-in panel that lazily fetches
+// /api/sessions/{id}/chain on first open. When the chain has only one
+// version the badge is hidden — there is nothing to navigate to. Selectors
+// are namespaced under #sth-version-* and critical properties use !important
+// to resist conflicts with the user's own stylesheets.
+const versionDrawerCSS = `<style>
+#sth-version-btn{position:fixed!important;bottom:24px!important;right:84px!important;width:48px!important;height:48px!important;border-radius:50%!important;background:#1d4ed8!important;color:#fff!important;display:flex!important;align-items:center!important;justify-content:center!important;font-size:14px!important;font-weight:600!important;cursor:pointer!important;box-shadow:0 4px 12px rgba(0,0,0,.25)!important;z-index:2147483646!important;border:none!important;line-height:1!important;padding:0!important;margin:0!important;font-family:-apple-system,"Segoe UI",sans-serif!important}
+#sth-version-btn:hover{background:#1e40af!important}
+#sth-version-panel{position:fixed!important;top:0!important;right:0!important;width:340px!important;max-width:90vw!important;height:100vh!important;background:#fff!important;box-shadow:-4px 0 16px rgba(0,0,0,.15)!important;z-index:2147483647!important;transform:translateX(100%)!important;transition:transform .25s ease!important;overflow-y:auto!important;box-sizing:border-box!important;padding:0!important;margin:0!important;font-family:-apple-system,"Segoe UI",sans-serif!important;color:#171717!important;display:block!important}
+#sth-version-panel.sth-version-open{transform:translateX(0)!important}
+.sth-version-header{display:flex!important;align-items:center!important;justify-content:space-between!important;padding:16px!important;border-bottom:1px solid #eee!important;position:sticky!important;top:0!important;background:#fff!important;z-index:1!important}
+.sth-version-title{font-weight:600!important;font-size:15px!important}
+#sth-version-close{border:none!important;background:none!important;font-size:18px!important;cursor:pointer!important;color:#888!important;padding:4px 8px!important;line-height:1!important}
+#sth-version-close:hover{color:#171717!important}
+.sth-version-subtitle{font-size:12px!important;color:#888!important;margin:0 0 4px!important}
+.sth-version-content{padding:16px!important}
+.sth-version-timeline{position:relative!important;padding-left:20px!important}
+.sth-version-timeline:before{content:""!important;position:absolute!important;left:7px!important;top:6px!important;bottom:6px!important;width:2px!important;background:#e5e7eb!important}
+.sth-version-item{position:relative!important;padding:8px 0 16px!important}
+.sth-version-item:before{content:""!important;position:absolute!important;left:-17px!important;top:14px!important;width:10px!important;height:10px!important;border-radius:50%!important;background:#9ca3af!important;border:2px solid #fff!important}
+.sth-version-item.sth-version-current:before{background:#1d4ed8!important}
+.sth-version-item.sth-version-current .sth-version-link{font-weight:600!important;color:#1d4ed8!important}
+.sth-version-link{display:inline-block!important;text-decoration:none!important;color:#171717!important;font-size:14px!important;padding:2px 0!important}
+.sth-version-link:hover{text-decoration:underline!important}
+.sth-version-meta{font-size:12px!important;color:#666!important;margin-top:2px!important}
+.sth-version-created{font-size:11px!important;color:#999!important;margin-top:1px!important}
+.sth-version-diff{margin-top:6px!important;font-size:12px!important;line-height:1.5!important}
+.sth-version-diff .add{color:#15803d!important}
+.sth-version-diff .rm{color:#b91c1c!important}
+.sth-version-diff .chng{color:#b45309!important}
+.sth-version-loading,.sth-version-empty,.sth-version-error{font-size:13px!important;color:#999!important;padding:8px 0!important;margin:0!important}
+.sth-version-error{color:#dc2626!important}
+.sth-version-retry{margin-top:8px!important;padding:6px 12px!important;border:1px solid #d6d1c6!important;border-radius:6px!important;background:#f2efe6!important;cursor:pointer!important;font-size:13px!important}
+</style>`
+
+const versionDrawerHTML = `<div id="sth-version-btn" title="Version timeline" style="display:none">v?</div>
+<aside id="sth-version-panel" aria-hidden="true">
+  <div class="sth-version-header">
+    <span class="sth-version-title">Version Timeline</span>
+    <button id="sth-version-close" title="Close" aria-label="Close">&#10005;</button>
+  </div>
+  <div class="sth-version-content" id="sth-version-content"></div>
+</aside>`
+
+const versionDrawerJS = `<script>
+(function(){
+  var btn=document.getElementById('sth-version-btn');
+  var panel=document.getElementById('sth-version-panel');
+  if(!btn||!panel)return;
+  var content=document.getElementById('sth-version-content');
+  var closeBtn=document.getElementById('sth-version-close');
+  var sid=location.pathname.split('/')[2];
+  var loaded=false;
+
+  // Probe the chain endpoint up front so the badge can be hidden when this
+  // session is the only version (no timeline to navigate).
+  fetch('/api/sessions/'+encodeURIComponent(sid)+'/chain',{credentials:'same-origin'})
+    .then(function(r){if(!r.ok){throw new Error('HTTP '+r.status);}return r.json();})
+    .then(function(data){
+      if(!data.versions||data.versions.length<=1){return;}
+      btn.textContent='v'+data.current.versionNo;
+      btn.style.display='flex';
+      cache=data;
+    })
+    .catch(function(){/* swallow; badge just stays hidden */});
+
+  var cache=null;
+  function openPanel(){
+    btn.style.display='none';
+    panel.classList.add('sth-version-open');
+    panel.setAttribute('aria-hidden','false');
+    if(!loaded){loaded=true;load();}
+  }
+  function closePanel(){
+    panel.classList.remove('sth-version-open');
+    panel.setAttribute('aria-hidden','true');
+    if(cache){btn.style.display='flex';}
+  }
+  function load(){
+    if(cache){render(cache);return;}
+    content.innerHTML='<p class="sth-version-loading">Loading...</p>';
+    fetch('/api/sessions/'+encodeURIComponent(sid)+'/chain',{credentials:'same-origin'})
+      .then(function(r){if(!r.ok){throw new Error('HTTP '+r.status);}return r.json();})
+      .then(function(data){cache=data;render(data);})
+      .catch(function(err){renderError(err);});
+  }
+  function render(data){
+    if(!data.versions||data.versions.length===0){
+      content.innerHTML='<p class="sth-version-empty">No versions.</p>';
+      return;
+    }
+    var byVersion={};
+    for(var i=0;i<(data.metadataDiff||[]).length;i++){
+      byVersion[data.metadataDiff[i].toVersion]=data.metadataDiff[i];
+    }
+    var subtitle=data.chain&&data.chain.project
+      ?'<p class="sth-version-subtitle">'+escapeHtml(data.chain.project)+' / '+escapeHtml(data.chain.entryFile)+'</p>'
+      :'';
+    var html=subtitle+'<div class="sth-version-timeline">';
+    // Newest first for the timeline UI.
+    var versions=data.versions.slice().sort(function(a,b){return b.versionNo-a.versionNo;});
+    for(var j=0;j<versions.length;j++){
+      html+=item(versions[j],byVersion[versions[j].versionNo]);
+    }
+    html+='</div>';
+    content.innerHTML=html;
+  }
+  function item(v,diff){
+    var cls=v.current?'sth-version-item sth-version-current':'sth-version-item';
+    var h='<div class="'+cls+'">';
+    h+='<a class="sth-version-link" href="/s/'+encodeURIComponent(v.sessionId)+'/">v'+v.versionNo+(v.current?' (current)':'')+'</a>';
+    if(v.tags&&v.tags.length){
+      h+='<div class="sth-version-meta">'+v.tags.map(escapeHtml).join(', ')+'</div>';
+    }
+    h+='<div class="sth-version-created">'+escapeHtml(v.createdAt||'')+'</div>';
+    h+=diffHtml(diff);
+    h+='</div>';
+    return h;
+  }
+  function diffHtml(diff){
+    if(!diff){return '';}
+    var parts=[];
+    for(var i=0;i<(diff.addedTags||[]).length;i++){
+      parts.push('<span class="add">+'+escapeHtml(diff.addedTags[i])+'</span>');
+    }
+    for(var k=0;k<(diff.removedTags||[]).length;k++){
+      parts.push('<span class="rm">-'+escapeHtml(diff.removedTags[k])+'</span>');
+    }
+    if(diff.categoryOld!==diff.categoryNew){
+      parts.push('<span class="chng">category: '+escapeHtml(diff.categoryOld||'∅')+' → '+escapeHtml(diff.categoryNew||'∅')+'</span>');
+    }
+    if(diff.projectOld!==diff.projectNew){
+      parts.push('<span class="chng">project: '+escapeHtml(diff.projectOld||'∅')+' → '+escapeHtml(diff.projectNew||'∅')+'</span>');
+    }
+    if(parts.length===0){return '';}
+    return '<div class="sth-version-diff">'+parts.join(' · ')+'</div>';
+  }
+  function renderError(err){
+    content.innerHTML='<p class="sth-version-error">Failed to load: '+escapeHtml(String(err))+'</p><button class="sth-version-retry" id="sth-version-retry">Retry</button>';
+    var retry=document.getElementById('sth-version-retry');
+    if(retry){retry.addEventListener('click',function(){loaded=false;cache=null;load();});}
+  }
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});
+  }
+  btn.addEventListener('click',openPanel);
+  closeBtn.addEventListener('click',closePanel);
+})();
+</script>`
+
 var scriptBytes = []byte(liveReloadScript)
-var drawerBytes = []byte(drawerCSS + drawerHTML + drawerJS)
+var drawerBytes = []byte(drawerCSS + drawerHTML + drawerJS + versionDrawerCSS + versionDrawerHTML + versionDrawerJS)
 var headClose = []byte("</head>")
 var bodyClose = []byte("</body>")
 

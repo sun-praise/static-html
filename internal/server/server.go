@@ -93,6 +93,8 @@ type createSessionResponse struct {
 	URL       string `json:"url"`
 	EntryFile string `json:"entryFile"`
 	RootDir   string `json:"rootDir"`
+	ChainID   string `json:"chainId"`
+	VersionNo int    `json:"versionNo"`
 }
 
 type homePageData struct {
@@ -736,6 +738,8 @@ func (s *Server) routes() http.Handler {
 			s.handleGetMetadata(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/peers"):
 			s.handleGetPeers(w, r)
+		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/chain"):
+			s.handleGetChain(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/download"):
 			s.handleDownloadSession(w, r)
 		case r.Method == http.MethodDelete && isExactSessionPath(r.URL.Path):
@@ -1139,29 +1143,40 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	session, err := s.store.CreateUploaded(entryFile, storedEntryFile)
+	sess, err := s.store.CreateUploaded(entryFile, storedEntryFile)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	cleanupSessionDir = false
 
-	if err := s.assignOwnerIfNeeded(r, session.ID); err != nil {
+	if err := s.assignOwnerIfNeeded(r, sess.ID); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "Failed to assign session owner.")
 		return
 	}
 
-	if err := s.setSessionMetadata(session.ID, tags, category, project); err != nil {
+	if err := s.setSessionMetadata(sess.ID, tags, category, project); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
+	// Link this upload to its version chain (same project + entry-file
+	// basename, optionally owner-scoped). Chain membership is best-effort:
+	// a failure here degrades to an unlinked session, never blocks the upload.
+	ownerID, _ := currentUser(r)
+	chainID, versionNo, linkErr := s.store.LinkToChain(sess.ID, project, sess.EntryFile, ownerID)
+	if linkErr != nil && !errors.Is(linkErr, session.ErrSessionNotFound) {
+		fmt.Fprintf(os.Stderr, "chain link failed for session %s: %v\n", sess.ID, linkErr)
+	}
+
 	base := s.serverBaseURL(r)
 	response := createSessionResponse{
-		SessionID: session.ID,
-		URL:       base + "/s/" + session.ID + "/",
-		EntryFile: session.EntryFile,
-		RootDir:   session.RootDir,
+		SessionID: sess.ID,
+		URL:       base + "/s/" + sess.ID + "/",
+		EntryFile: sess.EntryFile,
+		RootDir:   sess.RootDir,
+		ChainID:   chainID,
+		VersionNo: versionNo,
 	}
 
 	writeJSON(w, http.StatusCreated, response)
@@ -1835,6 +1850,85 @@ func (s *Server) handleGetPeers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, peers)
+}
+
+// chainResponse is the payload returned by GET /api/sessions/{id}/chain. The
+// current session's version is marked in versions[] via ChainVersion.Current.
+// metadataDiff describes per-step tag/category/project transitions across the
+// whole chain (including v1 vs. an empty baseline), so the timeline UI can
+// render "+tag" / "category: a→b" between adjacent versions.
+type chainResponse struct {
+	Chain        session.ChainInfo          `json:"chain"`
+	Current      session.ChainVersion       `json:"current"`
+	Versions     []session.ChainVersion     `json:"versions"`
+	MetadataDiff []session.VersionMetadataDiff `json:"metadataDiff"`
+}
+
+func (s *Server) handleGetChain(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/chain")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	_, found, err := s.requireSession(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
+		return
+	}
+
+	if !s.requireOwner(w, r, sessionID) {
+		return
+	}
+
+	info, versions, err := s.store.GetChainOfSession(sessionID)
+	if err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeJSONError(w, http.StatusNotFound, "Session not found.")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var current session.ChainVersion
+	for _, v := range versions {
+		if v.Current {
+			current = v
+			break
+		}
+	}
+	// GetChainOfSession returns ErrSessionNotFound for missing or soft-deleted
+	// sessions, so reaching here with no current version means the chain row
+	// exists but holds no live versions (e.g. every member was soft-deleted
+	// via a path that bypassed the chain lookup). Treat as not-found rather
+	// than fabricating a "current" version from stale data.
+	if current.SessionID == "" {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
+		return
+	}
+
+	metadataDiff := []session.VersionMetadataDiff{}
+	if info.ChainID != "" {
+		diffs, err := s.store.DiffChainMetadata(info.ChainID)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		metadataDiff = diffs
+	}
+
+	writeJSON(w, http.StatusOK, chainResponse{
+		Chain:        info,
+		Current:      current,
+		Versions:     versions,
+		MetadataDiff: metadataDiff,
+	})
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {

@@ -34,6 +34,8 @@ type DocumentInfo struct {
 	Tags      []string  `json:"tags"`
 	Category  string    `json:"category"`
 	Project   string    `json:"project"`
+	ChainID   string    `json:"chainId"`
+	VersionNo int       `json:"versionNo"`
 	CreatedAt string    `json:"createdAt"`
 }
 
@@ -54,6 +56,23 @@ func (s *Store) initMetadata() error {
 		CREATE TABLE IF NOT EXISTS document_projects (
 			session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
 			project TEXT NOT NULL
+		);
+
+		-- document_chains groups sessions into version chains. Note that
+		-- SQLite's UNIQUE(project, entry_file, user_id) treats NULL user_id
+		-- values as distinct, so it only enforces one-chain-per-owner for
+		-- authenticated owners (user_id NOT NULL). The anonymous path
+		-- (user_id NULL, i.e. --auth disabled) is instead serialized by
+		-- LinkToChain's BEGIN IMMEDIATE write lock. No separate lookup index
+		-- is needed: the UNIQUE constraint already provides a
+		-- (project, entry_file, user_id) index.
+		CREATE TABLE IF NOT EXISTS document_chains (
+			chain_id TEXT PRIMARY KEY,
+			project TEXT NOT NULL,
+			entry_file TEXT NOT NULL,
+			user_id TEXT DEFAULT NULL,
+			created_at_unix INTEGER NOT NULL,
+			UNIQUE(project, entry_file, user_id)
 		);
 	`)
 	return err
@@ -251,7 +270,9 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 		SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix,
 			GROUP_CONCAT(dt.tag, char(1)),
 			dc.category,
-			dp.project
+			dp.project,
+			COALESCE(s.chain_id, ''),
+			COALESCE(s.version_no, 0)
 		FROM sessions s
 		LEFT JOIN document_tags dt ON s.session_id = dt.session_id
 		LEFT JOIN document_categories dc ON s.session_id = dc.session_id
@@ -309,8 +330,10 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 			tagsStr        sql.NullString
 			category       sql.NullString
 			project        sql.NullString
+			chainID        string
+			versionNo      int
 		)
-		if err := rows.Scan(&sessionID, &entryFile, &createdAtUnix, &tagsStr, &category, &project); err != nil {
+		if err := rows.Scan(&sessionID, &entryFile, &createdAtUnix, &tagsStr, &category, &project, &chainID, &versionNo); err != nil {
 			return nil, err
 		}
 
@@ -319,6 +342,8 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 			Name:      entryFile,
 			Category:  category.String,
 			Project:   project.String,
+			ChainID:   chainID,
+			VersionNo: versionNo,
 			CreatedAt: time.Unix(0, createdAtUnix).UTC().Format(time.RFC3339),
 		}
 		if tagsStr.Valid && tagsStr.String != "" {
@@ -385,7 +410,9 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 		SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix,
 			GROUP_CONCAT(dt.tag, char(1)),
 			dc.category,
-			dp.project
+			dp.project,
+			COALESCE(s.chain_id, ''),
+			COALESCE(s.version_no, 0)
 		FROM sessions s
 		LEFT JOIN document_tags dt ON s.session_id = dt.session_id
 		LEFT JOIN document_categories dc ON s.session_id = dc.session_id
@@ -419,8 +446,10 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 			tagsStr       sql.NullString
 			category      sql.NullString
 			project       sql.NullString
+			chainID       string
+			versionNo     int
 		)
-		if err := rows.Scan(&sessionID, &entryFile, &createdAtUnix, &tagsStr, &category, &project); err != nil {
+		if err := rows.Scan(&sessionID, &entryFile, &createdAtUnix, &tagsStr, &category, &project, &chainID, &versionNo); err != nil {
 			return nil, err
 		}
 
@@ -429,6 +458,8 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 			Name:      entryFile,
 			Category:  category.String,
 			Project:   project.String,
+			ChainID:   chainID,
+			VersionNo: versionNo,
 			CreatedAt: time.Unix(0, createdAtUnix).UTC().Format(time.RFC3339),
 		}
 		if tagsStr.Valid && tagsStr.String != "" {
