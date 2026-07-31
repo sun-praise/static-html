@@ -170,6 +170,17 @@ const versionDrawerCSS = `<style>
 .sth-version-loading,.sth-version-empty,.sth-version-error{font-size:13px!important;color:#999!important;padding:8px 0!important;margin:0!important}
 .sth-version-error{color:#dc2626!important}
 .sth-version-retry{margin-top:8px!important;padding:6px 12px!important;border:1px solid #d6d1c6!important;border-radius:6px!important;background:#f2efe6!important;cursor:pointer!important;font-size:13px!important}
+.sth-version-diffbtn{margin-top:6px!important;padding:4px 10px!important;border:1px solid #d6d1c6!important;border-radius:6px!important;background:#f2efe6!important;cursor:pointer!important;font-size:12px!important;color:#444!important;font-family:inherit!important}
+.sth-version-diffbtn:hover{background:#e8e2d2!important}
+.sth-version-diffbtn .badge{color:#15803d!important;font-weight:600!important;margin-left:2px!important}
+.sth-version-diffbtn .badge .rm{color:#b91c1c!important}
+.sth-version-htmldiff{margin-top:8px!important;border:1px solid #eee!important;border-radius:6px!important;overflow:auto!important;max-height:320px!important;font-family:ui-monospace,SFMono-Regular,Menlo,monospace!important;font-size:11px!important;line-height:1.5!important;background:#fafafa!important}
+.sth-version-htmldiff-empty{padding:8px 10px!important;color:#999!important;font-size:12px!important;font-family:-apple-system,"Segoe UI",sans-serif!important}
+.sth-version-htmldiff .hunk{display:block!important;white-space:pre!important;padding:0 8px!important}
+.sth-version-htmldiff .hunk.add{background:#dcfce7!important;color:#15803d!important}
+.sth-version-htmldiff .hunk.del{background:#fee2e2!important;color:#b91c1c!important;text-decoration:line-through!important;text-decoration-color:#b91c1c66!important}
+.sth-version-htmldiff .hunk.ctx{color:#999!important}
+.sth-version-htmldiff .hunk.skip{color:#bbb!important;font-style:italic!important;background:#f5f5f5!important}
 </style>`
 
 const versionDrawerHTML = `<div id="sth-version-btn" title="Version timeline" style="display:none">v?</div>
@@ -239,12 +250,23 @@ const versionDrawerJS = `<script>
     // Newest first for the timeline UI.
     var versions=data.versions.slice().sort(function(a,b){return b.versionNo-a.versionNo;});
     for(var j=0;j<versions.length;j++){
-      html+=item(versions[j],byVersion[versions[j].versionNo]);
+      // Predecessor (by version_no, not array index): the largest version_no
+      // strictly smaller than this one among live versions. In the
+      // newest-first array that is the next entry, but compute it explicitly
+      // so soft-delete gaps (v1, v3) still link v3 -> v1.
+      var prevNo=0;
+      for(var k=0;k<versions.length;k++){
+        if(versions[k].versionNo<versions[j].versionNo && versions[k].versionNo>prevNo){
+          prevNo=versions[k].versionNo;
+        }
+      }
+      html+=item(versions[j],byVersion[versions[j].versionNo],prevNo);
     }
     html+='</div>';
     content.innerHTML=html;
+    wireDiffButtons();
   }
-  function item(v,diff){
+  function item(v,diff,prevVersionNo){
     var cls=v.current?'sth-version-item sth-version-current':'sth-version-item';
     var h='<div class="'+cls+'">';
     h+='<a class="sth-version-link" href="/s/'+encodeURIComponent(v.sessionId)+'/">v'+v.versionNo+(v.current?' (current)':'')+'</a>';
@@ -253,8 +275,90 @@ const versionDrawerJS = `<script>
     }
     h+='<div class="sth-version-created">'+escapeHtml(v.createdAt||'')+'</div>';
     h+=diffHtml(diff);
+    // HTML content diff button: only when this version has a live predecessor.
+    if(prevVersionNo>0){
+      h+='<button class="sth-version-diffbtn" data-from="'+prevVersionNo+'" data-to="'+v.versionNo+'">Show HTML diff <span class="badge"></span></button>';
+      h+='<div class="sth-version-htmldiff" data-target="v'+v.versionNo+'" style="display:none"></div>';
+    }
     h+='</div>';
     return h;
+  }
+  // wireDiffButtons attaches click handlers to every Show HTML diff button in
+  // the rendered timeline. Clicking fetches the diff once and expands it into
+  // the sibling .sth-version-htmldiff container; clicking again collapses it.
+  function wireDiffButtons(){
+    var buttons=content.querySelectorAll('.sth-version-diffbtn');
+    for(var i=0;i<buttons.length;i++){
+      (function(b){
+        b.addEventListener('click',function(){
+          var container=b.nextElementSibling;
+          if(!container||!container.classList.contains('sth-version-htmldiff')){return;}
+          if(container.getAttribute('data-loaded')==='1'){
+            // Toggle collapse/expand.
+            var open=container.style.display!=='none';
+            container.style.display=open?'none':'block';
+            b.firstChild.nodeValue=open?'Show HTML diff ':'Hide HTML diff ';
+            return;
+          }
+          container.style.display='block';
+          container.innerHTML='<div class="sth-version-htmldiff-empty">Diffing...</div>';
+          var from=b.getAttribute('data-from'),to=b.getAttribute('data-to');
+          fetch('/api/sessions/'+encodeURIComponent(sid)+'/diff?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to),{credentials:'same-origin'})
+            .then(function(r){if(!r.ok){throw new Error('HTTP '+r.status);}return r.json();})
+            .then(function(data){
+              container.setAttribute('data-loaded','1');
+              container.innerHTML=renderHtmlDiff(data);
+              b.firstChild.nodeValue='Hide HTML diff ';
+              var badge=b.querySelector('.badge');
+              if(badge){badge.innerHTML=formatBadge(data.summary);}
+            })
+            .catch(function(err){
+              container.innerHTML='<div class="sth-version-htmldiff-empty">Failed: '+escapeHtml(String(err))+'</div>';
+            });
+        });
+      })(buttons[i]);
+    }
+  }
+  // renderHtmlDiff turns a diffResponse into collapsed HTML: equal runs are
+  // elided into a single "… N unchanged …" skip line so additions/deletions
+  // stay visible without scrolling through hundreds of context lines.
+  function renderHtmlDiff(data){
+    if(!data||!data.lines||data.lines.length===0){
+      return '<div class="sth-version-htmldiff-empty">No changes.</div>';
+    }
+    var out=[];
+    var ctxRun=0;
+    function flushCtx(){
+      if(ctxRun>0){
+        out.push('<span class="hunk skip">  ⋯ '+ctxRun+' unchanged line'+(ctxRun===1?'':'s')+' ⋯</span>');
+        ctxRun=0;
+      }
+    }
+    for(var i=0;i<data.lines.length;i++){
+      var l=data.lines[i];
+      if(l.kind==='equal'){
+        ctxRun++;
+      }else{
+        flushCtx();
+        if(l.kind==='add'){
+          out.push('<span class="hunk add">+ '+escapeHtml(l.text)+'</span>');
+        }else if(l.kind==='delete'){
+          out.push('<span class="hunk del">- '+escapeHtml(l.text)+'</span>');
+        }
+      }
+    }
+    flushCtx();
+    if(out.length===0){
+      return '<div class="sth-version-htmldiff-empty">No changes.</div>';
+    }
+    return out.join('');
+  }
+  function formatBadge(summary){
+    if(!summary){return '';}
+    var parts=[];
+    if(summary.added){parts.push('+'+summary.added);}
+    if(summary.removed){parts.push('<span class="rm">−'+summary.removed+'</span>');}
+    return parts.length?' '+parts.join(' '):'';
   }
   function diffHtml(diff){
     if(!diff){return '';}

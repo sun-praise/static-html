@@ -3,6 +3,7 @@ package session
 import (
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -391,4 +392,60 @@ func chainVersionFrom(sessionID string, sess Session, meta DocumentMetadata, ver
 		Project:   meta.Project,
 		CreatedAt: sess.CreatedAtISO(),
 	}
+}
+
+// DiffSessionHTML computes a line-level diff between the entry HTML of two
+// sessions by reading each session's StoredEntryFile off disk. It is the
+// first code in the codebase to read uploaded session content into memory;
+// it reuses the established store.Get → StoredEntryFile access pattern.
+//
+// Missing or unreadable files are treated as empty content (not an error):
+// legacy sessions created without on-disk files, or whose upload dir was
+// cleared, still produce a valid (one-sided) diff rather than failing. This
+// graceful degradation keeps the diff endpoint usable across mixed data.
+//
+// Either session being absent from the store returns ErrSessionNotFound.
+// The result is never nil: callers can safely len()/range over it.
+func (s *Store) DiffSessionHTML(fromSessionID, toSessionID string) ([]LineOp, error) {
+	fromSess, found, err := s.Get(fromSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, ErrSessionNotFound
+	}
+	toSess, found, err := s.Get(toSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, ErrSessionNotFound
+	}
+
+	oldText := readSessionHTML(fromSess)
+	newText := readSessionHTML(toSess)
+
+	ops := DiffLines(SplitLines(oldText), SplitLines(newText))
+	if ops == nil {
+		ops = []LineOp{}
+	}
+	return ops, nil
+}
+
+// readSessionHTML reads the session's entry HTML, returning "" for any I/O
+// failure so the caller can diff against an empty document. StoredEntryFile
+// is preferred (the on-disk upload path) and falls back to EntryFile.
+func readSessionHTML(sess Session) string {
+	path := sess.StoredEntryFile
+	if path == "" {
+		path = sess.EntryFile
+	}
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
