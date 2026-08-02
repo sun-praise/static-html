@@ -326,6 +326,12 @@ const versionDrawerJS = `<script>
     if(!data||!data.lines||data.lines.length===0){
       return '<div class="sth-version-htmldiff-empty">No changes.</div>';
     }
+    // Explicit "diff skipped: input too large" signal from the server. Render
+    // the sentinel verbatim as a skip hunk rather than letting the generic
+    // equal-line collapsing logic swallow it into "N unchanged lines".
+    if(data.tooLarge){
+      return '<span class="hunk skip">'+escapeHtml(data.lines[0].text)+'</span>';
+    }
     var out=[];
     var ctxRun=0;
     function flushCtx(){

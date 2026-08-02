@@ -1926,3 +1926,59 @@ func TestGetDiffNotFound(t *testing.T) {
 		t.Fatalf("expected 404, got %d", resp.StatusCode)
 	}
 }
+
+// TestGetDiffTooLargeFilesSkipped is the regression guard for the CodeRabbit
+// finding: when either input exceeds MaxDiffLines, the response carries an
+// explicit tooLarge=true flag (rather than silently looking like "no changes"),
+// and the UI can branch on the boolean instead of sniffing a magic string.
+func TestGetDiffTooLargeFilesSkipped(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+
+	// Build HTML files just past the MaxDiffLines threshold. DiffLines checks
+	// the threshold before allocating the DP table, so this stays fast.
+	big := make([]byte, 0, (session.MaxDiffLines+1)*6)
+	for i := 0; i <= session.MaxDiffLines; i++ {
+		big = append(big, "<div></div>\n"...)
+	}
+	createChainedSessionWithFile(t, store, string(big), "proj", "cat")
+	v2 := createChainedSessionWithFile(t, store, string(big), "proj", "cat")
+
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/" + v2 + "/diff?from=1&to=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
+	}
+
+	var result diffResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.TooLarge {
+		t.Fatalf("expected tooLarge=true for input exceeding MaxDiffLines; got %+v", result)
+	}
+	if len(result.Lines) != 1 {
+		t.Fatalf("expected 1 sentinel line; got %d", len(result.Lines))
+	}
+	if result.Summary.Added != 0 || result.Summary.Removed != 0 {
+		t.Fatalf("expected zero summary for skipped diff; got %+v", result.Summary)
+	}
+}

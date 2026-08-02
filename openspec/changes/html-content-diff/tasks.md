@@ -33,3 +33,7 @@
 - [x] 5.3 `go vet ./...` 无警告。
 - [x] 5.4 `openspec validate html-content-diff` 通过。
 - [ ] 5.5 PR 合并后执行 `openspec archive html-content-diff`（跟随项目惯例，可批量整理时一并归档）。
+
+## 6. PR review 修复（#84 CodeRabbit 评审）
+- [x] 6.1 `renderHtmlDiff` 把"diff 太大"哨兵当普通 equal 行折叠（Major）：`diffResponse` 新增显式 `TooLarge bool` 字段，`handleGetDiff` 由 `len(ops)==1 && ops[0].Text==DiffTooLargeText` 计算；前端 `renderHtmlDiff` 优先判 `data.tooLarge` 渲染为 `.hunk.skip` 行，不靠 magic string。
+- [x] 6.2 新增 `TestGetDiffTooLargeFilesSkipped`：构造 `MaxDiffLines+1` 行输入，断言响应 `tooLarge=true`、`lines` 单条哨兵、`summary` 归零。

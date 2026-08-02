@@ -1946,11 +1946,16 @@ type diffLine struct {
 // diffResponse is the payload of GET /api/sessions/{id}/diff?from=vN&to=vM.
 // Lines is the full line-level diff in reading order; Summary gives additive
 // counts so the UI can render a "+a −b" hint without scanning the slice.
+// TooLarge is true when either input exceeded MaxDiffLines and the diff was
+// skipped: Lines then carries a single explanatory sentinel line and Summary
+// is zeroed. The UI branches on TooLarge rather than sniffing the sentinel
+// text, so the contract is explicit and locale-independent.
 type diffResponse struct {
 	FromVersion int         `json:"fromVersion"`
 	ToVersion   int         `json:"toVersion"`
 	Lines       []diffLine  `json:"lines"`
 	Summary     diffSummary `json:"summary"`
+	TooLarge    bool        `json:"tooLarge"`
 }
 
 type diffSummary struct {
@@ -2037,6 +2042,10 @@ func (s *Server) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	summary := session.Summarize(ops)
+	// DiffLines signals "input too large" by returning a single sentinel op
+	// carrying DiffTooLargeText; surface it as an explicit boolean so the UI
+	// does not have to match a magic string.
+	tooLarge := len(ops) == 1 && ops[0].Text == session.DiffTooLargeText
 
 	writeJSON(w, http.StatusOK, diffResponse{
 		FromVersion: fromVer,
@@ -2046,6 +2055,7 @@ func (s *Server) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 			Added:   summary.Added,
 			Removed: summary.Removed,
 		},
+		TooLarge: tooLarge,
 	})
 }
 
