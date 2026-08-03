@@ -405,31 +405,33 @@ func chainVersionFrom(sessionID string, sess Session, meta DocumentMetadata, ver
 // graceful degradation keeps the diff endpoint usable across mixed data.
 //
 // Either session being absent from the store returns ErrSessionNotFound.
-// The result is never nil: callers can safely len()/range over it.
-func (s *Store) DiffSessionHTML(fromSessionID, toSessionID string) ([]LineOp, error) {
+// The returned DiffResult carries both the ordered ops and an explicit
+// TooLarge flag (set when either input exceeded MaxDiffLines) so callers do
+// not have to infer "too large" from op text.
+func (s *Store) DiffSessionHTML(fromSessionID, toSessionID string) (DiffResult, error) {
 	fromSess, found, err := s.Get(fromSessionID)
 	if err != nil {
-		return nil, err
+		return DiffResult{}, err
 	}
 	if !found {
-		return nil, ErrSessionNotFound
+		return DiffResult{}, ErrSessionNotFound
 	}
 	toSess, found, err := s.Get(toSessionID)
 	if err != nil {
-		return nil, err
+		return DiffResult{}, err
 	}
 	if !found {
-		return nil, ErrSessionNotFound
+		return DiffResult{}, ErrSessionNotFound
 	}
 
 	oldText := readSessionHTML(fromSess)
 	newText := readSessionHTML(toSess)
 
-	ops := DiffLines(SplitLines(oldText), SplitLines(newText))
-	if ops == nil {
-		ops = []LineOp{}
+	result := DiffLines(SplitLines(oldText), SplitLines(newText))
+	if result.Ops == nil {
+		result.Ops = []LineOp{}
 	}
-	return ops, nil
+	return result, nil
 }
 
 // readSessionHTML reads the session's entry HTML, returning "" for any I/O

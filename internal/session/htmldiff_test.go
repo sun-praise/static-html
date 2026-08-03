@@ -22,7 +22,7 @@ func opsSummary(ops []LineOp) (equal, added, deleted int) {
 func TestDiffLines_IdenticalInputsAreAllEqual(t *testing.T) {
 	t.Parallel()
 	old := []string{"<html>", "<body>", "</body>", "</html>"}
-	ops := DiffLines(old, old)
+	ops := DiffLines(old, old).Ops
 
 	eq, add, del := opsSummary(ops)
 	if add != 0 || del != 0 {
@@ -43,7 +43,7 @@ func TestDiffLines_IdenticalInputsAreAllEqual(t *testing.T) {
 
 func TestDiffLines_PureAddition(t *testing.T) {
 	t.Parallel()
-	ops := DiffLines([]string{"a", "c"}, []string{"a", "b", "c"})
+	ops := DiffLines([]string{"a", "c"}, []string{"a", "b", "c"}).Ops
 
 	eq, add, del := opsSummary(ops)
 	if add != 1 || del != 0 || eq != 2 {
@@ -69,7 +69,7 @@ func TestDiffLines_PureAddition(t *testing.T) {
 
 func TestDiffLines_PureDeletion(t *testing.T) {
 	t.Parallel()
-	ops := DiffLines([]string{"a", "b", "c"}, []string{"a", "c"})
+	ops := DiffLines([]string{"a", "b", "c"}, []string{"a", "c"}).Ops
 
 	eq, add, del := opsSummary(ops)
 	if add != 0 || del != 1 || eq != 2 {
@@ -92,7 +92,7 @@ func TestDiffLines_PureDeletion(t *testing.T) {
 func TestDiffLines_ModificationIsDelThenAdd(t *testing.T) {
 	t.Parallel()
 	// Changing the middle line: old has "old", new has "new" in the same slot.
-	ops := DiffLines([]string{"a", "old", "c"}, []string{"a", "new", "c"})
+	ops := DiffLines([]string{"a", "old", "c"}, []string{"a", "new", "c"}).Ops
 
 	eq, add, del := opsSummary(ops)
 	if add != 1 || del != 1 || eq != 2 {
@@ -115,7 +115,7 @@ func TestDiffLines_ReconstructsBothSides(t *testing.T) {
 	// Property test: replaying equal+delete ops yields old; equal+add yields new.
 	old := []string{"<html>", "<head>", "<title>x</title>", "</head>", "<body>", "</body>", "</html>"}
 	new := []string{"<html>", "<head>", "<title>y</title>", "<meta charset='utf-8'>", "</head>", "<body>", "</body>", "</html>"}
-	ops := DiffLines(old, new)
+	ops := DiffLines(old, new).Ops
 
 	var rebuiltOld, rebuiltNew strings.Builder
 	for _, op := range ops {
@@ -143,16 +143,16 @@ func TestDiffLines_ReconstructsBothSides(t *testing.T) {
 func TestDiffLines_EmptyInputs(t *testing.T) {
 	t.Parallel()
 	// Both empty -> no ops.
-	if ops := DiffLines(nil, nil); len(ops) != 0 {
+	if ops := DiffLines(nil, nil).Ops; len(ops) != 0 {
 		t.Fatalf("empty/empty should yield no ops; got %d", len(ops))
 	}
 	// Empty old -> everything added.
-	ops := DiffLines(nil, []string{"a", "b"})
+	ops := DiffLines(nil, []string{"a", "b"}).Ops
 	if len(ops) != 2 || ops[0].Kind != LineAdd || ops[1].Kind != LineAdd {
 		t.Fatalf("empty old should yield 2 adds; got %+v", ops)
 	}
 	// Empty new -> everything deleted.
-	ops = DiffLines([]string{"a", "b"}, nil)
+	ops = DiffLines([]string{"a", "b"}, nil).Ops
 	if len(ops) != 2 || ops[0].Kind != LineDelete || ops[1].Kind != LineDelete {
 		t.Fatalf("empty new should yield 2 deletes; got %+v", ops)
 	}
@@ -162,7 +162,7 @@ func TestDiffLines_CompletelyDifferent(t *testing.T) {
 	t.Parallel()
 	old := []string{"x", "y", "z"}
 	new := []string{"p", "q", "r"}
-	ops := DiffLines(old, new)
+	ops := DiffLines(old, new).Ops
 
 	eq, add, del := opsSummary(ops)
 	if eq != 0 || add != 3 || del != 3 {
@@ -176,19 +176,41 @@ func TestDiffLines_TooLargeIsSkipped(t *testing.T) {
 	for i := range huge {
 		huge[i] = "line"
 	}
-	ops := DiffLines(huge, []string{"a"})
-	if len(ops) != 1 {
-		t.Fatalf("expected 1 sentinel op for too-large input; got %d", len(ops))
+	result := DiffLines(huge, []string{"a"})
+	if !result.TooLarge {
+		t.Fatal("expected TooLarge=true for input exceeding MaxDiffLines")
 	}
-	if ops[0].Text != DiffTooLargeText {
-		t.Fatalf("expected sentinel text %q, got %q", DiffTooLargeText, ops[0].Text)
+	if len(result.Ops) != 1 {
+		t.Fatalf("expected 1 sentinel op for too-large input; got %d", len(result.Ops))
+	}
+	if result.Ops[0].Text != DiffTooLargeText {
+		t.Fatalf("expected sentinel text %q, got %q", DiffTooLargeText, result.Ops[0].Text)
 	}
 
 	// Exactly at the threshold is still diffed.
 	atLimit := make([]string, MaxDiffLines)
 	big := DiffLines(atLimit, atLimit)
-	if len(big) != MaxDiffLines {
-		t.Fatalf("input at limit should still be diffed; got %d ops", len(big))
+	if big.TooLarge {
+		t.Fatal("input at limit should not be flagged TooLarge")
+	}
+	if len(big.Ops) != MaxDiffLines {
+		t.Fatalf("input at limit should still be diffed; got %d ops", len(big.Ops))
+	}
+}
+
+// TestDiffLines_SentinelTextContentIsNotMisclassified is the regression guard
+// for the CodeRabbit finding: a legitimate document whose single line equals
+// DiffTooLargeText must NOT be reported as TooLarge. TooLarge is an explicit
+// signal from the diff layer based on input size, never inferred from content.
+func TestDiffLines_SentinelTextContentIsNotMisclassified(t *testing.T) {
+	t.Parallel()
+	// Two identical single-line documents whose content is the sentinel text.
+	result := DiffLines([]string{DiffTooLargeText}, []string{DiffTooLargeText})
+	if result.TooLarge {
+		t.Fatalf("legitimate content equal to DiffTooLargeText must not be flagged TooLarge; got %+v", result)
+	}
+	if len(result.Ops) != 1 || result.Ops[0].Kind != LineEqual {
+		t.Fatalf("expected a single equal op for identical sentinel-text docs; got %+v", result.Ops)
 	}
 }
 

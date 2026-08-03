@@ -7,7 +7,7 @@ The diff SHALL be computed by a longest-common-subsequence algorithm over the li
 
 The endpoint SHALL respect session ownership identically to the chain endpoint. When either version number does not correspond to a live version in the chain, or `from` equals `to`, or a parameter is missing or non-positive, the system SHALL return `400`. When the path session does not exist or is soft-deleted, the system SHALL return `404`.
 
-The diff computation SHALL be bounded: when either input exceeds a fixed line threshold, the system SHALL return a single sentinel line indicating the diff was skipped, rather than attempting the O(n*m) computation.
+The diff computation SHALL be bounded: when either input exceeds a fixed line threshold, the system SHALL set the response's `tooLarge` flag to `true` and include a single explanatory line, rather than attempting the O(n*m) computation. The `tooLarge` flag is the authoritative signal of the skip condition; a legitimate document whose content happens to match the explanatory text SHALL NOT be misclassified as too large.
 
 #### Scenario: 相邻版本的内容 diff
 - **WHEN** a client requests `GET /api/sessions/<v2-id>/diff?from=1&to=2` for a two-version chain where v2 added one line
@@ -44,7 +44,15 @@ The diff computation SHALL be bounded: when either input exceeds a fixed line th
 #### Scenario: 超大文件跳过 diff
 - **WHEN** either version's entry HTML exceeds the line threshold
 - **THEN** the response status is `200`
-- **AND** `lines` contains a single sentinel entry indicating the diff was skipped due to size
+- **AND** the response's `tooLarge` field is `true`
+- **AND** `lines` contains a single explanatory entry indicating the diff was skipped due to size
+- **AND** `summary.added` and `summary.removed` are both `0`
+
+#### Scenario: 内容等于哨兵文本的合法文档不被误判
+- **WHEN** a version's entry HTML is a single line whose text equals the skip-explanatory message
+- **AND** neither input exceeds the line threshold
+- **THEN** the response's `tooLarge` field is `false`
+- **AND** the line is treated as ordinary content (an `equal` op when both sides match)
 
 ### Requirement: 时间线 HTML diff 内联渲染
 The system SHALL inject, into the version-timeline drawer of each preview page, a "Show HTML diff" control on every timeline item that has a live predecessor version. Activating the control SHALL lazily fetch the content diff between the item and its predecessor and render it inline within the drawer, with added lines styled distinctly from removed lines, and consecutive unchanged lines collapsed so changes remain visible without scrolling.

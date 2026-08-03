@@ -496,10 +496,11 @@ func TestDiffSessionHTML_DetectsAddedLines(t *testing.T) {
 	v1 := createChainedSessionWithFile(t, store, "<html>\n<body>\n<h1>old</h1>\n</body>\n</html>\n", "proj", "cat")
 	v2 := createChainedSessionWithFile(t, store, "<html>\n<body>\n<h1>old</h1>\n<p>new para</p>\n</body>\n</html>\n", "proj", "cat")
 
-	ops, err := store.DiffSessionHTML(v1, v2)
+	result, err := store.DiffSessionHTML(v1, v2)
 	if err != nil {
 		t.Fatalf("DiffSessionHTML: %v", err)
 	}
+	ops := result.Ops
 	eq, add, del := opsSummary(ops)
 	if del != 0 {
 		t.Fatalf("expected 0 deletions for pure addition; got %d (ops=%+v)", del, ops)
@@ -528,13 +529,13 @@ func TestDiffSessionHTML_DetectsModifiedAndDeletedLines(t *testing.T) {
 	v1 := createChainedSessionWithFile(t, store, "<h1>a</h1>\n<h2>b</h2>\n<h3>c</h3>\n", "proj", "cat")
 	v2 := createChainedSessionWithFile(t, store, "<h1>A</h1>\n<h3>c</h3>\n", "proj", "cat")
 
-	ops, err := store.DiffSessionHTML(v1, v2)
+	result, err := store.DiffSessionHTML(v1, v2)
 	if err != nil {
 		t.Fatalf("DiffSessionHTML: %v", err)
 	}
-	_, add, del := opsSummary(ops)
+	_, add, del := opsSummary(result.Ops)
 	if add != 1 || del != 2 {
-		t.Fatalf("expected add=1 del=2; got add=%d del=%d (ops=%+v)", add, del, ops)
+		t.Fatalf("expected add=1 del=2; got add=%d del=%d (ops=%+v)", add, del, result.Ops)
 	}
 }
 
@@ -546,11 +547,11 @@ func TestDiffSessionHTML_IdenticalFilesYieldAllEqual(t *testing.T) {
 	v1 := createChainedSessionWithFile(t, store, content, "proj", "cat")
 	v2 := createChainedSessionWithFile(t, store, content, "proj", "cat")
 
-	ops, err := store.DiffSessionHTML(v1, v2)
+	result, err := store.DiffSessionHTML(v1, v2)
 	if err != nil {
 		t.Fatalf("DiffSessionHTML: %v", err)
 	}
-	_, add, del := opsSummary(ops)
+	_, add, del := opsSummary(result.Ops)
 	if add != 0 || del != 0 {
 		t.Fatalf("identical files should have no add/del; got add=%d del=%d", add, del)
 	}
@@ -569,13 +570,13 @@ func TestDiffSessionHTML_MissingFileDegradesToEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ops, err := store.DiffSessionHTML(v1, v2Sess.ID)
+	result, err := store.DiffSessionHTML(v1, v2Sess.ID)
 	if err != nil {
 		t.Fatalf("missing file should not error; got %v", err)
 	}
-	_, add, del := opsSummary(ops)
+	_, add, del := opsSummary(result.Ops)
 	if add != 0 || del != 1 {
-		t.Fatalf("expected add=0 del=1 for missing v2 file; got add=%d del=%d (ops=%+v)", add, del, ops)
+		t.Fatalf("expected add=0 del=1 for missing v2 file; got add=%d del=%d (ops=%+v)", add, del, result.Ops)
 	}
 }
 
@@ -600,11 +601,11 @@ func TestDiffSessionHTML_NeverNil(t *testing.T) {
 	v1 := createChainedSessionWithFile(t, store, "", "proj", "cat")
 	v2 := createChainedSessionWithFile(t, store, "", "proj", "cat")
 
-	ops, err := store.DiffSessionHTML(v1, v2)
+	result, err := store.DiffSessionHTML(v1, v2)
 	if err != nil {
 		t.Fatalf("DiffSessionHTML: %v", err)
 	}
-	if ops == nil {
+	if result.Ops == nil {
 		t.Fatal("expected non-nil ops slice even for empty input")
 	}
 }

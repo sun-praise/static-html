@@ -45,10 +45,11 @@
 **`{id}` 的语义**：path 里的 `{id}` 是链上**任意** session（用于解析链归属 + owner 校验），`from/to` 是同链版本号。这样从任何一个版本预览页都能拉同链任意相邻对的 diff，无需先定位"链主 session"。
 **备选**：合并进 chain 接口一次性返回所有相邻 diff——否决，见上；每次开侧栏读 N 次磁盘 + N 次 LCS，浪费且延迟高。
 
-### D22: 大文件保护——超 `MaxDiffLines` 返回跳过哨兵
-**选择**：`MaxDiffLines = 10000`。任一侧超阈值时 `DiffLines` 返回单条 `LineOp{Kind: Equal, Text: DiffTooLargeText}`（`[diff skipped: file exceeds MaxDiffLines]`），前端原样渲染为一条灰色 skip 行。**恰好等于阈值仍正常 diff**。
+### D22: 大文件保护——超 `MaxDiffLines` 返回显式 `TooLarge` 信号
+**选择**：`MaxDiffLines = 10000`。任一侧超阈值时 `DiffLines` 返回 `DiffResult{Ops: [单条哨兵], TooLarge: true}`——`TooLarge` 是**显式结构化字段**，不依赖 op 文本。`DiffSessionHTML` 透传 `DiffResult`，`handleGetDiff` 直接用 `result.TooLarge` 设响应的 `tooLarge` 字段，前端 `renderHtmlDiff` 优先判 `data.tooLarge` 渲染为灰色 skip 行。**恰好等于阈值仍正常 diff**（`TooLarge=false`）。
 **理由**：LCS 是 O(n*m) DP，两个 10000 行文件 = 10^8 单元格 × 8 字节 int ≈ 800MB 内存 + 秒级 CPU，会拖垮请求。10000 行对 agent 产物（通常 < 2000 行）是极宽松的上限，正常用例永远触不到；真触到时跳过比卡死好。阈值是常量，将来按需调整。
-**备选**：(a) Myers 算法（O((n+m)·d)，d=编辑距离）——对大文件更快但实现复杂得多，与 D19"手写可控"的基调冲突，且 agent 产物行数远低于阈值，不值得；(b) 超阈值时只 diff 头尾 N 行——否决，语义混乱，不如明确跳过。
+**为何 `TooLarge` 是字段而非文本推断**：若用 `ops[0].Text == DiffTooLargeText` 判断，一个内容恰好等于 `[diff skipped: file exceeds MaxDiffLines]` 的合法单行 HTML 文档（如讲解本功能的文档站）会被误判为"太大跳过"。`TooLarge` 作为显式字段彻底根除这类内容碰撞——"太大"是输入规模的属性，与内容无关。
+**备选**：(a) Myers 算法（O((n+m)·d)，d=编辑距离）——对大文件更快但实现复杂得多，与 D19"手写可控"的基调冲突，且 agent 产物行数远低于阈值，不值得；(b) 超阈值时只 diff 头尾 N 行——否决，语义混乱，不如明确跳过；(c) 用哨兵 op 文本作为信号——否决，内容碰撞风险（见上）。
 
 ### D23: diff 不入库——纯即时计算
 **选择**：`DiffSessionHTML` 每次调用都读两份文件 + 算 LCS，结果**不写 DB**。

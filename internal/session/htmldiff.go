@@ -36,15 +36,28 @@ func (op LineOp) KindString() string {
 
 // MaxDiffLines guards against pathological inputs. Above this many lines in
 // either side, the LCS dynamic program (O(n*m) time and memory) becomes
-// expensive; DiffLines returns a single sentinel op instead so callers can
-// render a "too large to diff" notice without blocking. The threshold is
-// generous for hand-authored / agent-generated HTML (typically < 2000 lines).
+// expensive; DiffLines signals TooLarge in its DiffResult instead of running
+// the computation, so callers can render a "too large to diff" notice without
+// blocking. The threshold is generous for hand-authored / agent-generated
+// HTML (typically < 2000 lines).
 const MaxDiffLines = 10000
 
-// DiffTooLarge is returned as the sole LineOp when either input exceeds
-// MaxDiffLines. Its Kind is LineEqual so callers treating the slice as a list
-// of ops can still iterate; the Text carries an explanatory message.
+// DiffTooLargeText is the explanatory text placed in the sole sentinel op when
+// DiffResult.TooLarge is true. It is purely informational; the TooLarge
+// boolean — not this string — is the authoritative signal, so a legitimate
+// one-line document whose content happens to equal this string is not
+// misclassified.
 const DiffTooLargeText = "[diff skipped: file exceeds MaxDiffLines]"
+
+// DiffResult is the return value of DiffLines. Ops is the ordered line-level
+// diff (empty when TooLarge is true, in which case a single explanatory
+// sentinel op is still appended so UIs that ignore TooLarge degrade sanely).
+// TooLarge is the explicit, content-independent "input exceeded MaxDiffLines"
+// signal.
+type DiffResult struct {
+	Ops      []LineOp
+	TooLarge bool
+}
 
 // DiffLines computes a line-level diff between oldLines and newLines using the
 // classic LCS dynamic-programming algorithm, then walks the DP table to emit
@@ -53,10 +66,13 @@ const DiffTooLargeText = "[diff skipped: file exceeds MaxDiffLines]"
 //
 // Either input being empty is handled naturally (an empty old side makes
 // every new line an addition, and vice versa). Inputs exceeding MaxDiffLines
-// on either side yield DiffTooLarge.
-func DiffLines(oldLines, newLines []string) []LineOp {
+// on either side yield DiffResult{TooLarge: true} with a single sentinel op.
+func DiffLines(oldLines, newLines []string) DiffResult {
 	if len(oldLines) > MaxDiffLines || len(newLines) > MaxDiffLines {
-		return []LineOp{{Kind: LineEqual, Text: DiffTooLargeText}}
+		return DiffResult{
+			Ops:      []LineOp{{Kind: LineEqual, Text: DiffTooLargeText}},
+			TooLarge: true,
+		}
 	}
 
 	n, m := len(oldLines), len(newLines)
@@ -112,7 +128,7 @@ func DiffLines(oldLines, newLines []string) []LineOp {
 		newNo++
 	}
 
-	return ops
+	return DiffResult{Ops: ops}
 }
 
 // SplitLines splits text into lines, preserving content but dropping the

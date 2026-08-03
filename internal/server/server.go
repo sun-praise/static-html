@@ -2022,7 +2022,7 @@ func (s *Server) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ops, err := s.store.DiffSessionHTML(fromSID, toSID)
+	result, err := s.store.DiffSessionHTML(fromSID, toSID)
 	if err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
 			writeJSONError(w, http.StatusNotFound, "Session not found.")
@@ -2032,8 +2032,8 @@ func (s *Server) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lines := make([]diffLine, 0, len(ops))
-	for _, op := range ops {
+	lines := make([]diffLine, 0, len(result.Ops))
+	for _, op := range result.Ops {
 		lines = append(lines, diffLine{
 			Kind:  op.KindString(),
 			Text:  op.Text,
@@ -2041,11 +2041,7 @@ func (s *Server) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 			NewNo: op.NewNo,
 		})
 	}
-	summary := session.Summarize(ops)
-	// DiffLines signals "input too large" by returning a single sentinel op
-	// carrying DiffTooLargeText; surface it as an explicit boolean so the UI
-	// does not have to match a magic string.
-	tooLarge := len(ops) == 1 && ops[0].Text == session.DiffTooLargeText
+	summary := session.Summarize(result.Ops)
 
 	writeJSON(w, http.StatusOK, diffResponse{
 		FromVersion: fromVer,
@@ -2055,7 +2051,10 @@ func (s *Server) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 			Added:   summary.Added,
 			Removed: summary.Removed,
 		},
-		TooLarge: tooLarge,
+		// TooLarge is propagated verbatim from the diff layer's explicit
+		// signal rather than inferred from op text, so a legitimate document
+		// whose content equals DiffTooLargeText is not misclassified.
+		TooLarge: result.TooLarge,
 	})
 }
 
