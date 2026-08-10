@@ -34,13 +34,21 @@ func (op LineOp) KindString() string {
 	}
 }
 
-// MaxDiffLines guards against pathological inputs. Above this many lines in
-// either side, the LCS dynamic program (O(n*m) time and memory) becomes
-// expensive; DiffLines signals TooLarge in its DiffResult instead of running
-// the computation, so callers can render a "too large to diff" notice without
-// blocking. The threshold is generous for hand-authored / agent-generated
-// HTML (typically < 2000 lines).
+// MaxDiffLines is a per-side fast short-circuit: any single input beyond
+// this many lines is rejected before the LCS computation even considers the
+// other side. It exists so a pathologically long document cannot reach the
+// cell-budget check below with an already-huge dimension.
 const MaxDiffLines = 10000
+
+// MaxDiffCells bounds the total DP table size (cells ≈ (n+1)*(m+1)). The LCS
+// algorithm allocates one int per cell, so this is effectively a memory
+// budget: MaxDiffCells int cells ≈ MaxDiffCells*8 bytes. 5e7 cells ≈ 400 MiB
+// is a generous ceiling that still admits large real-world documents
+// (e.g. 5000x5000 = 2.5e7 cells ≈ 200 MiB) while preventing the two-sides-
+// each-at-MaxDiffLines case (1e8 cells ≈ 800 MiB) from ever allocating.
+// Per-side MaxDiffLines alone does not catch that case, since each side is
+// individually within the per-side limit.
+const MaxDiffCells = 50_000_000
 
 // DiffTooLargeText is the explanatory text placed in the sole sentinel op when
 // DiffResult.TooLarge is true. It is purely informational; the TooLarge
@@ -50,13 +58,22 @@ const MaxDiffLines = 10000
 const DiffTooLargeText = "[diff skipped: file exceeds MaxDiffLines]"
 
 // DiffResult is the return value of DiffLines. Ops is the ordered line-level
-// diff (empty when TooLarge is true, in which case a single explanatory
-// sentinel op is still appended so UIs that ignore TooLarge degrade sanely).
-// TooLarge is the explicit, content-independent "input exceeded MaxDiffLines"
-// signal.
+// diff. When TooLarge is true, Ops contains exactly one explanatory sentinel
+// op so UIs that ignore TooLarge degrade sanely. TooLarge is the explicit,
+// content-independent "input exceeded the per-side or cell budget" signal.
 type DiffResult struct {
 	Ops      []LineOp
 	TooLarge bool
+}
+
+// tooLargeResult is the single TooLarge DiffResult returned by DiffLines for
+// every rejection path (per-side limit or cell budget), so the sentinel shape
+// stays consistent and callers never branch on which guard fired.
+func tooLargeResult() DiffResult {
+	return DiffResult{
+		Ops:      []LineOp{{Kind: LineEqual, Text: DiffTooLargeText}},
+		TooLarge: true,
+	}
 }
 
 // DiffLines computes a line-level diff between oldLines and newLines using the
@@ -65,17 +82,23 @@ type DiffResult struct {
 // they share a context line). The result is pure: no I/O, no Store state.
 //
 // Either input being empty is handled naturally (an empty old side makes
-// every new line an addition, and vice versa). Inputs exceeding MaxDiffLines
-// on either side yield DiffResult{TooLarge: true} with a single sentinel op.
+// every new line an addition, and vice versa). Inputs are rejected with
+// DiffResult{TooLarge: true} (and a single sentinel op) when either side
+// exceeds MaxDiffLines or when the DP table would exceed MaxDiffCells.
 func DiffLines(oldLines, newLines []string) DiffResult {
-	if len(oldLines) > MaxDiffLines || len(newLines) > MaxDiffLines {
-		return DiffResult{
-			Ops:      []LineOp{{Kind: LineEqual, Text: DiffTooLargeText}},
-			TooLarge: true,
-		}
+	n := len(oldLines)
+	m := len(newLines)
+	// Per-side fast short-circuit: rejects a single huge input before the
+	// (cheap but still allocating) multiplication.
+	if n > MaxDiffLines || m > MaxDiffLines {
+		return tooLargeResult()
 	}
-
-	n, m := len(oldLines), len(newLines)
+	// Cell budget: bounds the (n+1)*(m+1) DP table memory. Checked before the
+	// table is allocated so an over-budget pair never pays for the allocation.
+	// int64 avoids overflow on 32-bit platforms when both sides are large.
+	if int64(n+1)*int64(m+1) > MaxDiffCells {
+		return tooLargeResult()
+	}
 
 	// dp[i][j] = length of LCS of oldLines[i:] and newLines[j:].
 	// Using (n+1) x (m+1) so dp[n][m] = 0 is the empty-base case.

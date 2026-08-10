@@ -172,30 +172,58 @@ func TestDiffLines_CompletelyDifferent(t *testing.T) {
 
 func TestDiffLines_TooLargeIsSkipped(t *testing.T) {
 	t.Parallel()
-	huge := make([]string, MaxDiffLines+1)
-	for i := range huge {
-		huge[i] = "line"
-	}
-	result := DiffLines(huge, []string{"a"})
-	if !result.TooLarge {
-		t.Fatal("expected TooLarge=true for input exceeding MaxDiffLines")
-	}
-	if len(result.Ops) != 1 {
-		t.Fatalf("expected 1 sentinel op for too-large input; got %d", len(result.Ops))
-	}
-	if result.Ops[0].Text != DiffTooLargeText {
-		t.Fatalf("expected sentinel text %q, got %q", DiffTooLargeText, result.Ops[0].Text)
-	}
 
-	// Exactly at the threshold is still diffed.
-	atLimit := make([]string, MaxDiffLines)
-	big := DiffLines(atLimit, atLimit)
-	if big.TooLarge {
-		t.Fatal("input at limit should not be flagged TooLarge")
-	}
-	if len(big.Ops) != MaxDiffLines {
-		t.Fatalf("input at limit should still be diffed; got %d ops", len(big.Ops))
-	}
+	t.Run("per-side limit rejects huge single input", func(t *testing.T) {
+		t.Parallel()
+		huge := make([]string, MaxDiffLines+1)
+		for i := range huge {
+			huge[i] = "line"
+		}
+		result := DiffLines(huge, []string{"a"})
+		if !result.TooLarge {
+			t.Fatal("expected TooLarge=true for input exceeding MaxDiffLines")
+		}
+		if len(result.Ops) != 1 {
+			t.Fatalf("expected 1 sentinel op for too-large input; got %d", len(result.Ops))
+		}
+		if result.Ops[0].Text != DiffTooLargeText {
+			t.Fatalf("expected sentinel text %q, got %q", DiffTooLargeText, result.Ops[0].Text)
+		}
+	})
+
+	t.Run("cell budget rejects two at-limit inputs", func(t *testing.T) {
+		t.Parallel()
+		// Each side individually fits MaxDiffLines, but (MaxDiffLines+1)^2
+		// exceeds MaxDiffCells, so the cell budget must reject the pair
+		// rather than allocating ~800 MiB.
+		atLimit := make([]string, MaxDiffLines)
+		result := DiffLines(atLimit, atLimit)
+		if !result.TooLarge {
+			t.Fatal("two inputs each at MaxDiffLines should be rejected by the cell budget")
+		}
+	})
+
+	t.Run("cell budget admits large-but-feasible pair", func(t *testing.T) {
+		t.Parallel()
+		// A pair whose (n+1)^2 is well under MaxDiffCells but large enough to
+		// exercise the budget check. 1000x1000 = ~1M cells, fast and clearly
+		// feasible. The point is to show the cell budget is not so tight that
+		// ordinary large documents get rejected.
+		n := 1000
+		a := make([]string, n)
+		b := make([]string, n)
+		for i := range a {
+			a[i] = "same"
+			b[i] = "same"
+		}
+		result := DiffLines(a, b)
+		if result.TooLarge {
+			t.Fatalf("%dx%d diff should fit cell budget and not be flagged TooLarge", n, n)
+		}
+		if len(result.Ops) != n {
+			t.Fatalf("expected %d equal ops; got %d", n, len(result.Ops))
+		}
+	})
 }
 
 // TestDiffLines_SentinelTextContentIsNotMisclassified is the regression guard

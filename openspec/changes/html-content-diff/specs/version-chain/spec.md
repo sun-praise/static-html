@@ -7,7 +7,7 @@ The diff SHALL be computed by a longest-common-subsequence algorithm over the li
 
 The endpoint SHALL respect session ownership identically to the chain endpoint. When either version number does not correspond to a live version in the chain, or `from` equals `to`, or a parameter is missing or non-positive, the system SHALL return `400`. When the path session does not exist or is soft-deleted, the system SHALL return `404`.
 
-The diff computation SHALL be bounded: when either input exceeds a fixed line threshold, the system SHALL set the response's `tooLarge` flag to `true` and include a single explanatory line, rather than attempting the O(n*m) computation. The `tooLarge` flag is the authoritative signal of the skip condition; a legitimate document whose content happens to match the explanatory text SHALL NOT be misclassified as too large.
+The diff computation SHALL be bounded by two budgets checked before the DP table is allocated: a per-side line threshold, and a total cell threshold (`(n+1)*(m+1)`) that catches the case where both sides are individually within the per-side limit but their product would still allocate an unsafe amount of memory. When either budget is exceeded, the system SHALL set the response's `tooLarge` flag to `true` and include a single explanatory line, rather than attempting the O(n*m) computation. The `tooLarge` flag is the authoritative signal of the skip condition; a legitimate document whose content happens to match the explanatory text SHALL NOT be misclassified as too large.
 
 #### Scenario: 相邻版本的内容 diff
 - **WHEN** a client requests `GET /api/sessions/<v2-id>/diff?from=1&to=2` for a two-version chain where v2 added one line

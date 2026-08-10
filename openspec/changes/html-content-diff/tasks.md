@@ -38,3 +38,6 @@
 - [x] 6.1 `renderHtmlDiff` 把"diff 太大"哨兵当普通 equal 行折叠（Major，第一轮）：`diffResponse` 新增显式 `TooLarge bool` 字段；前端 `renderHtmlDiff` 优先判 `data.tooLarge` 渲染为 `.hunk.skip` 行。
 - [x] 6.2 `handleGetDiff` 用文本推断 `TooLarge` 会被内容恰好等于 `DiffTooLargeText` 的合法单行文件误判（Minor，第二轮）：把"太大"信号从 op 文本解耦——`DiffLines` 改返回 `DiffResult{Ops, TooLarge}`，`DiffSessionHTML` 透传 `DiffResult`，`handleGetDiff` 直接用 `result.TooLarge` 不再读文本。
 - [x] 6.3 新增 `TestDiffLines_SentinelTextContentIsNotMisclassified`（算法层碰撞回归）+ `TestGetDiffTooLargeFilesSkipped`（HTTP 层 tooLarge 字段）。
+- [x] 6.4 LCS 表分配前加 cell 预算 `MaxDiffCells`（第三轮 Major）：单侧 `MaxDiffLines` 只挡单侧超限，两个各 10000 行的输入 `(10001)^2` ≈ 800MB 仍会分配。新增 `MaxDiffCells=5e7` 兜底 `(n+1)*(m+1)` 乘积，分配前检查，`tooLargeResult()` 统一 TooLarge 形态。
+- [x] 6.5 `TestDiffLines_TooLargeIsSkipped` 拆三个子测试：单侧超限 / 两个 at-limit 被 cell 预算拦 / cells 内的大 pair 仍 diff。
+- [x] 6.6 修正 `DiffResult.Ops` 注释（Minor）：原文"empty when TooLarge"与"含 1 哨兵 op"自相矛盾，改为"TooLarge 时含 1 哨兵 op"。
