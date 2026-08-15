@@ -30,9 +30,9 @@
 ## Decisions
 
 ### D19: diff 粒度——行级 LCS，手写，无依赖
-**选择**：`DiffLines(old, new []string) []LineOp` 用经典 LCS 动态规划（O(n*m) 时间和内存，`dp[i][j]` = 后缀 LCS 长度），输出 `LineOp{Kind: Equal|Add|Delete, Text, OldNo, NewNo}`。修改表现为"先 delete 旧行再 add 新行"（LCS 的自然结果，与 unified diff 习惯一致）。纯 stdlib，~60 行 Go。
-**理由**：(1) agent 产出的 HTML 通常是结构化的（每行一个标签/一段文案），行级 diff 已能精确定位"哪块改了"。(2) LCS 是最经典、最可控、最可测的 diff 算法，无需引入第三方库——这直接化解了上一版 Non-Goals 的"无 diff 库"约束，是本期得以落地的关键。(3) 修改=先删后增符合 unified diff 直觉，前端按 `kind` 染色即可。
-**备选**：(a) 词级 diff（diffmatchpatch 风格）——否决，需分词 + HTML 标签边界处理复杂，且对"改了哪块"这个核心问题的边际收益低于行级；(b) DOM 树 diff——否决，需引 `golang.org/x/net/html`，破坏无新依赖约束；(c) 引 `sergi/go-diff` / `pmezard/difflib`——否决，上一版 Non-Goals 明确写了"无 diff 库"，且 LCS 手写成本可控。
+**选择**：`DiffLines(old, new []string) DiffResult` 用经典 LCS 动态规划（O(n*m) 时间和内存，`dp[i][j]` = 后缀 LCS 长度）。`DiffResult` 携带两个字段：`Ops []LineOp`（有序行级 diff，每个 op 是 `LineOp{Kind: Equal|Add|Delete, Text, OldNo, NewNo}`）与 `TooLarge bool`（输入超出预算的显式跳过信号，详见 D22——为什么它是字段而非从 op 文本推断）。修改表现为"先 delete 旧行再 add 新行"（LCS 的自然结果，与 unified diff 习惯一致）。纯 stdlib，~60 行 Go。`DiffSessionHTML` 与 `handleGetDiff` 均透传 `DiffResult`，`tooLargeResult()` 统一 TooLarge 形态。
+**理由**：(1) agent 产出的 HTML 通常是结构化的（每行一个标签/一段文案），行级 diff 已能精确定位"哪块改了"。(2) LCS 是最经典、最可控、最可测的 diff 算法，无需引入第三方库——这直接化解了上一版 Non-Goals 的"无 diff 库"约束，是本期得以落地的关键。(3) 修改=先删后增符合 unified diff 直觉，前端按 `kind` 染色即可。(4) 返回结构体（而非裸 `[]LineOp`）让"太大跳过"成为一等信号，调用方无需从 op 列表形态猜测（D22 的内容碰撞教训）。
+**备选**：(a) 词级 diff（diffmatchpatch 风格）——否决，需分词 + HTML 标签边界处理复杂，且对"改了哪块"这个核心问题的边际收益低于行级；(b) DOM 树 diff——否决，需引 `golang.org/x/net/html`，破坏无新依赖约束；(c) 引 `sergi/go-diff` / `pmezard/difflib`——否决，上一版 Non-Goals 明确写了"无 diff 库"，且 LCS 手写成本可控；(d) 返回裸 `[]LineOp` 用哨兵 op 表示"太大"——否决，迫使调用方匹配 magic string，内容碰撞风险（D22 详述）。
 
 ### D20: 渲染方式——时间线侧栏内联展开，上下文折叠
 **选择**：版本时间线侧栏每个（有前驱的）版本项加"Show HTML diff"按钮，点击懒加载 diff 接口、红绿行内联展开进 `.sth-version-htmldiff` 容器。**相等的上下文行折叠为单行 `⋯ N unchanged ⋯`**，只保留改动行 ± 紧邻上下文（本期实现是"完全折叠连续 equal 行为一条 skip 行"，不留 hunk 上下文——见 D22 取舍）。按钮旁显示 `+a −b` 摘要。再点折叠。
@@ -45,15 +45,16 @@
 **`{id}` 的语义**：path 里的 `{id}` 是链上**任意** session（用于解析链归属 + owner 校验），`from/to` 是同链版本号。这样从任何一个版本预览页都能拉同链任意相邻对的 diff，无需先定位"链主 session"。
 **备选**：合并进 chain 接口一次性返回所有相邻 diff——否决，见上；每次开侧栏读 N 次磁盘 + N 次 LCS，浪费且延迟高。
 
-### D22: 大文件保护——双层预算（单侧行数 + 总单元格）返回显式 `TooLarge` 信号
+### D22: 大文件保护——双层预算（单侧行数 + 总单元格），按并发请求量校准
 **选择**：两道预算检查，都在分配 DP 表之前。
 - `MaxDiffLines = 10000`：**单侧**快速短路。任一侧超此值直接返 `TooLarge`，避免一个巨大输入还没到乘法就先耗资源。
-- `MaxDiffCells = 50_000_000`：**总单元格**预算，`(n+1)*(m+1)` 超此值返 `TooLarge`。这一层挡住了"两侧各在单侧限内、但乘积爆炸"的情形——最典型就是两个各 10000 行的输入：`(10001)^2 ≈ 10^8 cells ≈ 800MB`，单侧检查放行，cell 预算拦截。`int64` 乘法避免 32 位平台溢出。
+- `MaxDiffCells = 10_000_000`：**总单元格**预算，`(n+1)*(m+1)` 超此值返 `TooLarge`。这一层挡住了"两侧各在单侧限内、但乘积爆炸"的情形——最典型就是两个各 10000 行的输入：`(10001)^2 ≈ 10^8 cells ≈ 800MB`，单侧检查放行，cell 预算拦截。`int64` 乘法避免 32 位平台溢出。
 
 任一检查触发都返回 `DiffResult{Ops: [单条哨兵], TooLarge: true}`，`tooLargeResult()` 统一形态。`TooLarge` 是**显式结构化字段**，不依赖 op 文本。`DiffSessionHTML` 透传 `DiffResult`，`handleGetDiff` 直接用 `result.TooLarge`，前端 `renderHtmlDiff` 优先判 `data.tooLarge`。
-**理由**：LCS 是 O(n*m) DP，单侧限只能挡"一边过大"，挡不住"两边都大但各自合法"。800MB 分配对请求处理是真实 DoS 向量（评审第三轮抓到）。cell 预算 5e7 ≈ 400MB 上限对 agent 产物（通常 < 2000 行，cells < 4M）极宽松，真实用例永远触不到，但把最坏情形从 800MB 压到 400MB 且永不超。
+**理由**：LCS 是 O(n*m) DP，单侧限只能挡"一边过大"，挡不住"两边都大但各自合法"。800MB 分配对请求处理是真实 DoS 向量（评审第三轮抓到）。
+**按并发校准预算**（评审第四轮）：diff handler 是**并发**的——`handleGetDiff` 调 `DiffSessionHTML` 不经 DB（diff 是纯内存计算，`SetMaxOpenConns(1)` 的单写者模型管不到它），N 个在途 diff 请求可同时各占 `MaxDiffCells*8` 字节。因此预算必须按"N 个并发请求的总量"校准，而非"单请求最大"：1e7 cells ≈ 80MB/请求，即使 ~10 个并发大 diff 也只 ~800MB，对任何部署 sth 的机器都是安全水位；而此前的 5e7（≈400MB/请求）在几个请求重叠时就会耗尽典型机器内存。1e7 对真实用例依然极宽松（2000x2000 = 4e6 cells ≈ 32MB 已远超典型 agent 产物）。**不选信号量/全局锁**：sth 是单人/小团队本地预览服务器，为极低概率的并发场景引入同步原语违背项目极简风格；把预算校准到"并发总量安全"是同等安全、零复杂度的解法。`TestDiffLines_ConcurrentLargeDiffsBounded` 并发回归测试守护此行为。
 **为何 `TooLarge` 是字段而非文本推断**：若用 `ops[0].Text == DiffTooLargeText` 判断，一个内容恰好等于 `[diff skipped: file exceeds MaxDiffLines]` 的合法单行 HTML 文档（如讲解本功能的文档站）会被误判为"太大跳过"。`TooLarge` 作为显式字段彻底根除这类内容碰撞——"太大"是输入规模的属性，与内容无关。
-**备选**：(a) Myers 算法（O((n+m)·d)，d=编辑距离，线性空间）——对大文件更快且省内存，但实现复杂得多，与 D19"手写可控"的基调冲突，且 agent 产物行数远低于阈值，不值得；(b) 超阈值时只 diff 头尾 N 行——否决，语义混乱，不如明确跳过；(c) 用哨兵 op 文本作为信号——否决，内容碰撞风险（见上）；(d) 只靠单侧 `MaxDiffLines`——否决，挡不住两侧各大的乘积爆炸（本决策的核心）。
+**备选**：(a) Myers 算法（O((n+m)·d)，d=编辑距离，线性空间）——对大文件更快且省内存，但实现复杂得多，与 D19"手写可控"的基调冲突，且 agent 产物行数远低于阈值，不值得；(b) 超阈值时只 diff 头尾 N 行——否决，语义混乱，不如明确跳过；(c) 用哨兵 op 文本作为信号——否决，内容碰撞风险（见上）；(d) 只靠单侧 `MaxDiffLines`——否决，挡不住两侧各大的乘积爆炸；(e) 信号量/全局锁限制并发 diff——否决，为低概率场景引入同步复杂度，预算校准已等效（见上）；(f) 保持 5e7 大预算——否决，未考虑并发总量（评审第四轮）。
 
 ### D23: diff 不入库——纯即时计算
 **选择**：`DiffSessionHTML` 每次调用都读两份文件 + 算 LCS，结果**不写 DB**。

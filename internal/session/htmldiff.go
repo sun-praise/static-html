@@ -42,13 +42,16 @@ const MaxDiffLines = 10000
 
 // MaxDiffCells bounds the total DP table size (cells ≈ (n+1)*(m+1)). The LCS
 // algorithm allocates one int per cell, so this is effectively a memory
-// budget: MaxDiffCells int cells ≈ MaxDiffCells*8 bytes. 5e7 cells ≈ 400 MiB
-// is a generous ceiling that still admits large real-world documents
-// (e.g. 5000x5000 = 2.5e7 cells ≈ 200 MiB) while preventing the two-sides-
-// each-at-MaxDiffLines case (1e8 cells ≈ 800 MiB) from ever allocating.
-// Per-side MaxDiffLines alone does not catch that case, since each side is
-// individually within the per-side limit.
-const MaxDiffCells = 50_000_000
+// budget: MaxDiffCells int cells ≈ MaxDiffCells*8 bytes on 64-bit builds.
+//
+// The budget is sized for CONCURRENT requests: diff handlers run in parallel
+// (they take no store lock — diffing is pure in-memory work), so N in-flight
+// diffs can allocate up to N * MaxDiffCells*8 bytes simultaneously. 1e7 cells
+// ≈ 80 MiB per request keeps even ~10 concurrent large diffs within ~800 MiB,
+// while still admitting any realistic agent-generated document (2000x2000 =
+// 4e6 cells ≈ 32 MiB is already far beyond typical HTML). The earlier 5e7
+// (≈ 400 MiB) budget left too little headroom once several requests overlap.
+const MaxDiffCells = 10_000_000
 
 // DiffTooLargeText is the explanatory text placed in the sole sentinel op when
 // DiffResult.TooLarge is true. It is purely informational; the TooLarge

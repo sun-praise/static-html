@@ -41,3 +41,5 @@
 - [x] 6.4 LCS 表分配前加 cell 预算 `MaxDiffCells`（第三轮 Major）：单侧 `MaxDiffLines` 只挡单侧超限，两个各 10000 行的输入 `(10001)^2` ≈ 800MB 仍会分配。新增 `MaxDiffCells=5e7` 兜底 `(n+1)*(m+1)` 乘积，分配前检查，`tooLargeResult()` 统一 TooLarge 形态。
 - [x] 6.5 `TestDiffLines_TooLargeIsSkipped` 拆三个子测试：单侧超限 / 两个 at-limit 被 cell 预算拦 / cells 内的大 pair 仍 diff。
 - [x] 6.6 修正 `DiffResult.Ops` 注释（Minor）：原文"empty when TooLarge"与"含 1 哨兵 op"自相矛盾，改为"TooLarge 时含 1 哨兵 op"。
+- [x] 6.7 `MaxDiffCells` 按并发校准（第四轮 Major）：diff handler 并发（不经 DB 锁），N 个在途请求各占 `MaxDiffCells*8` 字节；5e7（400MB/请求）在请求重叠时耗尽内存。降到 1e7（80MB/请求，~10 并发 ~800MB），对真实用例仍极宽松；不引信号量（低概率场景不值同步复杂度）。新增 `TestDiffLines_ConcurrentLargeDiffsBounded` 并发回归。
+- [x] 6.8 D19 与 D22 的 API 契约统一（第四轮 Minor）：D19 原写 `DiffLines` 返回 `[]LineOp`（旧契约），与 D22 的 `DiffResult` 矛盾。D19 改述为返回 `DiffResult{Ops, TooLarge}` 并补充备选项 (d)（裸 `[]LineOp` + 哨兵 op 被否决的缘由）。

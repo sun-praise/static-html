@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -295,6 +296,60 @@ func TestLineOpKindString(t *testing.T) {
 		op := LineOp{Kind: c.kind}
 		if got := op.KindString(); got != c.want {
 			t.Fatalf("KindString(%v) = %q, want %q", c.kind, got, c.want)
+		}
+	}
+}
+
+// TestDiffLines_ConcurrentLargeDiffsBounded is the regression guard for the
+// CodeRabbit concurrency finding: diff handlers run in parallel (no store
+// lock), so the per-request cell budget is the only bound on collective
+// memory. This test hammers DiffLines with several goroutines each diffing
+// a pair at the budget ceiling (and beyond it), asserting every result is
+// correct and the process stays healthy. It cannot observe peak RSS from Go,
+// but it proves the budget logic is race-free under concurrency and that
+// concurrent feasible pairs all succeed.
+func TestDiffLines_ConcurrentLargeDiffsBounded(t *testing.T) {
+	t.Parallel()
+
+	// Feasible pair: side length chosen so (n+1)^2 sits just under budget.
+	feasible := 2000 // (2001)^2 ≈ 4e6 cells < 1e7
+	if int64(feasible+1)*int64(feasible+1) > MaxDiffCells {
+		t.Fatalf("test setup wrong: %d exceeds cell budget", feasible)
+	}
+	a := make([]string, feasible)
+	b := make([]string, feasible)
+	for i := range a {
+		a[i] = "same"
+		b[i] = "same"
+	}
+
+	// Over-budget pair: both sides at MaxDiffLines.
+	atLimit := make([]string, MaxDiffLines)
+
+	const goroutines = 8
+	errs := make(chan error, goroutines*2)
+	for g := 0; g < goroutines; g++ {
+		go func(which int) {
+			if which%2 == 0 {
+				res := DiffLines(a, b)
+				if res.TooLarge || len(res.Ops) != feasible {
+					errs <- fmt.Errorf("goroutine %d: feasible pair wrong: tooLarge=%v ops=%d", which, res.TooLarge, len(res.Ops))
+				} else {
+					errs <- nil
+				}
+			} else {
+				res := DiffLines(atLimit, atLimit)
+				if !res.TooLarge {
+					errs <- fmt.Errorf("goroutine %d: over-budget pair should be TooLarge", which)
+				} else {
+					errs <- nil
+				}
+			}
+		}(g)
+	}
+	for i := 0; i < goroutines; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
 		}
 	}
 }
