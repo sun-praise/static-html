@@ -740,6 +740,8 @@ func (s *Server) routes() http.Handler {
 			s.handleGetPeers(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/chain"):
 			s.handleGetChain(w, r)
+		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/diff"):
+			s.handleGetDiff(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/download"):
 			s.handleDownloadSession(w, r)
 		case r.Method == http.MethodDelete && isExactSessionPath(r.URL.Path):
@@ -1929,6 +1931,162 @@ func (s *Server) handleGetChain(w http.ResponseWriter, r *http.Request) {
 		Versions:     versions,
 		MetadataDiff: metadataDiff,
 	})
+}
+
+// diffLine is one line of an HTML content diff, with a stable kind token for
+// JSON consumers ("equal" / "add" / "delete") alongside the 1-based line
+// numbers in each document (0 when N/A).
+type diffLine struct {
+	Kind  string `json:"kind"`
+	Text  string `json:"text"`
+	OldNo int    `json:"oldNo"`
+	NewNo int    `json:"newNo"`
+}
+
+// diffResponse is the payload of GET /api/sessions/{id}/diff?from=vN&to=vM.
+// Lines is the full line-level diff in reading order; Summary gives additive
+// counts so the UI can render a "+a −b" hint without scanning the slice.
+// TooLarge is true when either input exceeded MaxDiffLines and the diff was
+// skipped: Lines then carries a single explanatory sentinel line and Summary
+// is zeroed. The UI branches on TooLarge rather than sniffing the sentinel
+// text, so the contract is explicit and locale-independent.
+type diffResponse struct {
+	FromVersion int         `json:"fromVersion"`
+	ToVersion   int         `json:"toVersion"`
+	Lines       []diffLine  `json:"lines"`
+	Summary     diffSummary `json:"summary"`
+	TooLarge    bool        `json:"tooLarge"`
+}
+
+type diffSummary struct {
+	Added   int `json:"added"`
+	Removed int `json:"removed"`
+}
+
+// handleGetDiff computes a line-level HTML content diff between two versions
+// of the same chain. The {id} in the path identifies any session in the chain
+// (used to resolve chain membership + ownership); from / to are 1-based
+// version numbers of the same chain. Cross-chain or out-of-range version
+// numbers yield 400; a missing or soft-deleted session yields 404.
+func (s *Server) handleGetDiff(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/diff")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	_, found, err := s.requireSession(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
+		return
+	}
+	if !s.requireOwner(w, r, sessionID) {
+		return
+	}
+
+	fromVer, toVer, bad := parseDiffVersions(r)
+	if bad != "" {
+		writeJSONError(w, http.StatusBadRequest, bad)
+		return
+	}
+
+	// Resolve the chain via the requested session; this also enforces the
+	// soft-delete visibility rule (404 on deleted sessions).
+	_, versions, err := s.store.GetChainOfSession(sessionID)
+	if err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeJSONError(w, http.StatusNotFound, "Session not found.")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	fromSID, ok := versionSessionID(versions, fromVer)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "from version not found in this chain.")
+		return
+	}
+	toSID, ok := versionSessionID(versions, toVer)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "to version not found in this chain.")
+		return
+	}
+	if fromSID == toSID {
+		writeJSONError(w, http.StatusBadRequest, "from and to versions must differ.")
+		return
+	}
+
+	result, err := s.store.DiffSessionHTML(fromSID, toSID)
+	if err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeJSONError(w, http.StatusNotFound, "Session not found.")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	lines := make([]diffLine, 0, len(result.Ops))
+	for _, op := range result.Ops {
+		lines = append(lines, diffLine{
+			Kind:  op.KindString(),
+			Text:  op.Text,
+			OldNo: op.OldNo,
+			NewNo: op.NewNo,
+		})
+	}
+	summary := session.Summarize(result.Ops)
+
+	writeJSON(w, http.StatusOK, diffResponse{
+		FromVersion: fromVer,
+		ToVersion:   toVer,
+		Lines:       lines,
+		Summary: diffSummary{
+			Added:   summary.Added,
+			Removed: summary.Removed,
+		},
+		// TooLarge is propagated verbatim from the diff layer's explicit
+		// signal rather than inferred from op text, so a legitimate document
+		// whose content equals DiffTooLargeText is not misclassified.
+		TooLarge: result.TooLarge,
+	})
+}
+
+// parseDiffVersions reads the from / to query params as positive integers.
+// Returns a human-readable error string (empty when OK).
+func parseDiffVersions(r *http.Request) (from, to int, errMsg string) {
+	q := r.URL.Query()
+	fromStr := strings.TrimSpace(q.Get("from"))
+	toStr := strings.TrimSpace(q.Get("to"))
+	if fromStr == "" || toStr == "" {
+		return 0, 0, "Both 'from' and 'to' version numbers are required."
+	}
+	f, err := strconv.Atoi(fromStr)
+	if err != nil || f < 1 {
+		return 0, 0, "'from' must be a positive integer version number."
+	}
+	t, err := strconv.Atoi(toStr)
+	if err != nil || t < 1 {
+		return 0, 0, "'to' must be a positive integer version number."
+	}
+	return f, t, ""
+}
+
+// versionSessionID finds the session id for a given version number within a
+// chain's version list. Returns ok=false when no live version matches.
+func versionSessionID(versions []session.ChainVersion, versionNo int) (string, bool) {
+	for _, v := range versions {
+		if v.VersionNo == versionNo {
+			return v.SessionID, true
+		}
+	}
+	return "", false
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
