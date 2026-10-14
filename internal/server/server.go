@@ -96,7 +96,10 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       body {
         margin: 0;
         padding: 2rem;
-        background: linear-gradient(180deg, #f6f4ee 0%, #ebe7dc 100%);
+        background-color: #ebe7dc;
+        background-image: linear-gradient(180deg, #f6f4ee 0%, #ebe7dc 100%);
+        background-attachment: fixed;
+        background-repeat: no-repeat;
         color: #171717;
       }
       main {
