@@ -46,7 +46,6 @@ var loginPageTemplate = template.Must(template.New("login").Parse(`<!doctype htm
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{.Title}}</title>
-    <script defer src="https://analysis.sun-praise.com/script.js" data-website-id="26f61cff-edaa-47b0-86c1-60a26c1b5e68" data-domains="sth.sun-praise.com"></script>
     <style>
       :root { color-scheme: light; font-family: "IBM Plex Sans", "Segoe UI", sans-serif; }
       body {
