@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.2.0] - 2026-10-16
+
+### Added
+- Self-hosted Umami analytics on the home page, login/register pages, and `/s/` preview pages (injected via the existing `InjectMiddleware` snippet path). Reporting is scoped to the public `sth.sun-praise.com` deployment via `data-domains`; local dev and intranet instances report nothing.
+
 ## [2.1.0] - 2026-07-14
 
 ### Added

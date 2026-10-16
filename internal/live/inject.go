@@ -287,8 +287,14 @@ const versionDrawerJS = `<script>
 })();
 </script>`
 
+// analyticsSnippet loads the self-hosted Umami tracker on preview pages. The
+// data-domains guard restricts reporting to the public sth deployment; other
+// instances (local dev, intranet) load nothing back and report nothing.
+const analyticsSnippet = `<script defer src="https://analysis.sun-praise.com/script.js" data-website-id="26f61cff-edaa-47b0-86c1-60a26c1b5e68" data-domains="sth.sun-praise.com"></script>`
+
 var scriptBytes = []byte(liveReloadScript)
 var drawerBytes = []byte(drawerCSS + drawerHTML + drawerJS + versionDrawerCSS + versionDrawerHTML + versionDrawerJS)
+var analyticsBytes = []byte(analyticsSnippet)
 var headClose = []byte("</head>")
 var bodyClose = []byte("</body>")
 
@@ -319,7 +325,7 @@ func InjectMiddleware(h http.Handler) http.Handler {
 			return
 		}
 
-		injected := injectScript(bw.buf.Bytes(), scriptBytes, drawerBytes)
+		injected := injectScript(bw.buf.Bytes(), scriptBytes, drawerBytes, analyticsBytes)
 		bw.Header().Set("Content-Length", strconv.Itoa(len(injected)))
 		bw.realHeader(bw.code)
 		bw.ResponseWriter.Write(injected)

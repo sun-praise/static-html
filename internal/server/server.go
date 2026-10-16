@@ -134,6 +134,7 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
   <head>
     <meta charset="utf-8">
     <title>HTML Preview Server</title>
+    <script defer src="https://analysis.sun-praise.com/script.js" data-website-id="26f61cff-edaa-47b0-86c1-60a26c1b5e68" data-domains="sth.sun-praise.com"></script>
     <style>
       :root {
         color-scheme: light;
