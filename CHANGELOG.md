@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.2.0] - 2026-10-16
+
+### Added
+- Self-hosted Umami analytics on the home page and `/s/` preview pages (preview pages via the `InjectMiddleware` snippet path; home page via the template). Injection is gated server-side on the public host (`sth.sun-praise.com`) — local dev and intranet instances never load the tracker at all. The tag's `data-domains` attribute is a second, tracker-side reporting guard. Login/register pages intentionally carry no tracker (credential-page hygiene). Shared tag/host-gate live in the new `internal/analytics` package.
+
 ## [2.1.0] - 2026-07-14
 
 ### Added

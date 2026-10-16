@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/sun-praise/static-html/internal/analytics"
 )
 
 const liveReloadScript = `<script>
@@ -289,6 +291,11 @@ const versionDrawerJS = `<script>
 
 var scriptBytes = []byte(liveReloadScript)
 var drawerBytes = []byte(drawerCSS + drawerHTML + drawerJS + versionDrawerCSS + versionDrawerHTML + versionDrawerJS)
+
+// analyticsBytes is the shared Umami tracker (internal/analytics). It is
+// appended to the injected snippets only for the public deployment — see the
+// EnabledForHost gate in InjectMiddleware.
+var analyticsBytes = []byte(analytics.ScriptTag)
 var headClose = []byte("</head>")
 var bodyClose = []byte("</body>")
 
@@ -319,7 +326,11 @@ func InjectMiddleware(h http.Handler) http.Handler {
 			return
 		}
 
-		injected := injectScript(bw.buf.Bytes(), scriptBytes, drawerBytes)
+		snippets := [][]byte{scriptBytes, drawerBytes}
+		if analytics.EnabledForHost(r.Host) {
+			snippets = append(snippets, analyticsBytes)
+		}
+		injected := injectScript(bw.buf.Bytes(), snippets...)
 		bw.Header().Set("Content-Length", strconv.Itoa(len(injected)))
 		bw.realHeader(bw.code)
 		bw.ResponseWriter.Write(injected)

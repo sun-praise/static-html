@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/sun-praise/static-html/internal/analytics"
 	"github.com/sun-praise/static-html/internal/live"
 	"github.com/sun-praise/static-html/internal/session"
 )
@@ -116,6 +117,7 @@ type homePageData struct {
 	NextPage    int
 	PageRange   []int
 	PageURL     map[int]string
+	Analytics   template.HTML // Umami tracker on the public deployment, empty otherwise
 }
 
 type homePageSession struct {
@@ -134,6 +136,7 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
   <head>
     <meta charset="utf-8">
     <title>HTML Preview Server</title>
+    {{.Analytics}}
     <style>
       :root {
         color-scheme: light;
@@ -917,9 +920,21 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		NextPage:    page + 1,
 		PageRange:   pageRange,
 		PageURL:     pageURL,
+		Analytics:   analyticsScript(r),
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// analyticsScript renders the Umami tracker for first-party pages. It is
+// non-empty only for the public deployment (internal/analytics.PublicHost);
+// local dev and intranet hosts get an empty string, so the template emits
+// nothing at all.
+func analyticsScript(r *http.Request) template.HTML {
+	if analytics.EnabledForHost(r.Host) {
+		return template.HTML(analytics.ScriptTag)
+	}
+	return ""
 }
 
 func toHomePageSessions(docs []session.DocumentInfo) []homePageSession {
