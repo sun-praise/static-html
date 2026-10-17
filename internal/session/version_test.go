@@ -2,6 +2,7 @@ package session
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"sort"
 	"testing"
@@ -443,3 +444,168 @@ func equalStringSlice(a, b []string) bool {
 
 // guard against unused import if filepath becomes unused in future edits.
 var _ = filepath.Base
+
+// writeSessionHTML creates a real on-disk HTML file in a temp dir and returns
+// its absolute path, so DiffSessionHTML can actually read content. The dir is
+// cleaned via t.TempDir().
+func writeSessionHTML(t *testing.T, name, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write %s: %v", name, err)
+	}
+	return path
+}
+
+// createChainedSessionWithFile is createLinkedSession but the entry file is a
+// real on-disk HTML file (so DiffSessionHTML has content to read). Returns the
+// session id.
+func createChainedSessionWithFile(t *testing.T, store *Store, htmlContent, project, category string, tags ...string) string {
+	t.Helper()
+	path := writeSessionHTML(t, "index.html", htmlContent)
+	sess, err := store.CreateUploaded("index.html", path)
+	if err != nil {
+		t.Fatalf("CreateUploaded: %v", err)
+	}
+	if len(tags) > 0 {
+		if err := store.AddTags(sess.ID, tags...); err != nil {
+			t.Fatalf("AddTags: %v", err)
+		}
+	}
+	if category != "" {
+		if err := store.SetCategory(sess.ID, category); err != nil {
+			t.Fatalf("SetCategory: %v", err)
+		}
+	}
+	if project != "" {
+		if err := store.SetProject(sess.ID, project); err != nil {
+			t.Fatalf("SetProject: %v", err)
+		}
+	}
+	if _, _, err := store.LinkToChain(sess.ID, project, "index.html", ""); err != nil {
+		t.Fatalf("LinkToChain: %v", err)
+	}
+	return sess.ID
+}
+
+func TestDiffSessionHTML_DetectsAddedLines(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	v1 := createChainedSessionWithFile(t, store, "<html>\n<body>\n<h1>old</h1>\n</body>\n</html>\n", "proj", "cat")
+	v2 := createChainedSessionWithFile(t, store, "<html>\n<body>\n<h1>old</h1>\n<p>new para</p>\n</body>\n</html>\n", "proj", "cat")
+
+	result, err := store.DiffSessionHTML(v1, v2)
+	if err != nil {
+		t.Fatalf("DiffSessionHTML: %v", err)
+	}
+	ops := result.Ops
+	eq, add, del := opsSummary(ops)
+	if del != 0 {
+		t.Fatalf("expected 0 deletions for pure addition; got %d (ops=%+v)", del, ops)
+	}
+	if add != 1 {
+		t.Fatalf("expected 1 added line; got %d (ops=%+v)", add, ops)
+	}
+	if eq == 0 {
+		t.Fatal("expected at least one equal line for shared context")
+	}
+	var added LineOp
+	for _, op := range ops {
+		if op.Kind == LineAdd {
+			added = op
+		}
+	}
+	if added.Text != "<p>new para</p>" {
+		t.Fatalf("added text = %q, want %q", added.Text, "<p>new para</p>")
+	}
+}
+
+func TestDiffSessionHTML_DetectsModifiedAndDeletedLines(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	v1 := createChainedSessionWithFile(t, store, "<h1>a</h1>\n<h2>b</h2>\n<h3>c</h3>\n", "proj", "cat")
+	v2 := createChainedSessionWithFile(t, store, "<h1>A</h1>\n<h3>c</h3>\n", "proj", "cat")
+
+	result, err := store.DiffSessionHTML(v1, v2)
+	if err != nil {
+		t.Fatalf("DiffSessionHTML: %v", err)
+	}
+	_, add, del := opsSummary(result.Ops)
+	if add != 1 || del != 2 {
+		t.Fatalf("expected add=1 del=2; got add=%d del=%d (ops=%+v)", add, del, result.Ops)
+	}
+}
+
+func TestDiffSessionHTML_IdenticalFilesYieldAllEqual(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	content := "<html>\n<body>\nhi\n</body>\n</html>\n"
+	v1 := createChainedSessionWithFile(t, store, content, "proj", "cat")
+	v2 := createChainedSessionWithFile(t, store, content, "proj", "cat")
+
+	result, err := store.DiffSessionHTML(v1, v2)
+	if err != nil {
+		t.Fatalf("DiffSessionHTML: %v", err)
+	}
+	_, add, del := opsSummary(result.Ops)
+	if add != 0 || del != 0 {
+		t.Fatalf("identical files should have no add/del; got add=%d del=%d", add, del)
+	}
+}
+
+func TestDiffSessionHTML_MissingFileDegradesToEmpty(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	v1 := createChainedSessionWithFile(t, store, "<p>real</p>\n", "proj", "cat")
+	v2Sess, err := store.CreateUploaded("index.html", filepath.Join(t.TempDir(), "never-written.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetProject(v2Sess.ID, "proj"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.DiffSessionHTML(v1, v2Sess.ID)
+	if err != nil {
+		t.Fatalf("missing file should not error; got %v", err)
+	}
+	_, add, del := opsSummary(result.Ops)
+	if add != 0 || del != 1 {
+		t.Fatalf("expected add=0 del=1 for missing v2 file; got add=%d del=%d (ops=%+v)", add, del, result.Ops)
+	}
+}
+
+func TestDiffSessionHTML_UnknownSessionReturnsNotFound(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	v1 := createChainedSessionWithFile(t, store, "<p>x</p>\n", "proj", "cat")
+
+	if _, err := store.DiffSessionHTML(v1, "nonexistent"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound for unknown to-session; got %v", err)
+	}
+	if _, err := store.DiffSessionHTML("nonexistent", v1); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound for unknown from-session; got %v", err)
+	}
+}
+
+func TestDiffSessionHTML_NeverNil(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	v1 := createChainedSessionWithFile(t, store, "", "proj", "cat")
+	v2 := createChainedSessionWithFile(t, store, "", "proj", "cat")
+
+	result, err := store.DiffSessionHTML(v1, v2)
+	if err != nil {
+		t.Fatalf("DiffSessionHTML: %v", err)
+	}
+	if result.Ops == nil {
+		t.Fatal("expected non-nil ops slice even for empty input")
+	}
+}
