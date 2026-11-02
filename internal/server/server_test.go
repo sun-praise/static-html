@@ -1704,3 +1704,281 @@ func TestGetChainSoftDeletedRequestReturns404(t *testing.T) {
 		t.Fatalf("expected 404 for soft-deleted session, got %d body=%s", resp.StatusCode, body)
 	}
 }
+
+// createChainedSessionWithFile is createChainedSession but the entry HTML is a
+// real on-disk file, so the diff endpoint can read actual content. The file
+// is written under a fresh temp dir; the session's StoredEntryFile points at it.
+func createChainedSessionWithFile(t *testing.T, store *session.Store, htmlContent, project, category string, tags ...string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "index.html")
+	if err := os.WriteFile(path, []byte(htmlContent), 0o644); err != nil {
+		t.Fatalf("write index.html: %v", err)
+	}
+	s, err := store.CreateUploaded("index.html", path)
+	if err != nil {
+		t.Fatalf("CreateUploaded: %v", err)
+	}
+	if len(tags) > 0 {
+		if err := store.AddTags(s.ID, tags...); err != nil {
+			t.Fatalf("AddTags: %v", err)
+		}
+	}
+	if category != "" {
+		if err := store.SetCategory(s.ID, category); err != nil {
+			t.Fatalf("SetCategory: %v", err)
+		}
+	}
+	if project != "" {
+		if err := store.SetProject(s.ID, project); err != nil {
+			t.Fatalf("SetProject: %v", err)
+		}
+	}
+	if _, _, err := store.LinkToChain(s.ID, project, "index.html", ""); err != nil {
+		t.Fatalf("LinkToChain: %v", err)
+	}
+	return s.ID
+}
+
+func TestGetDiffSuccess(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	// v1 and v2 share (project, entry file); v2 adds one line.
+	createChainedSessionWithFile(t, store, "<html>\n<body>\n<h1>v1</h1>\n</body>\n</html>\n", "proj", "cat")
+	v2 := createChainedSessionWithFile(t, store, "<html>\n<body>\n<h1>v1</h1>\n<p>v2 line</p>\n</body>\n</html>\n", "proj", "cat")
+
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/" + v2 + "/diff?from=1&to=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
+	}
+
+	var result diffResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.FromVersion != 1 || result.ToVersion != 2 {
+		t.Fatalf("version mismatch: from=%d to=%d", result.FromVersion, result.ToVersion)
+	}
+	if result.Summary.Added != 1 || result.Summary.Removed != 0 {
+		t.Fatalf("expected +1 −0; got %+v", result.Summary)
+	}
+	if len(result.Lines) == 0 {
+		t.Fatal("expected non-empty lines")
+	}
+	// The added line must carry the v2 paragraph text.
+	var added diffLine
+	for _, l := range result.Lines {
+		if l.Kind == "add" {
+			added = l
+		}
+	}
+	if added.Text != "<p>v2 line</p>" {
+		t.Fatalf("added line text = %q, want %q", added.Text, "<p>v2 line</p>")
+	}
+	if added.OldNo != 0 || added.NewNo == 0 {
+		t.Fatalf("added line line numbers wrong: old=%d new=%d", added.OldNo, added.NewNo)
+	}
+}
+
+func TestGetDiffMissingParams(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	v1 := createChainedSessionWithFile(t, store, "<p>x</p>\n", "proj", "cat")
+
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	// Missing 'to'.
+	resp, err := http.Get(srv.Origin() + "/api/sessions/" + v1 + "/diff?from=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing 'to', got %d", resp.StatusCode)
+	}
+
+	// Non-numeric.
+	resp, err = http.Get(srv.Origin() + "/api/sessions/" + v1 + "/diff?from=abc&to=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for non-numeric from, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetDiffVersionOutOfRange(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	v1 := createChainedSessionWithFile(t, store, "<p>x</p>\n", "proj", "cat")
+	createChainedSessionWithFile(t, store, "<p>y</p>\n", "proj", "cat")
+
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	// Version 99 doesn't exist in this 2-version chain.
+	resp, err := http.Get(srv.Origin() + "/api/sessions/" + v1 + "/diff?from=1&to=99")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for out-of-range version, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetDiffSameVersionRejected(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	v1 := createChainedSessionWithFile(t, store, "<p>x</p>\n", "proj", "cat")
+
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/" + v1 + "/diff?from=1&to=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for from==to, got %d", resp.StatusCode)
+	}
+}
+
+func TestGetDiffNotFound(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/nonexistent/diff?from=1&to=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+// TestGetDiffTooLargeFilesSkipped is the regression guard for the CodeRabbit
+// finding: when either input exceeds MaxDiffLines, the response carries an
+// explicit tooLarge=true flag (rather than silently looking like "no changes"),
+// and the UI can branch on the boolean instead of sniffing a magic string.
+func TestGetDiffTooLargeFilesSkipped(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+
+	// Build HTML files just past the MaxDiffLines threshold. DiffLines checks
+	// the threshold before allocating the DP table, so this stays fast.
+	big := make([]byte, 0, (session.MaxDiffLines+1)*6)
+	for i := 0; i <= session.MaxDiffLines; i++ {
+		big = append(big, "<div></div>\n"...)
+	}
+	createChainedSessionWithFile(t, store, string(big), "proj", "cat")
+	v2 := createChainedSessionWithFile(t, store, string(big), "proj", "cat")
+
+	srv, err := New("127.0.0.1", 0, store, "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+	}()
+
+	resp, err := http.Get(srv.Origin() + "/api/sessions/" + v2 + "/diff?from=1&to=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, body)
+	}
+
+	var result diffResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if !result.TooLarge {
+		t.Fatalf("expected tooLarge=true for input exceeding MaxDiffLines; got %+v", result)
+	}
+	if len(result.Lines) != 1 {
+		t.Fatalf("expected 1 sentinel line; got %d", len(result.Lines))
+	}
+	if result.Summary.Added != 0 || result.Summary.Removed != 0 {
+		t.Fatalf("expected zero summary for skipped diff; got %+v", result.Summary)
+	}
+}
