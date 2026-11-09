@@ -16,7 +16,6 @@ dist
 .opencode
 .ralph
 .worktrees
-openspec
 
 # GitHub Actions, deployment manifests, and skills are repo-side only.
 .github
