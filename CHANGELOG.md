@@ -4,6 +4,7 @@
 
 ### Added
 - Per-user session sharing: owners can grant a specific user read access to a preview without exposing it to everyone (`sth share <id> <user>` / `sth unshare` / `sth shares`, or `GET/PUT/DELETE /api/sessions/{id}/shares`)
+- Home-page share panel (👥): view/add/revoke a session's share roster in the browser. Share-management mutations accept the login cookie in addition to Bearer keys — CSRF stays structurally impossible (SameSite=Lax cookie + Origin check; all other mutating endpoints remain Bearer-only)
 - New `session_shares` table (composite PK `session_id, user_id`, indexed by user) with store methods `ShareSession`, `UnshareSession`, `ListSessionShares`, `IsSessionSharedWith`, `ListSharedWithUser`
 - Home page gains a "Shared with you" section for logged-in users listing incoming shares with the sharing owner's username
 - Shared users can read the preview drawer data (`/metadata`, `/peers`, `/chain`) for shared sessions; edit/delete/download/share management stay owner-only

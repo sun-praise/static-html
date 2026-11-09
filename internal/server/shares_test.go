@@ -75,6 +75,107 @@ func doBodyReq(t *testing.T, handler http.Handler, method, path, bearer, body st
 	return rec
 }
 
+// doBodyReqWithCookie is doBodyReq plus a session cookie and optional Origin.
+func doBodyReqWithCookie(t *testing.T, handler http.Handler, method, path, cookie, origin, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Cookie", cookie)
+	if origin != "" {
+		req.Header.Set("Origin", origin)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestSharesAPI_CookieAuthAndOrigin: the browser share panel authenticates
+// with the login cookie; a cross-origin Origin header on a cookie-authed
+// mutation is rejected; no credentials is still 401.
+func TestSharesAPI_CookieAuthAndOrigin(t *testing.T) {
+	t.Parallel()
+	srv, store, sid, _, _, _ := newSharingFixture(t)
+	srv.SetAllowRegistration(true)
+
+	// The owner registers through the browser and receives a session cookie.
+	ownerCookie := registerAndLogin(t, srv, "dave", "correct horse pw")
+	dave, err := store.FindUserByUsername("dave")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSessionOwner(sid, dave.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// The share target also exists as a browser user.
+	erinCookie := registerAndLogin(t, srv, "erin", "battery staple 7")
+
+	base := "/api/sessions/" + sid + "/shares"
+
+	// No credentials → 401.
+	if rec := doBodyReq(t, srv.httpServer.Handler, http.MethodPut, base, "", `{"user":"erin"}`); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no creds: expected 401, got %d", rec.Code)
+	}
+
+	// Cross-origin cookie-authed mutation → 403.
+	cross := doBodyReqWithCookie(t, srv.httpServer.Handler, http.MethodPut, base, ownerCookie, "https://evil.example", `{"user":"erin"}`)
+	if cross.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin cookie PUT: expected 403, got %d", cross.Code)
+	}
+
+	// Same-origin cookie-authed share grant works.
+	same := doBodyReqWithCookie(t, srv.httpServer.Handler, http.MethodPut, base, ownerCookie, "http://"+httptest.NewRequest(http.MethodGet, "/", nil).Host, `{"user":"erin"}`)
+	if same.Code != http.StatusOK {
+		t.Fatalf("same-origin cookie PUT: expected 200, got %d (body: %s)", same.Code, same.Body.String())
+	}
+
+	// The shared user, logged in via the browser, opens the preview with her
+	// cookie.
+	rec := doReqWithCookie(t, srv.httpServer.Handler, http.MethodGet, "/s/"+sid+"/", erinCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("shared user preview via cookie: expected 200, got %d", rec.Code)
+	}
+
+	// Cookie-authed removal works too.
+	del := doBodyReqWithCookie(t, srv.httpServer.Handler, http.MethodDelete, base+"/erin", ownerCookie, "", "")
+	if del.Code != http.StatusOK {
+		t.Fatalf("cookie DELETE share: expected 200, got %d", del.Code)
+	}
+	after := doReqWithCookie(t, srv.httpServer.Handler, http.MethodGet, "/s/"+sid+"/", erinCookie)
+	if after.Code != http.StatusForbidden {
+		t.Fatalf("shared user after revoke via cookie: expected 403, got %d", after.Code)
+	}
+}
+
+// TestSharesAPI_MutationsOutsideSharePathsStillBearerOnly: the cookie
+// carve-out must not leak into other mutating endpoints (e.g. session delete).
+func TestSharesAPI_MutationsOutsideSharePathsStillBearerOnly(t *testing.T) {
+	t.Parallel()
+	srv, store, sid, _, _, _ := newSharingFixture(t)
+	srv.SetAllowRegistration(true)
+
+	cookie := registerAndLogin(t, srv, "mallory", "some password 9")
+	mallory, err := store.FindUserByUsername("mallory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSessionOwner(sid, mallory.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Owner's own cookie cannot DELETE the session: cookie is not accepted
+	// outside share management.
+	if rec := doReqWithCookie(t, srv.httpServer.Handler, http.MethodDelete, "/api/sessions/"+sid, cookie); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("cookie DELETE session: expected 401, got %d", rec.Code)
+	}
+	// Tag mutation likewise stays Bearer-only.
+	if rec := doBodyReqWithCookie(t, srv.httpServer.Handler, http.MethodPut, "/api/sessions/"+sid+"/tags", cookie, "", `{"tags":["x"]}`); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("cookie PUT tags: expected 401, got %d", rec.Code)
+	}
+}
+
 // TestPreviewSharing_AccessMatrix: under --protect-previews an owned session
 // is visible to its owner and shared users only; anonymous requests are 401;
 // revoking the share cuts access back off.

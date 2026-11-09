@@ -375,6 +375,61 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         border: 1px solid transparent;
         cursor: default;
       }
+      .share-panel {
+        margin-top: 0.4rem;
+        padding: 0.5rem 0.6rem;
+        border: 1px solid #d6d1c6;
+        border-radius: 8px;
+        background: #fafaf7;
+        font-size: 0.85rem;
+        max-width: 360px;
+      }
+      .share-panel .share-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.15rem 0;
+      }
+      .share-panel .share-remove {
+        border: none;
+        background: none;
+        color: #aaa;
+        cursor: pointer;
+        font-size: 0.9rem;
+        padding: 0 0.3rem;
+      }
+      .share-panel .share-remove:hover {
+        color: #dc2626;
+      }
+      .share-panel .share-empty {
+        color: #5a5a5a;
+      }
+      .share-panel .share-add {
+        display: flex;
+        gap: 0.4rem;
+        margin-top: 0.4rem;
+      }
+      .share-panel .share-add input {
+        flex: 1;
+        min-width: 0;
+        padding: 0.25rem 0.5rem;
+        border: 1px solid #d6d1c6;
+        border-radius: 6px;
+        background: #fff;
+        font-size: 0.85rem;
+      }
+      .share-panel .share-add button {
+        padding: 0.25rem 0.7rem;
+        border: 1px solid #d6d1c6;
+        border-radius: 6px;
+        background: #f2efe6;
+        cursor: pointer;
+        font-size: 0.85rem;
+      }
+      .share-panel .share-error {
+        margin-top: 0.3rem;
+        color: #dc2626;
+      }
     </style>
   </head>
   <body>
@@ -409,14 +464,17 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         {{- end }}
       </div>
       {{- end }}
-      <ul>
+      <ul class="session-list">
       {{- if .Sessions }}
         {{- range .Sessions }}
-        <li>
+        <li data-session-id="{{ .ID }}">
           <a href="{{ .PreviewPath }}">{{ .Name }}</a>
           <time datetime="{{ .CreatedAt }}">{{ .CreatedAt }}</time>
           <a class="action-btn download-btn" href="/api/sessions/{{ .ID }}/download" title="Download" download>⬇</a>
           <button class="action-btn share-btn" data-share-url="{{ .PreviewPath }}" title="Share">🔗</button>
+          {{- if $.CurrentUser }}
+          <button class="action-btn shares-btn" title="Manage shares">👥</button>
+          {{- end }}
           <button class="delete-btn" data-session-id="{{ .ID }}" title="Delete session">&times;</button>
           {{- if or .Tags .Category .Project }}
           <div class="meta">
@@ -485,14 +543,19 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       {{- end }}
     </main>
     <script>
-    document.querySelector('ul').addEventListener('click', function(e) {
+    var listEl = document.querySelector('.session-list');
+    if (listEl) {
+      listEl.addEventListener('click', onListClick);
+      listEl.addEventListener('submit', onListSubmit);
+    }
+
+    function onListClick(e) {
       var btn = e.target.closest('.delete-btn');
       if (btn) {
-        var id = btn.dataset.sessionId;
         var li = btn.closest('li');
         var name = li.querySelector('a').textContent;
         if (!confirm('Delete "' + name + '"?')) return;
-        fetch('/api/sessions/' + id, { method: 'DELETE' }).then(function(r) {
+        fetch('/api/sessions/' + li.dataset.sessionId, { method: 'DELETE' }).then(function(r) {
           if (r.ok) { li.remove(); } else { alert('Delete failed: ' + r.status); }
         }).catch(function() { alert('Network error'); });
         return;
@@ -509,8 +572,108 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
             setTimeout(function() { shareBtn.textContent = original; }, 1500);
           }).catch(function() {});
         }
+        return;
       }
-    });
+      var sharesBtn = e.target.closest('.shares-btn');
+      if (sharesBtn) {
+        var panel = sharePanelFor(sharesBtn.closest('li'));
+        if (panel.hidden) {
+          panel.hidden = false;
+          loadShares(panel);
+        } else {
+          panel.hidden = true;
+        }
+        return;
+      }
+      var removeBtn = e.target.closest('.share-remove');
+      if (removeBtn) {
+        var row = removeBtn.closest('.share-row');
+        var panel2 = removeBtn.closest('.share-panel');
+        var li2 = removeBtn.closest('li');
+        apiCall('DELETE', '/api/sessions/' + li2.dataset.sessionId + '/shares/' + encodeURIComponent(row.dataset.user), null, panel2, function(data) {
+          renderShares(panel2, data);
+        });
+      }
+    }
+
+    function onListSubmit(e) {
+      var form = e.target.closest('.share-add');
+      if (!form) return;
+      e.preventDefault();
+      var input = form.querySelector('input[name=user]');
+      var user = (input.value || '').trim();
+      var panel = form.closest('.share-panel');
+      var li = form.closest('li');
+      if (!user) return;
+      apiCall('PUT', '/api/sessions/' + li.dataset.sessionId + '/shares', { user: user }, panel, function(data) {
+        renderShares(panel, data);
+      });
+    }
+
+    function apiCall(method, url, body, panel, onDone) {
+      var opts = { method: method, credentials: 'same-origin' };
+      if (body) {
+        opts.headers = { 'Content-Type': 'application/json' };
+        opts.body = JSON.stringify(body);
+      }
+      fetch(url, opts)
+        .then(function(r) {
+          return r.json().then(function(data) { return { ok: r.ok, data: data }; });
+        })
+        .then(function(res) {
+          if (!res.ok) {
+            showError(panel, (res.data && res.data.error) || 'Request failed.');
+            return;
+          }
+          onDone(res.data);
+        })
+        .catch(function() { showError(panel, 'Network error'); });
+    }
+
+    function sharePanelFor(li) {
+      var panel = li.querySelector('.share-panel');
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.className = 'share-panel';
+        panel.hidden = true;
+        li.appendChild(panel);
+      }
+      return panel;
+    }
+
+    function loadShares(panel) {
+      var li = panel.closest('li');
+      panel.innerHTML = '<div class="share-list">Loading…</div><div class="share-error"></div>';
+      apiCall('GET', '/api/sessions/' + li.dataset.sessionId + '/shares', null, panel, function(data) {
+        renderShares(panel, data);
+      });
+    }
+
+    function renderShares(panel, data) {
+      var rows = '';
+      var shares = (data && data.shares) || [];
+      for (var i = 0; i < shares.length; i++) {
+        var name = escapeHtml(shares[i].username);
+        rows += '<div class="share-row" data-user="' + name + '"><span>' + name + '</span>' +
+          '<button class="share-remove" type="button" title="Revoke access">&times;</button></div>';
+      }
+      if (!rows) rows = '<div class="share-empty">Not shared with anyone.</div>';
+      panel.innerHTML =
+        '<div class="share-list">' + rows + '</div>' +
+        '<form class="share-add"><input name="user" placeholder="username" required maxlength="64"><button type="submit">Share</button></form>' +
+        '<div class="share-error"></div>';
+    }
+
+    function showError(panel, msg) {
+      var el = panel.querySelector('.share-error');
+      if (el) el.textContent = msg;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, function(c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
     </script>
   </body>
 </html>`))

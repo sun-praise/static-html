@@ -159,6 +159,12 @@ These commands work against a remote server (`--server URL --api-key <key>`,
 or `STH_API_KEY`) or a local database (`--db /path/to/sessions.db`), like the
 other metadata commands.
 
+You can also manage the share list in the browser: on the home page each of
+your sessions has a 👥 button that opens a panel listing the share roster,
+with a form to grant access by username and a × to revoke it. The panel
+authenticates with your login cookie (cross-origin requests are rejected);
+no API key is needed.
+
 A shared user can open the `/s/<id>/` preview and its drawer data (metadata,
 version chain, related documents), and sees the session listed under
 "Shared with you" on the home page. Editing, deleting, downloading, and share
