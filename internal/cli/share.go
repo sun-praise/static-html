@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 
 	"github.com/sun-praise/static-html/internal/session"
 )
@@ -19,16 +20,17 @@ func runShare(args []string, stdout io.Writer) error {
 		return err
 	}
 	if len(positionals) < 2 {
-		return errors.New("usage: sth share <session-id> <username>")
+		return errors.New("usage: sth share <session-id> <username> [--page <path>]")
 	}
 
 	sessionID, username := positionals[0], positionals[1]
+	page := flags["page"]
 
 	if serverURL, ok := flags["server"]; ok {
 		result, err := doJSONRequest(http.MethodPut, serverURL,
 			"/api/sessions/"+sessionID+"/shares",
 			resolveAPIKey(flags),
-			map[string]any{"user": username})
+			map[string]any{"user": username, "path": page})
 		if err != nil {
 			return err
 		}
@@ -49,10 +51,14 @@ func runShare(args []string, stdout io.Writer) error {
 	if owner, status, err := store.SessionOwner(sessionID); err == nil && status == session.OwnerOwned && owner == target.ID {
 		return errors.New("the owner already has access to this session")
 	}
-	if err := store.ShareSession(sessionID, target.ID); err != nil {
+	if page == "" {
+		if err := store.ShareSession(sessionID, target.ID); err != nil {
+			return err
+		}
+	} else if err := store.ShareSessionPage(sessionID, target.ID, page); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "Shared %s with %s.\n", sessionID, username)
+	printShareDone(stdout, "Shared", sessionID, username, page)
 	return nil
 }
 
@@ -64,15 +70,18 @@ func runUnshare(args []string, stdout io.Writer) error {
 		return err
 	}
 	if len(positionals) < 2 {
-		return errors.New("usage: sth unshare <session-id> <username>")
+		return errors.New("usage: sth unshare <session-id> <username> [--page <path>]")
 	}
 
 	sessionID, username := positionals[0], positionals[1]
+	page := flags["page"]
 
 	if serverURL, ok := flags["server"]; ok {
-		result, err := doJSONRequest(http.MethodDelete, serverURL,
-			"/api/sessions/"+sessionID+"/shares/"+username,
-			resolveAPIKey(flags), nil)
+		target := "/api/sessions/" + sessionID + "/shares/" + username
+		if page != "" {
+			target += "?path=" + url.QueryEscape(page)
+		}
+		result, err := doJSONRequest(http.MethodDelete, serverURL, target, resolveAPIKey(flags), nil)
 		if err != nil {
 			return err
 		}
@@ -90,14 +99,22 @@ func runUnshare(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := store.UnshareSession(sessionID, target.ID); err != nil {
+	if err := store.UnshareSessionPage(sessionID, target.ID, page); err != nil {
 		if errors.Is(err, session.ErrNotShared) {
 			return fmt.Errorf("user %s is not shared on session %s", username, sessionID)
 		}
 		return err
 	}
-	fmt.Fprintf(stdout, "Unshared %s from %s.\n", username, sessionID)
+	printShareDone(stdout, "Unshared", sessionID, username, page)
 	return nil
+}
+
+func printShareDone(stdout io.Writer, verb, sessionID, username, page string) {
+	if page == "" {
+		fmt.Fprintf(stdout, "%s %s with %s (whole session).\n", verb, sessionID, username)
+		return
+	}
+	fmt.Fprintf(stdout, "%s %s with %s (page: %s).\n", verb, sessionID, username, page)
 }
 
 // runShares implements `sth shares <session-id>`: lists the share grants.
@@ -152,6 +169,7 @@ func printSharesResult(stdout io.Writer, result map[string]any) {
 		entry := session.ShareEntry{
 			UserID:    stringField(m, "userId"),
 			Username:  stringField(m, "username"),
+			Path:      stringField(m, "path"),
 			CreatedAt: stringField(m, "createdAt"),
 		}
 		shares = append(shares, entry)
@@ -165,7 +183,7 @@ func printShares(stdout io.Writer, shares []session.ShareEntry) {
 		return
 	}
 	for _, s := range shares {
-		fmt.Fprintf(stdout, "%s\t%s\n", s.Username, s.CreatedAt)
+		fmt.Fprintf(stdout, "%s\t%s\n", s.Username, s.ScopeLabel())
 	}
 }
 

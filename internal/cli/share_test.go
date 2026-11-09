@@ -101,6 +101,40 @@ func TestRunUnshare_LocalDB(t *testing.T) {
 	}
 }
 
+func TestRunShare_PageScope(t *testing.T) {
+	t.Parallel()
+	dbPath, sid := newShareCLIFixture(t)
+
+	var out bytes.Buffer
+	if err := runShare([]string{sid, "bob", "--page", "report.html", "--db", dbPath}, &out); err != nil {
+		t.Fatalf("runShare --page: %v", err)
+	}
+	if !strings.Contains(out.String(), "page: report.html") {
+		t.Fatalf("expected page scope in output, got %q", out.String())
+	}
+
+	store, err := session.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	bob, err := store.FindUserByUsername("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.HasShareOn(sid, bob.ID, "report.html"); err != nil || !ok {
+		t.Fatalf("page grant missing (ok=%v err=%v)", ok, err)
+	}
+
+	out.Reset()
+	if err := runUnshare([]string{sid, "bob", "--page", "report.html", "--db", dbPath}, &out); err != nil {
+		t.Fatalf("runUnshare --page: %v", err)
+	}
+	if ok, _ := store.HasShareOn(sid, bob.ID, "report.html"); ok {
+		t.Fatal("page grant should be revoked")
+	}
+}
+
 func TestRunShares_LocalDB(t *testing.T) {
 	t.Parallel()
 	dbPath, sid := newShareCLIFixture(t)

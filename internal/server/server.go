@@ -130,6 +130,9 @@ type homePageSession struct {
 	Category    string
 	Project     string
 	Owner       string // sharing owner's username, set for shared entries only
+	// SharePath is the page path granted to the viewer; empty for whole-
+	// session grants. Set for shared entries only.
+	SharePath string
 }
 
 var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
@@ -390,6 +393,11 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         align-items: center;
         padding: 0.15rem 0;
       }
+      .share-panel .share-scope {
+        color: #5a5a5a;
+        font-size: 0.78rem;
+        margin-left: 0.3rem;
+      }
       .share-panel .share-remove {
         border: none;
         background: none;
@@ -524,6 +532,9 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
           <a href="{{ .PreviewPath }}">{{ .Name }}</a>
           <time datetime="{{ .CreatedAt }}">{{ .CreatedAt }}</time>
           <span class="meta project">by {{ .Owner }}</span>
+          {{- if .SharePath }}
+          <span class="meta tag">page: {{ .SharePath }}</span>
+          {{- end }}
           {{- if or .Tags .Category .Project }}
           <div class="meta">
             {{- range .Tags }}
@@ -590,7 +601,9 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         var row = removeBtn.closest('.share-row');
         var panel2 = removeBtn.closest('.share-panel');
         var li2 = removeBtn.closest('li');
-        apiCall('DELETE', '/api/sessions/' + li2.dataset.sessionId + '/shares/' + encodeURIComponent(row.dataset.user), null, panel2, function(data) {
+        var target = '/api/sessions/' + li2.dataset.sessionId + '/shares/' + encodeURIComponent(row.dataset.user);
+        if (row.dataset.path) target += '?path=' + encodeURIComponent(row.dataset.path);
+        apiCall('DELETE', target, null, panel2, function(data) {
           renderShares(panel2, data);
         });
       }
@@ -600,12 +613,12 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       var form = e.target.closest('.share-add');
       if (!form) return;
       e.preventDefault();
-      var input = form.querySelector('input[name=user]');
-      var user = (input.value || '').trim();
+      var user = (form.querySelector('input[name=user]').value || '').trim();
+      var pagePath = (form.querySelector('input[name=page]').value || '').trim();
       var panel = form.closest('.share-panel');
       var li = form.closest('li');
       if (!user) return;
-      apiCall('PUT', '/api/sessions/' + li.dataset.sessionId + '/shares', { user: user }, panel, function(data) {
+      apiCall('PUT', '/api/sessions/' + li.dataset.sessionId + '/shares', { user: user, path: pagePath }, panel, function(data) {
         renderShares(panel, data);
       });
     }
@@ -654,13 +667,19 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       var shares = (data && data.shares) || [];
       for (var i = 0; i < shares.length; i++) {
         var name = escapeHtml(shares[i].username);
-        rows += '<div class="share-row" data-user="' + name + '"><span>' + name + '</span>' +
+        var scope = shares[i].path ? escapeHtml(shares[i].path) : 'whole session';
+        var pathAttr = shares[i].path ? escapeHtml(shares[i].path) : '';
+        rows += '<div class="share-row" data-user="' + name + '" data-path="' + pathAttr + '">' +
+          '<span>' + name + ' <span class="share-scope">' + scope + '</span></span>' +
           '<button class="share-remove" type="button" title="Revoke access">&times;</button></div>';
       }
       if (!rows) rows = '<div class="share-empty">Not shared with anyone.</div>';
       panel.innerHTML =
         '<div class="share-list">' + rows + '</div>' +
-        '<form class="share-add"><input name="user" placeholder="username" required maxlength="64"><button type="submit">Share</button></form>' +
+        '<form class="share-add">' +
+        '<input name="user" placeholder="username" required maxlength="64">' +
+        '<input name="page" placeholder="page (optional)" maxlength="200">' +
+        '<button type="submit">Share</button></form>' +
         '<div class="share-error"></div>';
     }
 
@@ -899,12 +918,12 @@ func (s *Server) routes() http.Handler {
 			if strings.HasSuffix(r.URL.Path, "/ws") {
 				sid := strings.TrimPrefix(r.URL.Path, "/s/")
 				sid = strings.TrimSuffix(sid, "/ws")
-				_, found, err := s.store.Get(sid)
+				sess, found, err := s.store.Get(sid)
 				if err != nil || !found {
 					http.NotFound(w, r)
 					return
 				}
-				if !s.authorizePreview(w, r, sid) {
+				if !s.authorizePreview(w, r, sess, "", true) {
 					return
 				}
 				live.HandleWebSocket(s.liveMgr, func(id string) string {
@@ -1101,16 +1120,21 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		}
 		sharedItems = make([]homePageSession, 0, len(sharedDocs))
 		for _, d := range sharedDocs {
+			previewPath := "/s/" + d.SessionID + "/"
+			if d.Path != "" {
+				previewPath = "/s/" + d.SessionID + "/" + (&url.URL{Path: d.Path}).EscapedPath()
+			}
 			sharedItems = append(sharedItems, homePageSession{
 				ID:          d.SessionID,
 				Name:        filepath.Base(d.Name),
 				EntryFile:   d.Name,
 				CreatedAt:   d.CreatedAt,
-				PreviewPath: "/s/" + d.SessionID + "/",
+				PreviewPath: previewPath,
 				Tags:        d.Tags,
 				Category:    d.Category,
 				Project:     d.Project,
 				Owner:       d.OwnerUsername,
+				SharePath:   d.Path,
 			})
 		}
 	}
@@ -1427,7 +1451,7 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.authorizePreview(w, r, sessionID) {
+	if !s.authorizePreview(w, r, session, assetPath, false) {
 		return
 	}
 

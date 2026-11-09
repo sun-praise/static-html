@@ -3,10 +3,10 @@
 ## [Unreleased]
 
 ### Added
-- Per-user session sharing: owners can grant a specific user read access to a preview without exposing it to everyone (`sth share <id> <user>` / `sth unshare` / `sth shares`, or `GET/PUT/DELETE /api/sessions/{id}/shares`)
-- Home-page share panel (👥): view/add/revoke a session's share roster in the browser. Share-management mutations accept the login cookie in addition to Bearer keys — CSRF stays structurally impossible (SameSite=Lax cookie + Origin check; all other mutating endpoints remain Bearer-only)
-- New `session_shares` table (composite PK `session_id, user_id`, indexed by user) with store methods `ShareSession`, `UnshareSession`, `ListSessionShares`, `IsSessionSharedWith`, `ListSharedWithUser`
-- Home page gains a "Shared with you" section for logged-in users listing incoming shares with the sharing owner's username
+- Per-user session sharing, whole-session or single-page scoped: `sth share <id> <user> [--page <path>]` / `sth unshare` / `sth shares`, or `GET/PUT/DELETE /api/sessions/{id}/shares` (PUT body `{"user","path"}`, DELETE `?path=`). A page grant opens exactly that HTML page (sibling pages and the session root stay 403) plus the session's non-HTML assets so the page renders
+- Home-page share panel (👥): view/add/revoke a session's share roster in the browser, optionally scoped to a page. Share-management mutations accept the login cookie in addition to Bearer keys — CSRF stays structurally impossible (SameSite=Lax cookie + Origin check; all other mutating endpoints remain Bearer-only)
+- "Shared with you" section on the home page; page-scoped shares link straight to the granted page and are labelled with its path
+- New `session_shares` table (composite PK `session_id, user_id, path`, indexed by user) with store methods `ShareSession(·Page)`, `UnshareSession(·Page)`, `ListSessionShares`, `HasShareOn`, `HasAnyShare`, `IsSessionSharedWith`, `ListSharedWithUser`
 - Shared users can read the preview drawer data (`/metadata`, `/peers`, `/chain`) for shared sessions; edit/delete/download/share management stay owner-only
 - Remote mode for `sth tag/categorize/project/share/unshare/shares` now attaches the API key (`--api-key` / `STH_API_KEY`), fixing 401s against authenticated servers
 

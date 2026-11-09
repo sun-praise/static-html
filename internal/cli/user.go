@@ -13,10 +13,11 @@ import (
 // with --db) and does not require the server to be running.
 //
 // Usage:
-//   sth user add <name>
-//   sth user issue-key <name>
-//   sth user revoke-key <id|prefix>
-//   sth user list
+//
+//	sth user add <name>
+//	sth user issue-key <name>
+//	sth user revoke-key <id|prefix>
+//	sth user list
 func runUser(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: sth user <add|issue-key|revoke-key|list> [--db /path/to/sessions.db]")

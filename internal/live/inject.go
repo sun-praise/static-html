@@ -328,10 +328,10 @@ func InjectMiddleware(h http.Handler) http.Handler {
 
 type bufferedWriter struct {
 	http.ResponseWriter
-	buf       bytes.Buffer
-	code      int
-	wroteHdr  bool
-	hijacked  bool
+	buf      bytes.Buffer
+	code     int
+	wroteHdr bool
+	hijacked bool
 }
 
 func (bw *bufferedWriter) Write(b []byte) (int, error) {

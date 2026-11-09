@@ -75,8 +75,8 @@ func printUsage(w io.Writer) {
   sth delete <session-id> [--db /path/to/sessions.db]
   sth watch <path> --session <id> [--server http://127.0.0.1:3939] [--api-key <key>]
   sth user <add <name> | issue-key <name> | revoke-key <id|prefix> | list> [--db /path/to/sessions.db]
-  sth share <session-id> <username> [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
-  sth unshare <session-id> <username> [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
+  sth share <session-id> <username> [--page <path>] [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
+  sth unshare <session-id> <username> [--page <path>] [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
   sth shares <session-id> [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
 
 Authentication:

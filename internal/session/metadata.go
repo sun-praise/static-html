@@ -29,14 +29,14 @@ type FilterOptions struct {
 }
 
 type DocumentInfo struct {
-	SessionID string    `json:"sessionId"`
-	Name      string    `json:"name"`
-	Tags      []string  `json:"tags"`
-	Category  string    `json:"category"`
-	Project   string    `json:"project"`
-	ChainID   string    `json:"chainId"`
-	VersionNo int       `json:"versionNo"`
-	CreatedAt string    `json:"createdAt"`
+	SessionID string   `json:"sessionId"`
+	Name      string   `json:"name"`
+	Tags      []string `json:"tags"`
+	Category  string   `json:"category"`
+	Project   string   `json:"project"`
+	ChainID   string   `json:"chainId"`
+	VersionNo int      `json:"versionNo"`
+	CreatedAt string   `json:"createdAt"`
 }
 
 func (s *Store) initMetadata() error {
@@ -324,14 +324,14 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 	var docs []DocumentInfo
 	for rows.Next() {
 		var (
-			sessionID      string
-			entryFile      string
-			createdAtUnix  int64
-			tagsStr        sql.NullString
-			category       sql.NullString
-			project        sql.NullString
-			chainID        string
-			versionNo      int
+			sessionID     string
+			entryFile     string
+			createdAtUnix int64
+			tagsStr       sql.NullString
+			category      sql.NullString
+			project       sql.NullString
+			chainID       string
+			versionNo     int
 		)
 		if err := rows.Scan(&sessionID, &entryFile, &createdAtUnix, &tagsStr, &category, &project, &chainID, &versionNo); err != nil {
 			return nil, err

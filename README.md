@@ -150,10 +150,18 @@ Session owners can grant a specific user read access to a preview — without
 opening it up to everyone else:
 
 ```bash
-sth share <session-id> bob              # grant bob read access
-sth shares <session-id>                 # list who the session is shared with
-sth unshare <session-id> bob            # revoke bob's access
+sth share <session-id> bob              # grant bob read access to the whole session
+sth share <session-id> bob --page report.html   # grant access to ONE page only
+sth shares <session-id>                 # list who the session is shared with (and scope)
+sth unshare <session-id> bob            # revoke the whole-session grant
+sth unshare <session-id> bob --page report.html # revoke the page grant
 ```
+
+A **page share** (`--page`, a path inside the session) grants exactly that
+HTML page: sibling HTML pages and the session root stay 403, while non-HTML
+assets (css/js/images/fonts) stay reachable so the page renders. Use this to
+share a single report out of a multi-page upload. A whole-session share and
+page shares are independent grants and can coexist.
 
 These commands work against a remote server (`--server URL --api-key <key>`,
 or `STH_API_KEY`) or a local database (`--db /path/to/sessions.db`), like the
@@ -161,9 +169,9 @@ other metadata commands.
 
 You can also manage the share list in the browser: on the home page each of
 your sessions has a 👥 button that opens a panel listing the share roster,
-with a form to grant access by username and a × to revoke it. The panel
-authenticates with your login cookie (cross-origin requests are rejected);
-no API key is needed.
+with a form to grant access by username (optionally scoped to a single page
+path) and a × to revoke it. The panel authenticates with your login cookie
+(cross-origin requests are rejected); no API key is needed.
 
 A shared user can open the `/s/<id>/` preview and its drawer data (metadata,
 version chain, related documents), and sees the session listed under

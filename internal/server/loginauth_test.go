@@ -405,11 +405,11 @@ func TestSafeRedirectTarget(t *testing.T) {
 		{"", "/"},
 		{"/", "/"},
 		{"/dashboard", "/dashboard"},
-		{"//evil.com", "/"},      // protocol-relative absolute
-		{"/\\evil.com", "/"},     // backslash trick
+		{"//evil.com", "/"},       // protocol-relative absolute
+		{"/\\evil.com", "/"},      // backslash trick
 		{"https://evil.com", "/"}, // scheme
 		{"http://evil.com", "/"},
-		{"dashboard", "/"},       // relative, no leading slash
+		{"dashboard", "/"}, // relative, no leading slash
 	}
 	for _, c := range cases {
 		if got := safeRedirectTarget(c.in); got != c.want {

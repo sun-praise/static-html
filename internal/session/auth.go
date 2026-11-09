@@ -30,14 +30,14 @@ type User struct {
 // salted hash of the plaintext key; the plaintext is only ever returned from
 // IssueAPIKey at creation time and is never persisted.
 type APIKeyRecord struct {
-	ID         string
-	UserID     string
-	KeyHash    string
-	Salt       string
-	HashAlgo   string
-	CreatedAt  time.Time
-	RevokedAt  sql.NullTime
-	ExpiresAt  sql.NullTime
+	ID        string
+	UserID    string
+	KeyHash   string
+	Salt      string
+	HashAlgo  string
+	CreatedAt time.Time
+	RevokedAt sql.NullTime
+	ExpiresAt sql.NullTime
 }
 
 // KeyPrefixLen is the number of leading plaintext characters stored for
@@ -243,10 +243,10 @@ func (s *Store) VerifyAPIKey(plaintext string) (userID string, ok bool, err erro
 
 	for rows.Next() {
 		var (
-			uid        string
-			keyHash    string
-			salt       string
-			hashAlgo   string
+			uid         string
+			keyHash     string
+			salt        string
+			hashAlgo    string
 			revokedUnix sql.NullInt64
 			expiresUnix sql.NullInt64
 		)

@@ -3,7 +3,10 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/sun-praise/static-html/internal/session"
@@ -11,6 +14,10 @@ import (
 
 type shareRequest struct {
 	User string `json:"user"`
+	// Path, when non-empty, scopes the grant to a single HTML page inside
+	// the session (slash-separated, relative). Empty grants the whole
+	// session.
+	Path string `json:"path"`
 }
 
 type sharesResponse struct {
@@ -102,7 +109,17 @@ func (s *Server) handleAddShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.ShareSession(sessionID, target.ID); err != nil {
+	sharePath := session.SharePathAll
+	if req.Path != "" {
+		var err error
+		sharePath, err = s.validSharePage(sessionID, req.Path)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	if err := s.store.ShareSessionPage(sessionID, target.ID, sharePath); err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
 			writeJSONError(w, http.StatusNotFound, "Session not found.")
 			return
@@ -119,8 +136,37 @@ func (s *Server) handleAddShare(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sharesResponse{SessionID: sessionID, Shares: shares})
 }
 
+// validSharePage normalizes and validates a page path for page-scoped
+// sharing: a relative path inside the session root that names an existing
+// HTML file. Returns the normalized slash path.
+func (s *Server) validSharePage(sessionID, rawPath string) (string, error) {
+	normalized, err := normalizeArchivePath(rawPath)
+	if err != nil {
+		return "", errors.New("path must be a relative path inside the session")
+	}
+	if !IsHTMLFile(normalized) {
+		return "", errors.New("path must be an .html or .htm page inside the session")
+	}
+	sess, found, err := s.store.Get(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", errors.New("session not found")
+	}
+	target := filepath.Clean(filepath.Join(sess.StoredRootDir, filepath.FromSlash(normalized)))
+	if !IsSubpath(sess.StoredRootDir, target) {
+		return "", errors.New("path must be a relative path inside the session")
+	}
+	if err := ensureFile(target); err != nil {
+		return "", fmt.Errorf("page %q does not exist in this session", normalized)
+	}
+	return normalized, nil
+}
+
 // handleRemoveShare revokes a user's share via DELETE
-// /api/sessions/{id}/shares/{username}. Owner-only.
+// /api/sessions/{id}/shares/{username}[?path=<page>]. Owner-only. Without
+// ?path the whole-session grant is revoked; with it, that page grant.
 func (s *Server) handleRemoveShare(w http.ResponseWriter, r *http.Request) {
 	sessionID, username, ok := parseShareTargetPath(r.URL.Path)
 	if !ok {
@@ -142,7 +188,16 @@ func (s *Server) handleRemoveShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.UnshareSession(sessionID, target.ID); err != nil {
+	unsharePath := session.SharePathAll
+	if raw := r.URL.Query().Get("path"); raw != "" {
+		unsharePath, err = s.validSharePage(sessionID, raw)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	if err := s.store.UnshareSessionPage(sessionID, target.ID, unsharePath); err != nil {
 		switch {
 		case errors.Is(err, session.ErrSessionNotFound):
 			writeJSONError(w, http.StatusNotFound, "Session not found.")
@@ -163,11 +218,18 @@ func (s *Server) handleRemoveShare(w http.ResponseWriter, r *http.Request) {
 }
 
 // authorizePreview enforces the --protect-previews access rule for
-// /s/<id>/... requests once the middleware has authenticated the caller: an
-// owned session is visible to its owner and the users it is shared with;
-// legacy unowned sessions stay visible to any authenticated user. It is a
-// pass-through when previews are not protected.
-func (s *Server) authorizePreview(w http.ResponseWriter, r *http.Request, sessionID string) bool {
+// /s/<id>/... requests once the middleware has authenticated the caller:
+//   - the owner and legacy unowned sessions see everything;
+//   - a whole-session grant sees every page and asset;
+//   - a page grant (path) sees exactly that HTML page; sibling HTML pages
+//     stay 403, while non-HTML assets (css/js/images/fonts) are shared
+//     plumbing so the page can render.
+//
+// The /s/<id>/ root serves the entry file, so it is treated as a request for
+// the entry page. anyGrantSuffices relaxes page-vs-asset discrimination (the
+// live-reload websocket uses it). It is a pass-through when previews are not
+// protected.
+func (s *Server) authorizePreview(w http.ResponseWriter, r *http.Request, sess session.Session, assetPath string, anyGrantSuffices bool) bool {
 	if !s.AuthEnabled() || !s.ProtectPreviews() {
 		return true
 	}
@@ -181,7 +243,7 @@ func (s *Server) authorizePreview(w http.ResponseWriter, r *http.Request, sessio
 		return false
 	}
 
-	owner, status, err := s.store.SessionOwner(sessionID)
+	owner, status, err := s.store.SessionOwner(sess.ID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return false
@@ -197,16 +259,44 @@ func (s *Server) authorizePreview(w http.ResponseWriter, r *http.Request, sessio
 		return true
 	}
 
-	shared, err := s.store.IsSessionSharedWith(sessionID, uid)
+	pageScoped := !anyGrantSuffices && isHTMLRequestPath(sess, assetPath)
+	var allowed bool
+	if pageScoped {
+		allowed, err = s.store.HasShareOn(sess.ID, uid, sharePathFor(sess, assetPath))
+	} else {
+		allowed, err = s.store.HasAnyShare(sess.ID, uid)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return false
 	}
-	if !shared {
-		http.Error(w, "Forbidden: this session is not shared with you.", http.StatusForbidden)
+	if !allowed {
+		http.Error(w, "Forbidden: this page is not shared with you.", http.StatusForbidden)
 		return false
 	}
 	return true
+}
+
+// isHTMLRequestPath reports whether the requested path names an HTML page
+// (the root path counts: it serves the session's entry file).
+func isHTMLRequestPath(sess session.Session, assetPath string) bool {
+	if strings.TrimSpace(assetPath) == "" {
+		return true
+	}
+	return IsHTMLFile(assetPath)
+}
+
+// sharePathFor maps a preview request path to the normalized page path used
+// by share grants. The root path maps to the entry file's path.
+func sharePathFor(sess session.Session, assetPath string) string {
+	trimmed := strings.TrimSpace(assetPath)
+	if trimmed == "" {
+		if rel, err := filepath.Rel(sess.StoredRootDir, sess.StoredEntryFile); err == nil {
+			return path.Clean(filepath.ToSlash(rel))
+		}
+		return ""
+	}
+	return path.Clean(trimmed)
 }
 
 // requireViewer is requireOwner's read-only counterpart for endpoints the
@@ -237,7 +327,7 @@ func (s *Server) requireViewer(w http.ResponseWriter, r *http.Request, sessionID
 		return true
 	}
 
-	shared, err := s.store.IsSessionSharedWith(sessionID, uid)
+	shared, err := s.store.HasAnyShare(sessionID, uid)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return false

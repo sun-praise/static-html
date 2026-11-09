@@ -229,7 +229,6 @@ func TestServerNameValidationAcceptsValid(t *testing.T) {
 	}
 }
 
-
 func TestServerBaseURLDefaultPort(t *testing.T) {
 	t.Parallel()
 

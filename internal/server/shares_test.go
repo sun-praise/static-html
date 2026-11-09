@@ -91,6 +91,184 @@ func doBodyReqWithCookie(t *testing.T, handler http.Handler, method, path, cooki
 	return rec
 }
 
+// newPageFixture provisions a protectPreviews server whose session is a
+// multi-page site: index.html (entry), report.html, style.css — owned by
+// alice, with keys for bob and carol.
+func newPageFixture(t *testing.T) (srv *Server, store *session.Store, sessionID, aliceKey, bobKey, carolKey string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	files := map[string]string{
+		"index.html":  "<!doctype html><p>index</p>",
+		"report.html": "<!doctype html><p>report</p>",
+		"style.css":   "body{color:red}",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv, store = newAuthServer(t, false, true)
+
+	alice, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := store.CreateUser("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	carol, err := store.CreateUser("carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliceKey, _, err = store.IssueAPIKey(alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobKey, _, err = store.IssueAPIKey(bob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carolKey, _, err = store.IssueAPIKey(carol.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := store.CreateUploaded("index.html", filepath.Join(dir, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSessionOwner(sess.ID, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	return srv, store, sess.ID, aliceKey, bobKey, carolKey
+}
+
+// TestPreviewSharing_PageScope: a page grant opens exactly that page and the
+// session's non-HTML assets; sibling HTML pages and the entry root stay 403.
+// A whole-session grant opens everything.
+func TestPreviewSharing_PageScope(t *testing.T) {
+	t.Parallel()
+	srv, store, sid, _, bobKey, carolKey := newPageFixture(t)
+
+	bob, err := store.FindUserByUsername("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ShareSessionPage(sid, bob.ID, "report.html"); err != nil {
+		t.Fatal(err)
+	}
+
+	check := func(key, path string, want int, label string) {
+		t.Helper()
+		rec := doReq(t, srv.httpServer.Handler, http.MethodGet, "/s/"+sid+"/"+path, key)
+		if rec.Code != want {
+			t.Fatalf("%s: expected %d, got %d (body: %s)", label, want, rec.Code, rec.Body.String())
+		}
+	}
+
+	check(bobKey, "report.html", http.StatusOK, "granted page")
+	check(bobKey, "style.css", http.StatusOK, "shared asset")
+	check(bobKey, "index.html", http.StatusForbidden, "sibling page")
+	check(bobKey, "", http.StatusForbidden, "entry root")
+	check(carolKey, "report.html", http.StatusForbidden, "unshared user on granted page")
+
+	// Drawer data stays readable with any grant.
+	if rec := doReq(t, srv.httpServer.Handler, http.MethodGet, "/api/sessions/"+sid+"/metadata", bobKey); rec.Code != http.StatusOK {
+		t.Fatalf("page-share metadata: expected 200, got %d", rec.Code)
+	}
+
+	// Whole-session grant opens everything.
+	carol, err := store.FindUserByUsername("carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ShareSession(sid, carol.ID); err != nil {
+		t.Fatal(err)
+	}
+	check(carolKey, "", http.StatusOK, "whole-session entry root")
+	// http.ServeFile canonicalizes a direct hit on a directory index file
+	// (index.html) with a 301 to "./" — 301 here proves authorization passed.
+	check(carolKey, "index.html", http.StatusMovedPermanently, "whole-session sibling page")
+}
+
+// TestSharesAPI_PagePath: the API accepts and validates page paths.
+func TestSharesAPI_PagePath(t *testing.T) {
+	t.Parallel()
+	srv, store, sid, aliceKey, bobKey, _ := newPageFixture(t)
+	base := "/api/sessions/" + sid + "/shares"
+
+	// Grant a page share.
+	rec := doBodyReq(t, srv.httpServer.Handler, http.MethodPut, base, aliceKey, `{"user":"bob","path":"report.html"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("page share PUT: expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"path":"report.html"`) {
+		t.Fatalf("response should carry the page path, got %s", rec.Body.String())
+	}
+
+	// Nonexistent page rejected.
+	if rec := doBodyReq(t, srv.httpServer.Handler, http.MethodPut, base, aliceKey, `{"user":"bob","path":"ghost.html"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing page: expected 400, got %d", rec.Code)
+	}
+	// Non-HTML path rejected.
+	if rec := doBodyReq(t, srv.httpServer.Handler, http.MethodPut, base, aliceKey, `{"user":"bob","path":"style.css"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("non-html page: expected 400, got %d", rec.Code)
+	}
+	// Escaping path rejected.
+	if rec := doBodyReq(t, srv.httpServer.Handler, http.MethodPut, base, aliceKey, `{"user":"bob","path":"../x.html"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("escaping page: expected 400, got %d", rec.Code)
+	}
+
+	// The page grant alone does not let bob open the entry.
+	if rec := doReq(t, srv.httpServer.Handler, http.MethodGet, "/s/"+sid+"/", bobKey); rec.Code != http.StatusForbidden {
+		t.Fatalf("page grant on entry: expected 403, got %d", rec.Code)
+	}
+
+	// Revoke the page grant specifically.
+	if rec := doReq(t, srv.httpServer.Handler, http.MethodDelete, base+"/bob?path=report.html", aliceKey); rec.Code != http.StatusOK {
+		t.Fatalf("page revoke: expected 200, got %d", rec.Code)
+	}
+	if rec := doReq(t, srv.httpServer.Handler, http.MethodDelete, base+"/bob?path=report.html", aliceKey); rec.Code != http.StatusNotFound {
+		t.Fatalf("repeat page revoke: expected 404, got %d", rec.Code)
+	}
+
+	// Empty shares again.
+	list, err := store.ListSessionShares(sid)
+	if err != nil || len(list) != 0 {
+		t.Fatalf("expected empty share list, got %+v (err %v)", list, err)
+	}
+}
+
+// TestHomePage_SharedSectionPageLink: page-scoped shares link straight to the
+// granted page and are labelled with the page path.
+func TestHomePage_SharedSectionPageLink(t *testing.T) {
+	t.Parallel()
+	srv, store, sid, _, bobKey, _ := newPageFixture(t)
+
+	bob, err := store.FindUserByUsername("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ShareSessionPage(sid, bob.ID, "report.html"); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := doReq(t, srv.httpServer.Handler, http.MethodGet, "/", bobKey)
+	body := rec.Body.String()
+	if !strings.Contains(body, "Shared with you") {
+		t.Fatal("shared section missing")
+	}
+	if !strings.Contains(body, "/s/"+sid+"/report.html") {
+		t.Fatal("shared entry should link the granted page directly")
+	}
+	if !strings.Contains(body, "page: report.html") {
+		t.Fatal("shared entry should be labelled with the page path")
+	}
+}
+
 // TestSharesAPI_CookieAuthAndOrigin: the browser share panel authenticates
 // with the login cookie; a cross-origin Origin header on a cookie-authed
 // mutation is rejected; no credentials is still 401.

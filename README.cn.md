@@ -79,6 +79,11 @@ sth shares <session-id>
 元数据、版本链），`sth unshare` 撤销，`sth shares` 查看名单；编辑、删除、下
 载、分享管理仍仅限属主。远程服务器模式配 `--server URL --api-key <key>`。
 
+支持页面级粒度：`sth share <id> <用户名> --page report.html` 只授权该页面——
+同会话其他 html 与会话根仍 403，css/js/图片等资源放行以保证页面可渲染；与
+整会话授权可并存、分别撤销。浏览器端 👥 面板同样可填页面路径，被分享者首页
+的「Shared with you」条目会直达被授权页面。
+
 ### `sth tag` — 管理会话标签
 
 ```bash
