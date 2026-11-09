@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Per-user session sharing: owners can grant a specific user read access to a preview without exposing it to everyone (`sth share <id> <user>` / `sth unshare` / `sth shares`, or `GET/PUT/DELETE /api/sessions/{id}/shares`)
+- New `session_shares` table (composite PK `session_id, user_id`, indexed by user) with store methods `ShareSession`, `UnshareSession`, `ListSessionShares`, `IsSessionSharedWith`, `ListSharedWithUser`
+- Home page gains a "Shared with you" section for logged-in users listing incoming shares with the sharing owner's username
+- Shared users can read the preview drawer data (`/metadata`, `/peers`, `/chain`) for shared sessions; edit/delete/download/share management stay owner-only
+- Remote mode for `sth tag/categorize/project/share/unshare/shares` now attaches the API key (`--api-key` / `STH_API_KEY`), fixing 401s against authenticated servers
+
+### Changed
+- **`--protect-previews` semantics tightened**: an owned session's preview (`/s/<id>/` and `/s/<id>/ws`) is now visible only to its owner and the users it is shared with — previously any valid key worked. Sessions without an owner (created before auth) remain visible to any logged-in user
+
+### Removed
+- OpenSpec workflow artifacts: `openspec/` directory, `.claude`/`.opencode` OpenSpec skills and slash commands, and the `openspec` entry in `.dockerignore` (historical CHANGELOG references kept)
+
 ## [2.1.0] - 2026-07-14
 
 ### Added

@@ -15,7 +15,10 @@ import (
 	"github.com/sun-praise/static-html/internal/session"
 )
 
-func doJSONRequest(method, serverURL, path string, body any) (map[string]any, error) {
+// doJSONRequest performs a JSON API call. apiKey is attached as a Bearer
+// header when non-empty, so the same helper serves open and authenticated
+// servers.
+func doJSONRequest(method, serverURL, path, apiKey string, body any) (map[string]any, error) {
 	parsedURL, err := url.Parse(serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid server URL: %w", err)
@@ -36,6 +39,9 @@ func doJSONRequest(method, serverURL, path string, body any) (map[string]any, er
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -98,6 +104,7 @@ func runTag(args []string, stdout io.Writer) error {
 		}
 		if _, err := doJSONRequest(method, serverURL,
 			"/api/sessions/"+sessionID+"/tags",
+			resolveAPIKey(flags),
 			map[string]any{"tags": tags}); err != nil {
 			return err
 		}
@@ -146,6 +153,7 @@ func runCategorize(args []string, stdout io.Writer) error {
 	if serverURL, ok := flags["server"]; ok {
 		_, err := doJSONRequest(http.MethodPut, serverURL,
 			"/api/sessions/"+sessionID+"/category",
+			resolveAPIKey(flags),
 			map[string]any{"category": category})
 		if err != nil {
 			return err
@@ -184,6 +192,7 @@ func runProject(args []string, stdout io.Writer) error {
 	if serverURL, ok := flags["server"]; ok {
 		_, err := doJSONRequest(http.MethodPut, serverURL,
 			"/api/sessions/"+sessionID+"/project",
+			resolveAPIKey(flags),
 			map[string]any{"project": project})
 		if err != nil {
 			return err

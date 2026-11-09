@@ -258,6 +258,10 @@ func (s *Store) init() error {
 		return err
 	}
 
+	if err := s.initShares(); err != nil {
+		return err
+	}
+
 	return s.initLoginSessions()
 }
 

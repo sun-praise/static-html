@@ -65,9 +65,19 @@ sth categorize <session-id> [category]
 sth project <session-id> [project]
 sth list [--tag <tag>] [--category <cat>] [--project <proj>]
 sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
+sth share <session-id> <username>
+sth unshare <session-id> <username>
+sth shares <session-id>
 ```
 
 所有命令均支持 `--db /path/to/sessions.db` 参数来覆盖数据库路径。
+
+### `sth share` — 定向分享会话
+
+服务端开启 `--auth --protect-previews` 后，会话只对属主和被分享的用户可
+见。属主用 `sth share <session-id> <用户名>` 授予某个用户只读访问（预览页、
+元数据、版本链），`sth unshare` 撤销，`sth shares` 查看名单；编辑、删除、下
+载、分享管理仍仅限属主。远程服务器模式配 `--server URL --api-key <key>`。
 
 ### `sth tag` — 管理会话标签
 

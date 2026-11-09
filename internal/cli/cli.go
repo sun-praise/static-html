@@ -52,6 +52,12 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runWatch(args[1:], stdout)
 	case "user":
 		return runUser(args[1:], stdout)
+	case "share":
+		return runShare(args[1:], stdout)
+	case "unshare":
+		return runUnshare(args[1:], stdout)
+	case "shares":
+		return runShares(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -69,10 +75,15 @@ func printUsage(w io.Writer) {
   sth delete <session-id> [--db /path/to/sessions.db]
   sth watch <path> --session <id> [--server http://127.0.0.1:3939] [--api-key <key>]
   sth user <add <name> | issue-key <name> | revoke-key <id|prefix> | list> [--db /path/to/sessions.db]
+  sth share <session-id> <username> [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
+  sth unshare <session-id> <username> [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
+  sth shares <session-id> [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
 
 Authentication:
   --auth                 Enable API-key auth on the server (or STH_AUTH=true). Default off.
-  --protect-previews     Require a key for /s/<id>/ previews too (implies --auth).
+  --protect-previews     Require login for /s/<id>/ previews too (implies --auth). Owned
+                         sessions are then visible only to their owner and users they are
+                         shared with via "sth share".
   --api-key <key>        API key for send/watch (or STH_API_KEY env var).`)
 }
 

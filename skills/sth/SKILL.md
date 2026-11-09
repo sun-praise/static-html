@@ -1,6 +1,6 @@
 ---
 name: sth
-description: Start or use the `sth` local HTML preview server from sun-praise/static-html. Use when the user mentions `sth`, wants `sth start`, `sth send`, `sth tag`, `sth categorize`, `sth project`, `sth list`, or `sth search`, needs to preview a local HTML file in a browser, manage session metadata, or register preview sessions from the CLI.
+description: Start or use the `sth` local HTML preview server from sun-praise/static-html. Use when the user mentions `sth`, wants `sth start`, `sth send`, `sth tag`, `sth categorize`, `sth project`, `sth list`, `sth search`, `sth share`, needs to preview a local HTML file in a browser, manage session metadata, share a session with another user, or register preview sessions from the CLI.
 ---
 
 # STH Preview
@@ -74,9 +74,14 @@ sth list [--tag <tag>] [--category <cat>] [--project <proj>]
 
 # Search sessions (with optional metadata filters)
 sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
+
+# Share a session with a specific user (auth + --protect-previews deployments)
+sth share <session-id> <username>
+sth unshare <session-id> <username>
+sth shares <session-id>
 ```
 
-All metadata commands accept `--db /path/to/sessions.db` to override the database path.
+All metadata commands accept `--db /path/to/sessions.db` to override the database path. Commands that talk to a remote server accept `--server URL` plus `--api-key` (or `STH_API_KEY`).
 
 ### `sth list` vs `sth search`
 

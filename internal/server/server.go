@@ -65,20 +65,21 @@ type Server struct {
 	// protectPreviews is also set.
 	authEnabled bool
 	// protectPreviews, when true (implies authEnabled), additionally
-	// requires a valid API key for GET /s/<id>/... and /s/<id>/ws. The key
-	// need not belong to the session owner — preview access is gated only
-	// by key validity, not ownership.
+	// requires an authenticated user for GET /s/<id>/... and /s/<id>/ws. An
+	// owned session is visible only to its owner and the users it is shared
+	// with (see authorizePreview); legacy unowned sessions stay visible to
+	// any authenticated user.
 	protectPreviews bool
 	// allowRegistration gates the /register page. It is meaningful only when
 	// authEnabled is true (when auth is off the whole auth layer is a no-op).
 	// Defaults to true via SetAllowRegistration so deployments are open by
 	// default; set false to require CLI-managed accounts only.
 	allowRegistration bool
-	store      *session.Store
-	httpServer *http.Server
-	listener   net.Listener
-	liveMgr    *live.Manager
-	mu         sync.RWMutex
+	store             *session.Store
+	httpServer        *http.Server
+	listener          net.Listener
+	liveMgr           *live.Manager
+	mu                sync.RWMutex
 }
 
 type createSessionRequest struct {
@@ -98,24 +99,25 @@ type createSessionResponse struct {
 }
 
 type homePageData struct {
-	Sessions     []homePageSession
-	CurrentUser  string // authenticated username, empty when auth is off
-	Search       string
-	FilterTag   string
-	FilterCat   string
-	FilterProj  string
-	ClearSearch string
-	ClearTag    string
-	ClearCat    string
-	ClearProj   string
-	Page        int
-	TotalPages  int
-	HasPrev     bool
-	HasNext     bool
-	PrevPage    int
-	NextPage    int
-	PageRange   []int
-	PageURL     map[int]string
+	Sessions       []homePageSession
+	SharedSessions []homePageSession
+	CurrentUser    string // authenticated username, empty when auth is off
+	Search         string
+	FilterTag      string
+	FilterCat      string
+	FilterProj     string
+	ClearSearch    string
+	ClearTag       string
+	ClearCat       string
+	ClearProj      string
+	Page           int
+	TotalPages     int
+	HasPrev        bool
+	HasNext        bool
+	PrevPage       int
+	NextPage       int
+	PageRange      []int
+	PageURL        map[int]string
 }
 
 type homePageSession struct {
@@ -127,6 +129,7 @@ type homePageSession struct {
 	Tags        []string
 	Category    string
 	Project     string
+	Owner       string // sharing owner's username, set for shared entries only
 }
 
 var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
@@ -455,6 +458,31 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         {{- end }}
       </nav>
       {{- end }}
+      {{- if .SharedSessions }}
+      <h2>Shared with you</h2>
+      <ul>
+        {{- range .SharedSessions }}
+        <li>
+          <a href="{{ .PreviewPath }}">{{ .Name }}</a>
+          <time datetime="{{ .CreatedAt }}">{{ .CreatedAt }}</time>
+          <span class="meta project">by {{ .Owner }}</span>
+          {{- if or .Tags .Category .Project }}
+          <div class="meta">
+            {{- range .Tags }}
+            <a href="?tag={{ . }}" class="tag">{{ . }}</a>
+            {{- end }}
+            {{- if .Category }}
+            <a href="?category={{ .Category }}" class="category">{{ .Category }}</a>
+            {{- end }}
+            {{- if .Project }}
+            <a href="?project={{ .Project }}" class="project">{{ .Project }}</a>
+            {{- end }}
+          </div>
+          {{- end }}
+        </li>
+        {{- end }}
+      </ul>
+      {{- end }}
     </main>
     <script>
     document.querySelector('ul').addEventListener('click', function(e) {
@@ -487,7 +515,6 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
   </body>
 </html>`))
 
-
 func New(host string, port int, store *session.Store, serverName string, serverPort int, uploadRoot string) (*Server, error) {
 	if host == "" {
 		host = DefaultHost
@@ -502,7 +529,6 @@ func New(host string, port int, store *session.Store, serverName string, serverP
 	if serverPort < 0 || serverPort > 65535 {
 		return nil, fmt.Errorf("server: --server-port must be in range 1-65535, got %d", serverPort)
 	}
-
 
 	if store == nil {
 		return nil, errors.New("server: store must not be nil")
@@ -715,6 +741,9 @@ func (s *Server) routes() http.Handler {
 					http.NotFound(w, r)
 					return
 				}
+				if !s.authorizePreview(w, r, sid) {
+					return
+				}
 				live.HandleWebSocket(s.liveMgr, func(id string) string {
 					s, ok, _ := s.store.Get(id)
 					if ok {
@@ -743,6 +772,12 @@ func (s *Server) routes() http.Handler {
 			s.handleGetPeers(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/chain"):
 			s.handleGetChain(w, r)
+		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/shares"):
+			s.handleListShares(w, r)
+		case r.Method == http.MethodPut && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/shares"):
+			s.handleAddShare(w, r)
+		case r.Method == http.MethodDelete && parseShareTargetPathOK(r.URL.Path):
+			s.handleRemoveShare(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/download"):
 			s.handleDownloadSession(w, r)
 		case r.Method == http.MethodDelete && isExactSessionPath(r.URL.Path):
@@ -891,32 +926,53 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	// who is logged in and a logout control. Empty means "no login context"
 	// (auth off), which the template treats as "don't render the logout UI".
 	loggedInUser := ""
+	var sharedItems []homePageSession
 	if uid, ok := currentUser(r); ok {
 		if u, err := s.store.FindUserByID(uid); err == nil {
 			loggedInUser = u.Username
+		}
+		sharedDocs, err := s.store.ListSharedWithUser(uid)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sharedItems = make([]homePageSession, 0, len(sharedDocs))
+		for _, d := range sharedDocs {
+			sharedItems = append(sharedItems, homePageSession{
+				ID:          d.SessionID,
+				Name:        filepath.Base(d.Name),
+				EntryFile:   d.Name,
+				CreatedAt:   d.CreatedAt,
+				PreviewPath: "/s/" + d.SessionID + "/",
+				Tags:        d.Tags,
+				Category:    d.Category,
+				Project:     d.Project,
+				Owner:       d.OwnerUsername,
+			})
 		}
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := homePageTemplate.Execute(w, homePageData{
-		Sessions:    items,
-		CurrentUser: loggedInUser,
-		Search:      search,
-		FilterTag:   filterTag,
-		FilterCat:   filterCat,
-		FilterProj:  filterProj,
-		ClearSearch: clearSearch,
-		ClearTag:    clearTag,
-		ClearCat:    clearCat,
-		ClearProj:   clearProj,
-		Page:        page,
-		TotalPages:  totalPages,
-		HasPrev:     page > 1,
-		HasNext:     page < totalPages,
-		PrevPage:    page - 1,
-		NextPage:    page + 1,
-		PageRange:   pageRange,
-		PageURL:     pageURL,
+		Sessions:       items,
+		SharedSessions: sharedItems,
+		CurrentUser:    loggedInUser,
+		Search:         search,
+		FilterTag:      filterTag,
+		FilterCat:      filterCat,
+		FilterProj:     filterProj,
+		ClearSearch:    clearSearch,
+		ClearTag:       clearTag,
+		ClearCat:       clearCat,
+		ClearProj:      clearProj,
+		Page:           page,
+		TotalPages:     totalPages,
+		HasPrev:        page > 1,
+		HasNext:        page < totalPages,
+		PrevPage:       page - 1,
+		NextPage:       page + 1,
+		PageRange:      pageRange,
+		PageURL:        pageURL,
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -1205,6 +1261,10 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 
 	if !found {
 		http.Error(w, "Session not found.", http.StatusNotFound)
+		return
+	}
+
+	if !s.authorizePreview(w, r, sessionID) {
 		return
 	}
 
@@ -1806,7 +1866,7 @@ func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.requireOwner(w, r, sessionID) {
+	if !s.requireViewer(w, r, sessionID) {
 		return
 	}
 
@@ -1837,7 +1897,7 @@ func (s *Server) handleGetPeers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.requireOwner(w, r, sessionID) {
+	if !s.requireViewer(w, r, sessionID) {
 		return
 	}
 
@@ -1861,9 +1921,9 @@ func (s *Server) handleGetPeers(w http.ResponseWriter, r *http.Request) {
 // whole chain (including v1 vs. an empty baseline), so the timeline UI can
 // render "+tag" / "category: a→b" between adjacent versions.
 type chainResponse struct {
-	Chain        session.ChainInfo          `json:"chain"`
-	Current      session.ChainVersion       `json:"current"`
-	Versions     []session.ChainVersion     `json:"versions"`
+	Chain        session.ChainInfo             `json:"chain"`
+	Current      session.ChainVersion          `json:"current"`
+	Versions     []session.ChainVersion        `json:"versions"`
 	MetadataDiff []session.VersionMetadataDiff `json:"metadataDiff"`
 }
 
@@ -1885,7 +1945,7 @@ func (s *Server) handleGetChain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.requireOwner(w, r, sessionID) {
+	if !s.requireViewer(w, r, sessionID) {
 		return
 	}
 

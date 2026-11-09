@@ -133,12 +133,36 @@ sth start --auth
 
 When auth is on, all mutating endpoints and list/search/peers/download require
 a valid `Authorization: Bearer <key>` header. `/s/<id>/` previews stay **open**
-by default so you can still share preview links. To also require a key for
+by default so you can still share preview links. To also require a login for
 previews, add `--protect-previews` (implies `--auth`):
 
 ```bash
 sth start --auth --protect-previews
 ```
+
+Under `--protect-previews`, an owned session is visible only to its owner and
+the users it is explicitly shared with (see below). Sessions created before
+auth was enabled (no owner) remain visible to any logged-in user.
+
+### Sharing a session with another user
+
+Session owners can grant a specific user read access to a preview — without
+opening it up to everyone else:
+
+```bash
+sth share <session-id> bob              # grant bob read access
+sth shares <session-id>                 # list who the session is shared with
+sth unshare <session-id> bob            # revoke bob's access
+```
+
+These commands work against a remote server (`--server URL --api-key <key>`,
+or `STH_API_KEY`) or a local database (`--db /path/to/sessions.db`), like the
+other metadata commands.
+
+A shared user can open the `/s/<id>/` preview and its drawer data (metadata,
+version chain, related documents), and sees the session listed under
+"Shared with you" on the home page. Editing, deleting, downloading, and share
+management remain owner-only.
 
 ### Managing users and API keys
 
