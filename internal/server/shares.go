@@ -253,6 +253,10 @@ var renderAssetExts = map[string]bool{
 	".ogg":   true,
 	".mp3":   true,
 	".wav":   true,
+	".wasm":  true,
+	".vtt":   true,
+	// webmanifest is fetched by the browser for installable/offline pages.
+	".webmanifest": true,
 }
 
 // isRenderAsset reports whether assetPath names a browser render asset a
