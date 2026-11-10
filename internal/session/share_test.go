@@ -312,3 +312,33 @@ func TestListSharedWithUser(t *testing.T) {
 		t.Fatalf("expected alice to see only the third session, got %+v", aliceDocs)
 	}
 }
+
+// TestNormalizeSharePagePath pins the stored form of a page grant. Server and
+// CLI both go through here, so the shape decided here is the contract the
+// preview comparer relies on.
+func TestNormalizeSharePagePath(t *testing.T) {
+	t.Parallel()
+
+	valid := map[string]string{
+		"report.html":         "report.html",
+		"./report.html":       "report.html",
+		"sub/./report.html":   "sub/report.html",
+		" sub\\report.htm  ":  "sub/report.htm",
+		"a/b/../c/report.HTM": "a/c/report.HTM",
+	}
+	for in, want := range valid {
+		got, err := NormalizeSharePagePath(in)
+		if err != nil {
+			t.Fatalf("NormalizeSharePagePath(%q): unexpected error %v", in, err)
+		}
+		if got != want {
+			t.Fatalf("NormalizeSharePagePath(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	for _, bad := range []string{"", "   ", ".", "..", "../x.html", "/abs/x.html", "style.css", "notes.txt"} {
+		if _, err := NormalizeSharePagePath(bad); err == nil {
+			t.Fatalf("NormalizeSharePagePath(%q): expected an error", bad)
+		}
+	}
+}
