@@ -3,6 +3,7 @@ package session
 import (
 	"database/sql"
 	"errors"
+	"path"
 	"strings"
 	"time"
 )
@@ -21,6 +22,30 @@ const (
 	ShareScopeSession = "session"
 	ShareScopePage    = "page"
 )
+
+// NormalizeSharePagePath normalizes a caller-supplied page path for a share
+// grant: a slash-separated path relative to the session root that names an
+// HTML page. Stored grants use exactly this form, and preview requests are
+// compared against it after the same normalization, so both sides must agree.
+//
+// Existence is deliberately not checked here: revoking a grant must keep
+// working after the underlying file is gone (deleted session content, a
+// re-upload that dropped the page). Callers that create a grant check
+// existence themselves.
+func NormalizeSharePagePath(raw string) (string, error) {
+	cleaned := path.Clean(strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/")))
+	switch {
+	case cleaned == "" || cleaned == ".":
+		return "", errors.New("page path must not be empty")
+	case strings.HasPrefix(cleaned, "/"), cleaned == "..", strings.HasPrefix(cleaned, "../"):
+		return "", errors.New("page path must be relative and inside the session")
+	}
+	ext := strings.ToLower(path.Ext(cleaned))
+	if ext != ".html" && ext != ".htm" {
+		return "", errors.New("page path must name an .html or .htm page")
+	}
+	return cleaned, nil
+}
 
 // ShareEntry is a single grant on a session: the user it belongs to (with
 // username resolved for display), the page path it covers ("" = whole

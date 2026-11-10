@@ -136,16 +136,13 @@ func (s *Server) handleAddShare(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sharesResponse{SessionID: sessionID, Shares: shares})
 }
 
-// validSharePage normalizes and validates a page path for page-scoped
-// sharing: a relative path inside the session root that names an existing
-// HTML file. Returns the normalized slash path.
+// validSharePage normalizes and validates a page path for a NEW page-scoped
+// grant: a relative path inside the session root that names an HTML file
+// which currently exists. Returns the normalized slash path.
 func (s *Server) validSharePage(sessionID, rawPath string) (string, error) {
-	normalized, err := normalizeArchivePath(rawPath)
+	normalized, err := session.NormalizeSharePagePath(rawPath)
 	if err != nil {
-		return "", errors.New("path must be a relative path inside the session")
-	}
-	if !IsHTMLFile(normalized) {
-		return "", errors.New("path must be an .html or .htm page inside the session")
+		return "", err
 	}
 	sess, found, err := s.store.Get(sessionID)
 	if err != nil {
@@ -156,7 +153,7 @@ func (s *Server) validSharePage(sessionID, rawPath string) (string, error) {
 	}
 	target := filepath.Clean(filepath.Join(sess.StoredRootDir, filepath.FromSlash(normalized)))
 	if !IsSubpath(sess.StoredRootDir, target) {
-		return "", errors.New("path must be a relative path inside the session")
+		return "", errors.New("page path must be relative and inside the session")
 	}
 	if err := ensureFile(target); err != nil {
 		return "", fmt.Errorf("page %q does not exist in this session", normalized)
@@ -189,12 +186,18 @@ func (s *Server) handleRemoveShare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	unsharePath := session.SharePathAll
+	pageScoped := false
 	if raw := r.URL.Query().Get("path"); raw != "" {
-		unsharePath, err = s.validSharePage(sessionID, raw)
+		// Revocation only normalizes: the grant must stay removable even when
+		// the page no longer exists on disk, otherwise a re-upload could
+		// strand a live grant with no way to revoke it short of the whole
+		// session.
+		unsharePath, err = session.NormalizeSharePagePath(raw)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		pageScoped = true
 	}
 
 	if err := s.store.UnshareSessionPage(sessionID, target.ID, unsharePath); err != nil {
@@ -202,6 +205,10 @@ func (s *Server) handleRemoveShare(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, session.ErrSessionNotFound):
 			writeJSONError(w, http.StatusNotFound, "Session not found.")
 		case errors.Is(err, session.ErrNotShared):
+			if pageScoped {
+				writeJSONError(w, http.StatusNotFound, "User "+username+" has no share on page "+unsharePath+".")
+				return
+			}
 			writeJSONError(w, http.StatusNotFound, "User "+username+" is not shared on this session.")
 		default:
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -217,13 +224,51 @@ func (s *Server) handleRemoveShare(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, sharesResponse{SessionID: sessionID, Shares: shares})
 }
 
+// renderAssetExts is the whitelist of non-HTML extensions a page-scoped grant
+// may read: the plumbing a browser needs to render the granted page (styles,
+// scripts, images, fonts, media). Everything else — JSON payloads, text
+// dumps, PDFs, archives, .env files — is session content rather than render
+// plumbing, so it requires a whole-session grant.
+var renderAssetExts = map[string]bool{
+	".css":   true,
+	".js":    true,
+	".mjs":   true,
+	".map":   true,
+	".png":   true,
+	".jpg":   true,
+	".jpeg":  true,
+	".gif":   true,
+	".svg":   true,
+	".webp":  true,
+	".avif":  true,
+	".bmp":   true,
+	".ico":   true,
+	".woff":  true,
+	".woff2": true,
+	".ttf":   true,
+	".otf":   true,
+	".eot":   true,
+	".mp4":   true,
+	".webm":  true,
+	".ogg":   true,
+	".mp3":   true,
+	".wav":   true,
+}
+
+// isRenderAsset reports whether assetPath names a browser render asset a
+// page-scoped grant may read.
+func isRenderAsset(assetPath string) bool {
+	return renderAssetExts[strings.ToLower(path.Ext(strings.TrimSpace(assetPath)))]
+}
+
 // authorizePreview enforces the --protect-previews access rule for
 // /s/<id>/... requests once the middleware has authenticated the caller:
 //   - the owner and legacy unowned sessions see everything;
 //   - a whole-session grant sees every page and asset;
-//   - a page grant (path) sees exactly that HTML page; sibling HTML pages
-//     stay 403, while non-HTML assets (css/js/images/fonts) are shared
-//     plumbing so the page can render.
+//   - a page grant (path) sees exactly that HTML page plus the session's
+//     render assets (whitelist in renderAssetExts); sibling HTML pages stay
+//     403, and non-render files (JSON, dumps, PDFs, archives) need a
+//     whole-session grant.
 //
 // The /s/<id>/ root serves the entry file, so it is treated as a request for
 // the entry page. anyGrantSuffices relaxes page-vs-asset discrimination (the
@@ -259,12 +304,18 @@ func (s *Server) authorizePreview(w http.ResponseWriter, r *http.Request, sess s
 		return true
 	}
 
-	pageScoped := !anyGrantSuffices && isHTMLRequestPath(sess, assetPath)
 	var allowed bool
-	if pageScoped {
-		allowed, err = s.store.HasShareOn(sess.ID, uid, sharePathFor(sess, assetPath))
-	} else {
+	switch {
+	case anyGrantSuffices:
 		allowed, err = s.store.HasAnyShare(sess.ID, uid)
+	case isHTMLRequestPath(sess, assetPath):
+		allowed, err = s.store.HasShareOn(sess.ID, uid, sharePathFor(sess, assetPath))
+	case isRenderAsset(assetPath):
+		allowed, err = s.store.HasAnyShare(sess.ID, uid)
+	default:
+		// Not a page and not render plumbing (JSON payloads, dumps, PDFs,
+		// archives, .env): only a whole-session grant covers it.
+		allowed, err = s.store.IsSessionSharedWith(sess.ID, uid)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -345,7 +396,7 @@ func (s *Server) requireViewerGrant(w http.ResponseWriter, r *http.Request, sess
 	if anyShare {
 		shared, err = s.store.HasAnyShare(sessionID, uid)
 	} else {
-		shared, err = s.store.HasShareOn(sessionID, uid, "")
+		shared, err = s.store.IsSessionSharedWith(sessionID, uid)
 	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

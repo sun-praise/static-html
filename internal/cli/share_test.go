@@ -203,3 +203,39 @@ func TestRunShare_RemoteServer(t *testing.T) {
 		t.Fatalf("expected share list in output, got %q", out.String())
 	}
 }
+
+// TestRunShare_PagePathNormalizedLocalDB: the local (--db) path normalizes
+// --page the same way the server does, so a grant written by the CLI matches
+// the path the preview comparer uses instead of storing a row that can never
+// match. Malformed paths are rejected instead of silently stored.
+func TestRunShare_PagePathNormalizedLocalDB(t *testing.T) {
+	t.Parallel()
+	dbPath, sid := newShareCLIFixture(t)
+
+	var out bytes.Buffer
+	if err := runShare([]string{sid, "bob", "--page", "./report.html", "--db", dbPath}, &out); err != nil {
+		t.Fatalf("runShare --page ./report.html: %v", err)
+	}
+	if !strings.Contains(out.String(), "page: report.html") {
+		t.Fatalf("output should show the normalized path, got %q", out.String())
+	}
+
+	store, err := session.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	bob, err := store.FindUserByUsername("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.HasShareOn(sid, bob.ID, "report.html"); err != nil || !ok {
+		t.Fatalf("normalized page grant missing (ok=%v err=%v)", ok, err)
+	}
+
+	for _, bad := range []string{"../escape.html", "/abs/report.html", "style.css"} {
+		if err := runShare([]string{sid, "bob", "--page", bad, "--db", dbPath}, &out); err == nil {
+			t.Fatalf("expected --page %q to be rejected", bad)
+		}
+	}
+}

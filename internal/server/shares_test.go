@@ -102,6 +102,10 @@ func newPageFixture(t *testing.T) (srv *Server, store *session.Store, sessionID,
 		"index.html":  "<!doctype html><p>index</p>",
 		"report.html": "<!doctype html><p>report</p>",
 		"style.css":   "body{color:red}",
+		// Non-render files: session content, not page plumbing. A page-scoped
+		// grant must not reach them.
+		"data.json": `{"secret":"dump"}`,
+		"notes.txt": "internal notes",
 	}
 	for name, content := range files {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
@@ -175,6 +179,11 @@ func TestPreviewSharing_PageScope(t *testing.T) {
 	check(bobKey, "", http.StatusForbidden, "entry root")
 	check(carolKey, "report.html", http.StatusForbidden, "unshared user on granted page")
 
+	// Render assets are shared plumbing; other file types are session content
+	// and stay behind a whole-session grant.
+	check(bobKey, "data.json", http.StatusForbidden, "page grant must not reach JSON payloads")
+	check(bobKey, "notes.txt", http.StatusForbidden, "page grant must not reach text dumps")
+
 	// Drawer data stays readable with any grant.
 	if rec := doReq(t, srv.httpServer.Handler, http.MethodGet, "/api/sessions/"+sid+"/metadata", bobKey); rec.Code != http.StatusOK {
 		t.Fatalf("page-share metadata: expected 200, got %d", rec.Code)
@@ -192,6 +201,7 @@ func TestPreviewSharing_PageScope(t *testing.T) {
 	// http.ServeFile canonicalizes a direct hit on a directory index file
 	// (index.html) with a 301 to "./" — 301 here proves authorization passed.
 	check(carolKey, "index.html", http.StatusMovedPermanently, "whole-session sibling page")
+	check(carolKey, "data.json", http.StatusOK, "whole-session grant reaches session content")
 }
 
 // TestSharesAPI_PagePath: the API accepts and validates page paths.
@@ -658,5 +668,44 @@ func TestDiffEndpointViewerScope(t *testing.T) {
 	}
 	if rec := doReq(t, srv.httpServer.Handler, http.MethodGet, diffPath, carolKey); rec.Code != http.StatusForbidden {
 		t.Fatalf("page-scoped sharee: expected 403, got %d", rec.Code)
+	}
+}
+
+// TestSharesAPI_UnsharePageAfterFileGone: revocation only normalizes the page
+// path and does not require it to exist, so a grant whose page disappeared
+// from disk stays removable (a re-upload that drops a page must not strand a
+// live grant).
+func TestSharesAPI_UnsharePageAfterFileGone(t *testing.T) {
+	t.Parallel()
+	srv, store, sid, aliceKey, _, _ := newPageFixture(t)
+
+	bob, err := store.FindUserByUsername("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ShareSessionPage(sid, bob.ID, "report.html"); err != nil {
+		t.Fatal(err)
+	}
+
+	sess, found, err := store.Get(sid)
+	if err != nil || !found {
+		t.Fatalf("load session: found=%v err=%v", found, err)
+	}
+	if err := os.Remove(filepath.Join(sess.StoredRootDir, "report.html")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The now-missing page cannot be granted again...
+	base := "/api/sessions/" + sid + "/shares"
+	if rec := doBodyReq(t, srv.httpServer.Handler, http.MethodPut, base, aliceKey, `{"user":"bob","path":"report.html"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("grant on missing page: expected 400, got %d", rec.Code)
+	}
+	// ...but the stale grant is still revocable, through a non-normalized path.
+	rec := doReq(t, srv.httpServer.Handler, http.MethodDelete, base+"/bob?path=./report.html", aliceKey)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke of missing page: expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if ok, err := store.HasShareOn(sid, bob.ID, "report.html"); err != nil || ok {
+		t.Fatalf("stale page grant still present (ok=%v err=%v)", ok, err)
 	}
 }

@@ -44,6 +44,11 @@ func runShare(args []string, stdout io.Writer) error {
 	}
 	defer store.Close()
 
+	page, err = normalizeSharePage(page)
+	if err != nil {
+		return err
+	}
+
 	target, err := store.FindUserByUsername(username)
 	if err != nil {
 		return err
@@ -95,6 +100,11 @@ func runUnshare(args []string, stdout io.Writer) error {
 	}
 	defer store.Close()
 
+	page, err = normalizeSharePage(page)
+	if err != nil {
+		return err
+	}
+
 	target, err := store.FindUserByUsername(username)
 	if err != nil {
 		return err
@@ -107,6 +117,17 @@ func runUnshare(args []string, stdout io.Writer) error {
 	}
 	printShareDone(stdout, "Unshared", sessionID, username, page)
 	return nil
+}
+
+// normalizeSharePage validates and normalizes --page for the local (--db)
+// mode. The server normalizes on its side; doing the same here keeps a grant
+// written locally matching the path the preview comparer uses, instead of
+// silently storing a row that can never match (e.g. "./report.html").
+func normalizeSharePage(page string) (string, error) {
+	if page == "" {
+		return "", nil
+	}
+	return session.NormalizeSharePagePath(page)
 }
 
 func printShareDone(stdout io.Writer, verb, sessionID, username, page string) {

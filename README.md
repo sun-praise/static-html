@@ -158,9 +158,11 @@ sth unshare <session-id> bob --page report.html # revoke the page grant
 ```
 
 A **page share** (`--page`, a path inside the session) grants exactly that
-HTML page: sibling HTML pages and the session root stay 403, while non-HTML
-assets (css/js/images/fonts) stay reachable so the page renders. Use this to
-share a single report out of a multi-page upload. A whole-session share and
+HTML page: sibling HTML pages and the session root stay 403, and only render
+assets (css/js/images/fonts/media) stay reachable so the page renders. Other
+files in the session — JSON payloads, text dumps, PDFs, archives — are session
+content rather than page plumbing, so they need a whole-session share. Use this
+to share a single report out of a multi-page upload. A whole-session share and
 page shares are independent grants and can coexist.
 
 These commands work against a remote server (`--server URL --api-key <key>`,
