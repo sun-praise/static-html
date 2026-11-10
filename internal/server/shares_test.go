@@ -590,3 +590,73 @@ func TestHomePage_SharedSection(t *testing.T) {
 		t.Fatal("shared section should credit the owner")
 	}
 }
+
+// TestDiffEndpointViewerScope pins the access rule for the HTML-diff endpoint
+// merged in with the version-chain work: it is a drawer read endpoint, so a
+// session-scoped sharee may call it, but a page-scoped grant is not enough —
+// the response carries the full text of both versions.
+func TestDiffEndpointViewerScope(t *testing.T) {
+	t.Parallel()
+
+	srv, store := newAuthServer(t, false, true)
+
+	alice, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := store.CreateUser("bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	carol, err := store.CreateUser("carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	aliceKey, _, err := store.IssueAPIKey(alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobKey, _, err := store.IssueAPIKey(bob.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	carolKey, _, err := store.IssueAPIKey(carol.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two versions of the same chain (same project + entry file); v2 adds a line.
+	v1 := createChainedSessionWithFile(t, store, "<html>\n<body>\n<h1>v1</h1>\n</body>\n</html>\n", "proj", "cat")
+	v2 := createChainedSessionWithFile(t, store, "<html>\n<body>\n<h1>v1</h1>\n<p>v2 line</p>\n</body>\n</html>\n", "proj", "cat")
+	for _, id := range []string{v1, v2} {
+		if err := store.SetSessionOwner(id, alice.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	diffPath := "/api/sessions/" + v2 + "/diff?from=1&to=2"
+
+	if rec := doReq(t, srv.httpServer.Handler, http.MethodGet, diffPath, aliceKey); rec.Code != http.StatusOK {
+		t.Fatalf("owner: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := doReq(t, srv.httpServer.Handler, http.MethodGet, diffPath, bobKey); rec.Code != http.StatusForbidden {
+		t.Fatalf("stranger: expected 403, got %d", rec.Code)
+	}
+
+	// Whole-session grant: the drawer's diff button must work for a sharee.
+	if err := store.ShareSession(v2, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	if rec := doReq(t, srv.httpServer.Handler, http.MethodGet, diffPath, bobKey); rec.Code != http.StatusOK {
+		t.Fatalf("session-scoped sharee: expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Page-scoped grant: the page is shared, the document history is not.
+	if err := store.ShareSessionPage(v2, carol.ID, "index.html"); err != nil {
+		t.Fatal(err)
+	}
+	if rec := doReq(t, srv.httpServer.Handler, http.MethodGet, diffPath, carolKey); rec.Code != http.StatusForbidden {
+		t.Fatalf("page-scoped sharee: expected 403, got %d", rec.Code)
+	}
+}

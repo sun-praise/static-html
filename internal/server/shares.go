@@ -300,10 +300,24 @@ func sharePathFor(sess session.Session, assetPath string) string {
 }
 
 // requireViewer is requireOwner's read-only counterpart for endpoints the
-// preview drawer calls (metadata, peers, chain): the owner passes, users the
-// session is shared with pass, everyone else is rejected. Unowned sessions
+// preview drawer calls (metadata, peers, chain, diff): the owner passes, users
+// the session is shared with pass, everyone else is rejected. Unowned sessions
 // keep the requireOwner behavior (403 under auth).
 func (s *Server) requireViewer(w http.ResponseWriter, r *http.Request, sessionID string) bool {
+	return s.requireViewerGrant(w, r, sessionID, true)
+}
+
+// requireViewerSessionScope is requireViewer tightened to whole-session
+// grants. A page-scoped sharee may read the granted page, but not the
+// session-wide document history: the diff endpoint returns the full text of
+// two versions, which is outside what a page grant covers.
+func (s *Server) requireViewerSessionScope(w http.ResponseWriter, r *http.Request, sessionID string) bool {
+	return s.requireViewerGrant(w, r, sessionID, false)
+}
+
+// requireViewerGrant implements the two viewer checks above; anyShare selects
+// whether a page-scoped grant counts as a share.
+func (s *Server) requireViewerGrant(w http.ResponseWriter, r *http.Request, sessionID string, anyShare bool) bool {
 	uid, ok := currentUser(r)
 	if !ok {
 		// Auth disabled: no ownership enforcement.
@@ -327,7 +341,12 @@ func (s *Server) requireViewer(w http.ResponseWriter, r *http.Request, sessionID
 		return true
 	}
 
-	shared, err := s.store.HasAnyShare(sessionID, uid)
+	var shared bool
+	if anyShare {
+		shared, err = s.store.HasAnyShare(sessionID, uid)
+	} else {
+		shared, err = s.store.HasShareOn(sessionID, uid, "")
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return false

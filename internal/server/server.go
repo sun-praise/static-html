@@ -2233,6 +2233,10 @@ type diffSummary struct {
 // (used to resolve chain membership + ownership); from / to are 1-based
 // version numbers of the same chain. Cross-chain or out-of-range version
 // numbers yield 400; a missing or soft-deleted session yields 404.
+//
+// Access matches the preview drawer's other read endpoints (owner ∪ sharee),
+// except that a page-scoped grant is not enough: the payload is the full text
+// of two documents, which a single-page grant does not cover.
 func (s *Server) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/diff")
@@ -2250,7 +2254,7 @@ func (s *Server) handleGetDiff(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusNotFound, "Session not found.")
 		return
 	}
-	if !s.requireOwner(w, r, sessionID) {
+	if !s.requireViewerSessionScope(w, r, sessionID) {
 		return
 	}
 
