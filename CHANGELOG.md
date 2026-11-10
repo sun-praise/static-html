@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.3.0] - 2026-11-10
 
 ### Added
 - Per-user session sharing, whole-session or single-page scoped: `sth share <id> <user> [--page <path>]` / `sth unshare` / `sth shares`, or `GET/PUT/DELETE /api/sessions/{id}/shares` (PUT body `{"user","path"}`, DELETE `?path=`). A page grant opens exactly that HTML page (sibling pages and the session root stay 403) plus the session's render assets — css/js/images/fonts/media, by extension whitelist — so the page renders; other files in the session (JSON payloads, text dumps, PDFs, archives) need a whole-session grant
