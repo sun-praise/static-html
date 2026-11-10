@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Per-user session sharing, whole-session or single-page scoped: `sth share <id> <user> [--page <path>]` / `sth unshare` / `sth shares`, or `GET/PUT/DELETE /api/sessions/{id}/shares` (PUT body `{"user","path"}`, DELETE `?path=`). A page grant opens exactly that HTML page (sibling pages and the session root stay 403) plus the session's render assets — css/js/images/fonts/media, by extension whitelist — so the page renders; other files in the session (JSON payloads, text dumps, PDFs, archives) need a whole-session grant
+- Home-page share panel (👥): view/add/revoke a session's share roster in the browser, optionally scoped to a page. Share-management mutations accept the login cookie in addition to Bearer keys — CSRF stays structurally impossible (SameSite=Lax cookie + Origin check; all other mutating endpoints remain Bearer-only)
+- "Shared with you" section on the home page; page-scoped shares link straight to the granted page and are labelled with its path
+- New `session_shares` table (composite PK `session_id, user_id, path`, indexed by user) with store methods `ShareSession(·Page)`, `UnshareSession(·Page)`, `ListSessionShares`, `HasShareOn`, `HasAnyShare`, `IsSessionSharedWith`, `ListSharedWithUser`
+- Shared users can read the preview drawer data (`/metadata`, `/peers`, `/chain`, `/diff`) for shared sessions; edit/delete/download/share management stay owner-only. The HTML-diff endpoint requires a whole-session grant (its payload is the full text of two versions, which a page grant does not cover)
+- Page grants can be revoked with a non-canonical path (`?path=./report.html`) and even after the page is gone from disk: revocation only normalizes, it does not require the file to exist
+- `sth share --page` normalizes the path locally (`./x.html` → `x.html`) and rejects escaping or non-HTML paths instead of storing a grant that could never match
+- Remote mode for `sth tag/categorize/project/share/unshare/shares` now attaches the API key (`--api-key` / `STH_API_KEY`), fixing 401s against authenticated servers
+
+### Changed
+- **`--protect-previews` semantics tightened**: an owned session's preview (`/s/<id>/` and `/s/<id>/ws`) is now visible only to its owner and the users it is shared with — previously any valid key worked. Sessions without an owner (created before auth) remain visible to any logged-in user
+
+### Removed
+- OpenSpec workflow artifacts: `openspec/` directory, `.claude`/`.opencode` OpenSpec skills and slash commands, and the `openspec` entry in `.dockerignore` (historical CHANGELOG references kept)
+
 ## [2.2.0] - 2026-10-16
 
 ### Added

@@ -20,11 +20,11 @@ const sessionCookieMaxAge = 30 * 24 * 60 * 60
 // Error is a user-facing message (already localized to a sentence) shown when
 // a previous submission failed; empty means no error to display.
 type loginAuthPageData struct {
-	Title      string
-	Heading    string
-	Action     string // form target: /login or /register
+	Title       string
+	Heading     string
+	Action      string // form target: /login or /register
 	SubmitLabel string
-	Error      string
+	Error       string
 	// Next is the validated redirect target passed through from ?next=. It is
 	// already sanitized by safeRedirectTarget before reaching the template.
 	Next string
