@@ -157,8 +157,9 @@ docker exec sth-app html-server audit --db /data/sessions.db
 
 隐私边界：**绝不记录**密码、API key、会话 cookie、请求体与 query string。登录失败
 不保存提交的用户名（有人会把密码粘到用户名框），只记固定原因与来源信息；匿名 401
-按「IP + 路径」在 60 秒窗口内合并，防止 401 洪水写满审计表；`/logout` 仅在确实
-注销了会话时才记一行。只审计 HTML 页面访问（含会话根），css/js/图片等渲染资源与
+按**反代可见的对端地址**（`RemoteAddr` 的 host）与路径在 60 秒窗口内合并并设硬上限，
+防止 401 洪水写满审计表。合并键刻意不用客户端可控的 `X-Forwarded-For`（可随意轮换），
+但 XFF 推导出的 IP 仍作为证据写入审计行；`/logout` 仅在确实注销了会话时才记一行。只审计 HTML 页面访问（含会话根），css/js/图片等渲染资源与
 live-reload websocket 跳过。客户端 IP 取 `X-Forwarded-For` 首值（单层可信反代后的
 真实 IP），该头可被客户端伪造，只能作为证据参考，不得用于鉴权判断。
 

@@ -246,8 +246,11 @@ Privacy boundaries: passwords, API keys, session cookies, request bodies and
 query strings are **never** recorded. Failed logins do not persist the submitted
 username at all (people sometimes paste a password into the username field) —
 they record a fixed reason plus source metadata. Anonymous 401s are coalesced
-per client IP and path within a 60-second window so a 401 flood cannot fill the
-table, and `/logout` is only audited when it actually invalidates a session.
+per **proxy-observed peer** (`RemoteAddr` host) and path within a 60-second
+window, with a hard cap per window, so a 401 flood cannot fill the table. The
+bucket deliberately ignores `X-Forwarded-For` — a client can rotate that header
+at will — while the XFF-derived IP is still stored in the row as evidence.
+`/logout` is only audited when it actually invalidates a session.
 Only HTML page views are audited — css/js/image requests and the live-reload
 websocket are skipped. The client IP comes from the first `X-Forwarded-For`
 entry (the client IP behind a single trusted reverse proxy); a client can spoof

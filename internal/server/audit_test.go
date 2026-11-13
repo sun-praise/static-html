@@ -271,7 +271,10 @@ func TestAuditRetentionPrunesOnStart(t *testing.T) {
 
 	// A second Start/Stop cycle exercises nil-ing out the stop/done channels.
 	stopServer()
-	if srv.auditPruneStop != nil || srv.auditPruneDone != nil {
+	srv.mu.RLock()
+	stop, done := srv.auditPruneStop, srv.auditPruneDone
+	srv.mu.RUnlock()
+	if stop != nil || done != nil {
 		t.Fatal("prune lifecycle channels were not cleared on Stop")
 	}
 	if err := srv.Start(); err != nil {
@@ -337,5 +340,35 @@ func TestAuditRejectedIsCoalesced(t *testing.T) {
 	events := auditAll(t, store)
 	if n := auditActionCount(events, session.AuditAuthRejected); n != 2 {
 		t.Fatalf("expected 2 coalesced rejection rows (one per path), got %d: %+v", n, events)
+	}
+}
+
+// TestAuditRejectedCoalescingIgnoresSpoofedXFF: rotating a client-controlled
+// X-Forwarded-For header must not buy a fresh throttle bucket per request.
+// The XFF value is still stored as evidence in the row that IS written.
+func TestAuditRejectedCoalescingIgnoresSpoofedXFF(t *testing.T) {
+	t.Parallel()
+	srv, store, sid, _, _, _ := newSharingFixture(t)
+	h := srv.httpServer.Handler
+	path := "/api/sessions/" + sid + "/shares"
+
+	for i := 0; i < 8; i++ {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d", i))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("request %d: expected 401, got %d", i, rec.Code)
+		}
+	}
+
+	events := auditAll(t, store)
+	if n := auditActionCount(events, session.AuditAuthRejected); n != 1 {
+		t.Fatalf("rotating XFF bypassed coalescing, wrote %d rows: %+v", n, events)
+	}
+	for _, e := range events {
+		if e.Action == session.AuditAuthRejected && e.IP != "203.0.113.0" {
+			t.Fatalf("XFF evidence not preserved in the audit row: %+v", e)
+		}
 	}
 }

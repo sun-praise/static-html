@@ -30,8 +30,11 @@ const (
 
 // Anonymous clients must not be able to fill audit_events (and saturate the
 // single SQLite connection) with a flood of 401s. Rejections are coalesced per
-// client IP + path inside one window; the map is dropped at every window
-// rollover, so its size is bounded by distinct pairs seen in one window.
+// proxy-observed peer + path inside one window. The bucket deliberately uses
+// RemoteAddr (which the client cannot control) rather than X-Forwarded-For:
+// an attacker rotating XFF would otherwise get a fresh bucket per request.
+// The map is dropped at window rollover and capped, so at most
+// auditRejectMaxKeys rejection rows can be written per window.
 const (
 	auditRejectWindowSeconds = 60
 	auditRejectMaxKeys       = 4096
@@ -49,6 +52,17 @@ func clientIP(r *http.Request) string {
 			return first
 		}
 	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// peerHost returns the proxy-observed peer address without the ephemeral
+// port. Behind Caddy this is the loopback address, which is exactly what we
+// want for throttling: stable, and not influenced by client-supplied headers.
+func peerHost(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
 		return host
@@ -107,18 +121,23 @@ func (s *Server) recordAuditAs(r *http.Request, action, target, outcome, detail,
 }
 
 // allowAuditReject coalesces repeated anonymous rejections. Returns true when
-// this (ip, path) pair has not been recorded in the current window.
-func (s *Server) allowAuditReject(ip, path string) bool {
+// this (peer, path) pair has not been recorded in the current window. When the
+// cap is reached, further new keys are dropped instead of clearing the map —
+// clearing would let an attacker reset the budget by spraying distinct paths.
+func (s *Server) allowAuditReject(peer, path string) bool {
 	window := time.Now().Unix() / auditRejectWindowSeconds
-	key := ip + "|" + path
+	key := peer + "|" + path
 
 	s.auditRejectMu.Lock()
 	defer s.auditRejectMu.Unlock()
-	if s.auditRejectWindow != window || len(s.auditRejectSeen) > auditRejectMaxKeys {
+	if s.auditRejectWindow != window {
 		s.auditRejectSeen = make(map[string]struct{})
 		s.auditRejectWindow = window
 	}
 	if _, seen := s.auditRejectSeen[key]; seen {
+		return false
+	}
+	if len(s.auditRejectSeen) >= auditRejectMaxKeys {
 		return false
 	}
 	s.auditRejectSeen[key] = struct{}{}
@@ -129,8 +148,10 @@ func (s *Server) allowAuditReject(ip, path string) bool {
 // path and a short reason — never the query string, Authorization header or
 // cookie, all of which may hold live credentials.
 func (s *Server) auditRejected(r *http.Request, reason string) {
-	ip := clientIP(r)
-	if !s.allowAuditReject(ip, r.URL.Path) {
+	// Throttle on the peer the proxy actually connected from, NOT on the
+	// client-controlled X-Forwarded-For value. The XFF-derived IP is still
+	// stored as evidence in the audit row by recordAudit.
+	if !s.allowAuditReject(peerHost(r), r.URL.Path) {
 		return
 	}
 	detail := r.Method + " " + r.URL.Path

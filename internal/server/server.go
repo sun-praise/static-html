@@ -843,27 +843,33 @@ func (s *Server) Start() error {
 
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.listener == nil {
+		s.mu.Unlock()
 		return nil
 	}
 
+	var pruneDone <-chan struct{}
 	if s.auditPruneStop != nil {
 		close(s.auditPruneStop)
-		// Wait for the prune goroutine before the caller closes the store,
-		// otherwise an in-flight prune reports "database is closed".
-		select {
-		case <-s.auditPruneDone:
-		case <-time.After(2 * time.Second):
-			fmt.Fprintln(os.Stderr, "audit: prune loop did not stop within 2s")
-		}
+		pruneDone = s.auditPruneDone
 		s.auditPruneStop = nil
 		s.auditPruneDone = nil
 	}
 
 	err := s.httpServer.Shutdown(ctx)
 	s.listener = nil
+	s.mu.Unlock()
+
+	// Wait outside the lock: holding mu for up to 2s would block readers of
+	// AuthEnabled()/ProtectPreviews(). The caller must not close the store
+	// before this returns, or an in-flight prune reports "database is closed".
+	if pruneDone != nil {
+		select {
+		case <-pruneDone:
+		case <-time.After(2 * time.Second):
+			fmt.Fprintln(os.Stderr, "audit: prune loop did not stop within 2s")
+		}
+	}
 	return err
 }
 
