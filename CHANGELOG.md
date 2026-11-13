@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Security audit log (`audit_events` table): login success/failure, logout, rejected credentials, share grant/revoke, preview allow/deny, session create/delete — each with actor snapshot, client IP, User-Agent and outcome. Local-only CLI `sth audit` (`--action`/`--actor`/`--outcome`/`--since`/`--limit`/`--offset`, `--prune-days`); no HTTP endpoint by design, since the server has no admin role and an API would expose everyone's activity to any logged-in user. The CLI opens the DB read-write for schema init but never changes business data
+- `--audit-retention-days` / `STH_AUDIT_RETENTION_DAYS` (default 90, `0` disables): prune once at start and every 24h, with the prune goroutine joined on shutdown. Passwords, API keys, session cookies, request bodies and query strings are never recorded; failed logins do not persist the submitted username at all; anonymous 401s are coalesced per proxy-observed peer (`RemoteAddr` host) + path in a 60s window with a hard cap (client-controlled `X-Forwarded-For` is stored only as evidence, never used as the throttle key) and anonymous `/logout` writes nothing. Only HTML page views are audited (render assets and websockets skipped). Client IP comes from the first `X-Forwarded-For` entry and is evidence, not proof. Local CLI commands that write directly to the DB (`sth delete`, `user add`, key issue/revoke) are not audited
+
 ## [2.3.0] - 2026-11-10
 
 ### Added

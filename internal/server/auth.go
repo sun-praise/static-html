@@ -95,6 +95,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="sth"`)
+			// A 302 to /login is ordinary browser navigation and is not
+			// audited; only the API-client 401 is a credential rejection.
+			s.auditRejected(r, "no_credentials")
 			http.Error(w, "Unauthorized: a valid API key is required.", http.StatusUnauthorized)
 			return
 		}
@@ -115,6 +118,7 @@ func (s *Server) requireBearer(w http.ResponseWriter, r *http.Request, next http
 	}
 	if !ok {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="sth"`)
+		s.auditRejected(r, "invalid_bearer")
 		http.Error(w, "Unauthorized: a valid API key is required.", http.StatusUnauthorized)
 		return
 	}
@@ -157,10 +161,12 @@ func (s *Server) requireBearerOrCookie(w http.ResponseWriter, r *http.Request, n
 	}
 	if !ok {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="sth"`)
+		s.auditRejected(r, "invalid_bearer_or_cookie")
 		http.Error(w, "Unauthorized: a valid API key is required.", http.StatusUnauthorized)
 		return
 	}
 	if viaCookie && !sameOrigin(r) {
+		s.auditRejected(r, "cross_origin")
 		http.Error(w, "Forbidden: cross-origin request rejected.", http.StatusForbidden)
 		return
 	}

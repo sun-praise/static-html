@@ -129,6 +129,7 @@ func (s *Server) handleLoginGet(w http.ResponseWriter, r *http.Request) {
 // whether the username exists, to avoid user enumeration).
 func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
+		s.recordAudit(r, auditLoginFailed, "", auditDenied, "parse_form_error", "")
 		renderLoginError(w, r, "Could not parse the form. Please try again.")
 		return
 	}
@@ -136,7 +137,15 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 	next := safeRedirectTarget(r.FormValue("next"))
 
+	// Failed logins are the main brute-force signal, but the submitted
+	// username is deliberately NOT persisted: users occasionally paste their
+	// password into the username field, and an audit row must never become a
+	// credential store. Source IP/UA plus the fixed reason are enough.
+	auditFailure := func() {
+		s.recordAudit(r, auditLoginFailed, "", auditDenied, "invalid_credentials", "")
+	}
 	if username == "" || password == "" {
+		auditFailure()
 		renderLoginError(w, r, "Username and password are required.")
 		return
 	}
@@ -144,6 +153,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	user, err := s.store.FindUserByUsername(username)
 	if err != nil {
 		// Unknown user — treat identically to a wrong password.
+		auditFailure()
 		renderLoginError(w, r, "Invalid username or password.")
 		return
 	}
@@ -153,6 +163,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
+		auditFailure()
 		renderLoginError(w, r, "Invalid username or password.")
 		return
 	}
@@ -162,6 +173,7 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.recordAuditAs(r, auditLogin, user.Username, auditOK, "", user.Username, user.ID)
 	setSessionCookie(w, token, r)
 	http.Redirect(w, r, next, http.StatusFound)
 }
@@ -250,8 +262,22 @@ func (s *Server) handleRegisterPost(w http.ResponseWriter, r *http.Request) {
 // POST so a cross-site GET cannot log a user out (minor, but consistent with
 // treating login state as mutable via mutating verbs only).
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// /logout is an auth page, so authMiddleware does not populate the user
+	// context. Resolve the actor from the session cookie before revoking it.
+	actor, actorID := "", ""
 	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		if uid, ok, _ := s.store.VerifyLoginSession(cookie.Value); ok {
+			actorID = uid
+			if user, err := s.store.FindUserByID(uid); err == nil {
+				actor = user.Username
+			}
+		}
 		_ = s.store.DeleteLoginSession(cookie.Value)
+	}
+	// Only a valid session is a real logout. Otherwise any anonymous POST
+	// /logout could insert unlimited audit rows.
+	if actorID != "" {
+		s.recordAuditAs(r, auditLogout, actor, auditOK, "", actor, actorID)
 	}
 	clearSessionCookie(w, r)
 	http.Redirect(w, r, "/login", http.StatusFound)

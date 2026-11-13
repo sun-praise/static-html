@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sun-praise/static-html/internal/analytics"
 	"github.com/sun-praise/static-html/internal/live"
@@ -80,7 +81,18 @@ type Server struct {
 	httpServer        *http.Server
 	listener          net.Listener
 	liveMgr           *live.Manager
-	mu                sync.RWMutex
+	// Audit state. auditRetentionDays/auditPruneStop/auditPruneDone are only
+	// accessed with mu held (Start, Stop and SetAuditRetentionDays all hold
+	// it); auditReject* have their own mutex, and auditUsernameCache is a
+	// concurrency-safe sync.Map.
+	auditRetentionDays int
+	auditPruneStop     chan struct{}
+	auditPruneDone     chan struct{}
+	auditRejectMu      sync.Mutex
+	auditRejectWindow  int64
+	auditRejectSeen    map[string]struct{}
+	auditUsernameCache sync.Map
+	mu                 sync.RWMutex
 }
 
 type createSessionRequest struct {
@@ -813,6 +825,12 @@ func (s *Server) Start() error {
 
 	s.listener = listener
 
+	if s.auditRetentionDays > 0 && s.auditPruneStop == nil {
+		s.auditPruneStop = make(chan struct{})
+		s.auditPruneDone = make(chan struct{})
+		go s.startAuditPrune(s.auditRetentionDays, s.auditPruneStop, s.auditPruneDone)
+	}
+
 	go func() {
 		err := s.httpServer.Serve(listener)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -825,14 +843,33 @@ func (s *Server) Start() error {
 
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.listener == nil {
+		s.mu.Unlock()
 		return nil
+	}
+
+	var pruneDone <-chan struct{}
+	if s.auditPruneStop != nil {
+		close(s.auditPruneStop)
+		pruneDone = s.auditPruneDone
+		s.auditPruneStop = nil
+		s.auditPruneDone = nil
 	}
 
 	err := s.httpServer.Shutdown(ctx)
 	s.listener = nil
+	s.mu.Unlock()
+
+	// Wait outside the lock: holding mu for up to 2s would block readers of
+	// AuthEnabled()/ProtectPreviews(). The caller must not close the store
+	// before this returns, or an in-flight prune reports "database is closed".
+	if pruneDone != nil {
+		select {
+		case <-pruneDone:
+		case <-time.After(2 * time.Second):
+			fmt.Fprintln(os.Stderr, "audit: prune loop did not stop within 2s")
+		}
+	}
 	return err
 }
 
@@ -1306,6 +1343,8 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		RootDir:   session.RootDir,
 	}
 
+	s.recordAudit(r, auditSessionCreate, response.SessionID, auditOK,
+		"entry="+response.EntryFile, "")
 	writeJSON(w, http.StatusCreated, response)
 }
 
@@ -1442,6 +1481,8 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 		VersionNo: versionNo,
 	}
 
+	s.recordAudit(r, auditSessionCreate, response.SessionID, auditOK,
+		"entry="+response.EntryFile, "")
 	writeJSON(w, http.StatusCreated, response)
 }
 
@@ -2375,6 +2416,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordAudit(r, auditSessionDelete, sessionID, auditOK, "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

@@ -262,7 +262,11 @@ func (s *Store) init() error {
 		return err
 	}
 
-	return s.initLoginSessions()
+	if err := s.initLoginSessions(); err != nil {
+		return err
+	}
+
+	return s.initAudit()
 }
 
 func (s *Store) ensureColumns() error {
