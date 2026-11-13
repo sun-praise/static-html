@@ -127,6 +127,12 @@ func (s *Server) handleAddShare(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	scope := "session"
+	if sharePath != session.SharePathAll {
+		scope = "page"
+	}
+	s.recordAudit(r, auditShareGrant, sessionID, auditOK,
+		"user="+req.User+" scope="+scope+" path="+sharePath, "")
 
 	shares, err := s.store.ListSessionShares(sessionID)
 	if err != nil {
@@ -215,6 +221,12 @@ func (s *Server) handleRemoveShare(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	revokeScope := "session"
+	if pageScoped {
+		revokeScope = "page"
+	}
+	s.recordAudit(r, auditShareRevoke, sessionID, auditOK,
+		"user="+username+" scope="+revokeScope+" path="+unsharePath, "")
 
 	shares, err := s.store.ListSessionShares(sessionID)
 	if err != nil {
@@ -283,11 +295,27 @@ func (s *Server) authorizePreview(w http.ResponseWriter, r *http.Request, sess s
 		return true
 	}
 
+	// Audit HTML page views only. A single page load also fetches css/js/
+	// images, and the live-reload websocket is a long-lived connection —
+	// recording those would bury the events that matter.
+	auditPreview := func(allowed bool, reason string) {
+		if anyGrantSuffices || !auditPageRequest(assetPath) {
+			return
+		}
+		outcome, action := auditDenied, auditPreviewDeny
+		if allowed {
+			outcome, action = auditOK, auditPreviewAllow
+		}
+		detail := "page=" + sharePathFor(sess, assetPath) + " reason=" + reason
+		s.recordAudit(r, action, sess.ID, outcome, detail, "")
+	}
+
 	uid, ok := currentUser(r)
 	if !ok {
 		// Unreachable in practice (the middleware rejects unauthenticated
 		// preview requests first); fail closed regardless.
 		w.Header().Set("WWW-Authenticate", `Bearer realm="sth"`)
+		auditPreview(false, "no_credentials")
 		http.Error(w, "Unauthorized: a valid API key is required.", http.StatusUnauthorized)
 		return false
 	}
@@ -302,9 +330,11 @@ func (s *Server) authorizePreview(w http.ResponseWriter, r *http.Request, sess s
 		http.NotFound(w, r)
 		return false
 	case session.OwnerUnowned:
+		auditPreview(true, "legacy_unowned")
 		return true
 	}
 	if owner == uid {
+		auditPreview(true, "owner")
 		return true
 	}
 
@@ -326,9 +356,11 @@ func (s *Server) authorizePreview(w http.ResponseWriter, r *http.Request, sess s
 		return false
 	}
 	if !allowed {
+		auditPreview(false, "no_share")
 		http.Error(w, "Forbidden: this page is not shared with you.", http.StatusForbidden)
 		return false
 	}
+	auditPreview(true, "shared")
 	return true
 }
 

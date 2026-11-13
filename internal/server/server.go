@@ -80,7 +80,11 @@ type Server struct {
 	httpServer        *http.Server
 	listener          net.Listener
 	liveMgr           *live.Manager
-	mu                sync.RWMutex
+	// auditRetentionDays > 0 enables the background audit prune loop;
+	// auditPruneStop closes it on Stop. Both are guarded by mu.
+	auditRetentionDays int
+	auditPruneStop     chan struct{}
+	mu                 sync.RWMutex
 }
 
 type createSessionRequest struct {
@@ -813,6 +817,11 @@ func (s *Server) Start() error {
 
 	s.listener = listener
 
+	if s.auditRetentionDays > 0 {
+		s.auditPruneStop = make(chan struct{})
+		go s.startAuditPrune(s.auditRetentionDays, s.auditPruneStop)
+	}
+
 	go func() {
 		err := s.httpServer.Serve(listener)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -829,6 +838,11 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	if s.listener == nil {
 		return nil
+	}
+
+	if s.auditPruneStop != nil {
+		close(s.auditPruneStop)
+		s.auditPruneStop = nil
 	}
 
 	err := s.httpServer.Shutdown(ctx)
@@ -1306,6 +1320,8 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		RootDir:   session.RootDir,
 	}
 
+	s.recordAudit(r, auditSessionCreate, response.SessionID, auditOK,
+		"entry="+response.EntryFile, "")
 	writeJSON(w, http.StatusCreated, response)
 }
 
@@ -1442,6 +1458,8 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 		VersionNo: versionNo,
 	}
 
+	s.recordAudit(r, auditSessionCreate, response.SessionID, auditOK,
+		"entry="+response.EntryFile, "")
 	writeJSON(w, http.StatusCreated, response)
 }
 
@@ -2375,6 +2393,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordAudit(r, auditSessionDelete, sessionID, auditOK, "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

@@ -68,6 +68,7 @@ sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 sth share <session-id> <username>
 sth unshare <session-id> <username>
 sth shares <session-id>
+sth audit [--db /path/to/sessions.db] [--action <name>] [--actor <user>] [--outcome ok|denied] [--since YYYY-MM-DD]
 ```
 
 所有命令均支持 `--db /path/to/sessions.db` 参数来覆盖数据库路径。
@@ -131,6 +132,32 @@ sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 - `sth list` 按元数据字段精确值筛选（`--tag`、`--category`、`--project`）。
 - `sth search <query>` 对会话内容进行全文匹配。
 - 可以组合使用：`sth search <query> --tag <tag>` 将全文搜索结果限定到特定标签。
+
+## 审计日志
+
+服务端把安全相关事件写入 SQLite 的 `audit_events` 表：登录成功/失败、登出、
+凭据被拒、分享授权/撤销、预览放行/拒绝、会话创建/删除。每行记录 UTC 时间、
+操作者（用户名 + ID 快照）、事件、目标、结果、客户端 IP、UA 与简短详情。
+
+日志**只在本地只读查询**，刻意不提供 HTTP 接口：系统没有管理员角色，开放 API
+会让任意登录用户读到所有人的活动记录。在宿主机上查：
+
+```bash
+sth audit --db /path/to/sessions.db
+sth audit --action auth.login_failed --since 2026-11-01
+sth audit --actor alice --outcome denied --limit 50
+# 容器部署（容器内二进制叫 html-server）：
+docker exec sth-app html-server audit --db /data/sessions.db
+```
+
+`--audit-retention-days` 或 `STH_AUDIT_RETENTION_DAYS` 控制保留期（默认 90 天，
+`0` 为永久保留）：启动时清理一次，之后每 24 小时一次；也可手动
+`sth audit --prune-days 90`。
+
+隐私边界：**绝不记录**密码、API key、会话 cookie、请求体与 query string。只审计
+HTML 页面访问（含会话根），css/js/图片等渲染资源与 live-reload websocket 跳过。
+客户端 IP 取 `X-Forwarded-For` 首值（单层可信反代后的真实 IP），该头可被客户端
+伪造，只能作为证据参考，不得用于鉴权判断。
 
 ## 测试
 

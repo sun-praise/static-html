@@ -58,6 +58,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runUnshare(args[1:], stdout)
 	case "shares":
 		return runShares(args[1:], stdout)
+	case "audit":
+		return runAudit(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -78,6 +80,8 @@ func printUsage(w io.Writer) {
   sth share <session-id> <username> [--page <path>] [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
   sth unshare <session-id> <username> [--page <path>] [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
   sth shares <session-id> [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
+  sth audit [--db /path/to/sessions.db] [--limit <n>] [--offset <n>] [--action <name>] [--actor <user>] [--outcome ok|denied] [--since YYYY-MM-DD]
+  sth audit --prune-days <n> [--db /path/to/sessions.db]
 
 Authentication:
   --auth                 Enable API-key auth on the server (or STH_AUTH=true). Default off.
@@ -163,6 +167,12 @@ func runStart(args []string, stdout io.Writer) error {
 	if err != nil {
 		return errors.Join(err, store.Close())
 	}
+
+	retentionDays, err := resolveAuditRetentionDays(flags)
+	if err != nil {
+		return errors.Join(err, store.Close())
+	}
+	srv.SetAuditRetentionDays(retentionDays)
 
 	// Resolve auth posture: explicit flag wins, else env, else false.
 	authEnabled := resolveBool(authSet, authFlag, "STH_AUTH")

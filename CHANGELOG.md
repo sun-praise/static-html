@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Security audit log (`audit_events` table): login success/failure, logout, rejected credentials, share grant/revoke, preview allow/deny, session create/delete — each with actor snapshot, client IP, User-Agent and outcome. Local read-only CLI `sth audit` (`--action`/`--actor`/`--outcome`/`--since`/`--limit`/`--offset`, `--prune-days`); no HTTP endpoint by design, since the server has no admin role and an API would expose everyone's activity to any logged-in user
+- `--audit-retention-days` / `STH_AUDIT_RETENTION_DAYS` (default 90, `0` disables): prune once at start and every 24h. Passwords, API keys, session cookies, request bodies and query strings are never recorded; only HTML page views are audited (render assets and websockets skipped). Client IP comes from the first `X-Forwarded-For` entry and is evidence, not proof
+
 ## [2.3.0] - 2026-11-10
 
 ### Added
