@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.4.0] - 2026-11-13
 
 ### Added
 - Security audit log (`audit_events` table): login success/failure, logout, rejected credentials, share grant/revoke, preview allow/deny, session create/delete — each with actor snapshot, client IP, User-Agent and outcome. Local-only CLI `sth audit` (`--action`/`--actor`/`--outcome`/`--since`/`--limit`/`--offset`, `--prune-days`); no HTTP endpoint by design, since the server has no admin role and an API would expose everyone's activity to any logged-in user. The CLI opens the DB read-write for schema init but never changes business data
