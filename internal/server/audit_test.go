@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,7 +116,14 @@ func TestAuditLoginFlowAndNoSecrets(t *testing.T) {
 		}
 	}
 	assertNoSecret(t, events, password)
-	assertNoSecret(t, events, cookieValue)
+	// Assert against the bare token, not the whole `sth_session=<token>` pair:
+	// no audit field would ever contain that full pair, so checking it would
+	// be a vacuous assertion.
+	token := strings.TrimPrefix(cookieValue, sessionCookieName+"=")
+	if token == "" || token == cookieValue {
+		t.Fatalf("could not extract the bare session token from %q", setCookie)
+	}
+	assertNoSecret(t, events, token)
 	assertNoSecret(t, events, "password=")
 }
 
@@ -261,9 +269,73 @@ func TestAuditRetentionPrunesOnStart(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	// A second Start/Stop cycle exercises nil-ing out the stop channel.
+	// A second Start/Stop cycle exercises nil-ing out the stop/done channels.
 	stopServer()
+	if srv.auditPruneStop != nil || srv.auditPruneDone != nil {
+		t.Fatal("prune lifecycle channels were not cleared on Stop")
+	}
 	if err := srv.Start(); err != nil {
 		t.Fatalf("restart: %v", err)
+	}
+}
+
+// TestAuditFailedLoginNeverStoresSubmittedValues: people sometimes paste a
+// password into the username field. A failed-login row must contain only a
+// fixed reason plus source metadata, never anything the client submitted.
+func TestAuditFailedLoginNeverStoresSubmittedValues(t *testing.T) {
+	t.Parallel()
+	srv, store := newLoginServer(t, true)
+
+	const secret = "PastedP@ssw0rd-into-username"
+	form := "username=" + url.QueryEscape(secret) + "&password=x&next=/"
+	if rec := postForm(t, srv.httpServer.Handler, "/login",
+		"application/x-www-form-urlencoded", form); rec.Code != http.StatusOK {
+		t.Fatalf("expected the login form to re-render, got %d", rec.Code)
+	}
+
+	events := auditAll(t, store)
+	if auditActionCount(events, session.AuditLoginFailed) != 1 {
+		t.Fatalf("expected one failed-login event: %+v", events)
+	}
+	assertNoSecret(t, events, secret)
+	for _, e := range events {
+		if e.Action == session.AuditLoginFailed {
+			if e.Actor != "" || e.Target != "" || e.Detail != "invalid_credentials" {
+				t.Fatalf("failed-login row carries submitted values: %+v", e)
+			}
+		}
+	}
+}
+
+// TestAuditAnonymousLogoutWritesNothing: /logout without a valid session is a
+// no-op and must never be turned into an unbounded audit write primitive.
+func TestAuditAnonymousLogoutWritesNothing(t *testing.T) {
+	t.Parallel()
+	srv, store := newLoginServer(t, true)
+
+	for i := 0; i < 5; i++ {
+		postForm(t, srv.httpServer.Handler, "/logout",
+			"application/x-www-form-urlencoded", "")
+	}
+	if n := auditActionCount(auditAll(t, store), session.AuditLogout); n != 0 {
+		t.Fatalf("anonymous logout produced %d audit rows", n)
+	}
+}
+
+// TestAuditRejectedIsCoalesced: a 401 flood from one client writes a single
+// row per (ip, path) per window, while a different path still gets its own row.
+func TestAuditRejectedIsCoalesced(t *testing.T) {
+	t.Parallel()
+	srv, store, sid, _, _, _ := newSharingFixture(t)
+	h := srv.httpServer.Handler
+
+	for i := 0; i < 6; i++ {
+		doReq(t, h, http.MethodGet, "/api/sessions/"+sid+"/shares", "")
+	}
+	doReq(t, h, http.MethodGet, "/api/sessions/"+sid+"/metadata", "")
+
+	events := auditAll(t, store)
+	if n := auditActionCount(events, session.AuditAuthRejected); n != 2 {
+		t.Fatalf("expected 2 coalesced rejection rows (one per path), got %d: %+v", n, events)
 	}
 }

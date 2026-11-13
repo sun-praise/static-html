@@ -67,7 +67,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
-  sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--server-port <n>] [--db /path/to/sessions.db] [--upload-root /path/to/uploads] [--auth] [--protect-previews]
+  sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--server-port <n>] [--db /path/to/sessions.db] [--upload-root /path/to/uploads] [--auth] [--protect-previews] [--audit-retention-days <n>]
   sth send <file.html> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939] [--single] [--root <dir>] [--api-key <key>]
   sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
   sth categorize <session-id> <category> [--db /path/to/sessions.db] [--server http://...]
@@ -88,6 +88,8 @@ Authentication:
   --protect-previews     Require login for /s/<id>/ previews too (implies --auth). Owned
                          sessions are then visible only to their owner and users they are
                          shared with via "sth share".
+  --audit-retention-days <n>  Audit log retention in days (or STH_AUDIT_RETENTION_DAYS).
+                          Default 90; 0 keeps events indefinitely.
   --api-key <key>        API key for send/watch (or STH_API_KEY env var).`)
 }
 

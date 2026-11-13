@@ -137,11 +137,12 @@ func (s *Server) handleLoginPost(w http.ResponseWriter, r *http.Request) {
 	password := r.FormValue("password")
 	next := safeRedirectTarget(r.FormValue("next"))
 
-	// Audit failures too: failed logins are the main signal for brute-force
-	// attempts. Only the attempted username is recorded — never the password.
+	// Failed logins are the main brute-force signal, but the submitted
+	// username is deliberately NOT persisted: users occasionally paste their
+	// password into the username field, and an audit row must never become a
+	// credential store. Source IP/UA plus the fixed reason are enough.
 	auditFailure := func() {
-		s.recordAudit(r, auditLoginFailed, username, auditDenied,
-			"username="+username, username)
+		s.recordAudit(r, auditLoginFailed, "", auditDenied, "invalid_credentials", "")
 	}
 	if username == "" || password == "" {
 		auditFailure()
@@ -273,7 +274,11 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.store.DeleteLoginSession(cookie.Value)
 	}
-	s.recordAuditAs(r, auditLogout, actor, auditOK, "", actor, actorID)
+	// Only a valid session is a real logout. Otherwise any anonymous POST
+	// /logout could insert unlimited audit rows.
+	if actorID != "" {
+		s.recordAuditAs(r, auditLogout, actor, auditOK, "", actor, actorID)
+	}
 	clearSessionCookie(w, r)
 	http.Redirect(w, r, "/login", http.StatusFound)
 }

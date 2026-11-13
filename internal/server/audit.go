@@ -28,6 +28,15 @@ const (
 	auditDenied        = session.AuditOutcomeDenied
 )
 
+// Anonymous clients must not be able to fill audit_events (and saturate the
+// single SQLite connection) with a flood of 401s. Rejections are coalesced per
+// client IP + path inside one window; the map is dropped at every window
+// rollover, so its size is bounded by distinct pairs seen in one window.
+const (
+	auditRejectWindowSeconds = 60
+	auditRejectMaxKeys       = 4096
+)
+
 // clientIP returns the best-effort source address for an audit row. Behind
 // the one-hop Caddy reverse proxy, RemoteAddr is always 127.0.0.1 and Caddy
 // puts the real client in X-Forwarded-For. The first XFF entry is used as-is:
@@ -49,17 +58,24 @@ func clientIP(r *http.Request) string {
 
 // auditIdentity resolves the actor for an event. When the request is
 // authenticated the username snapshot comes from the DB; otherwise fallback
-// is used (e.g. the username typed into a failed login form).
+// is used. A process-local cache keeps repeated page views from adding a
+// second DB round-trip on top of the authorization query. Usernames are
+// immutable in this deployment, and caching the first observed value is
+// exactly the snapshot semantics the audit log wants.
 func (s *Server) auditIdentity(r *http.Request, fallback string) (actor, actorID string) {
 	uid, ok := currentUser(r)
 	if !ok {
 		return fallback, ""
 	}
-	actorID = uid
-	if user, err := s.store.FindUserByID(uid); err == nil {
-		return user.Username, actorID
+	if cached, ok := s.auditUsernameCache.Load(uid); ok {
+		return cached.(string), uid
 	}
-	return "", actorID
+	user, err := s.store.FindUserByID(uid)
+	if err != nil {
+		return "", uid
+	}
+	s.auditUsernameCache.Store(uid, user.Username)
+	return user.Username, uid
 }
 
 // recordAudit appends a security event using the request's identity. Audit is
@@ -90,10 +106,33 @@ func (s *Server) recordAuditAs(r *http.Request, action, target, outcome, detail,
 	}
 }
 
+// allowAuditReject coalesces repeated anonymous rejections. Returns true when
+// this (ip, path) pair has not been recorded in the current window.
+func (s *Server) allowAuditReject(ip, path string) bool {
+	window := time.Now().Unix() / auditRejectWindowSeconds
+	key := ip + "|" + path
+
+	s.auditRejectMu.Lock()
+	defer s.auditRejectMu.Unlock()
+	if s.auditRejectWindow != window || len(s.auditRejectSeen) > auditRejectMaxKeys {
+		s.auditRejectSeen = make(map[string]struct{})
+		s.auditRejectWindow = window
+	}
+	if _, seen := s.auditRejectSeen[key]; seen {
+		return false
+	}
+	s.auditRejectSeen[key] = struct{}{}
+	return true
+}
+
 // auditRejected records a credential rejection. Detail carries only method,
 // path and a short reason — never the query string, Authorization header or
 // cookie, all of which may hold live credentials.
 func (s *Server) auditRejected(r *http.Request, reason string) {
+	ip := clientIP(r)
+	if !s.allowAuditReject(ip, r.URL.Path) {
+		return
+	}
 	detail := r.Method + " " + r.URL.Path
 	if reason != "" {
 		detail += " reason=" + reason
@@ -125,8 +164,11 @@ func (s *Server) SetAuditRetentionDays(days int) {
 }
 
 // startAuditPrune runs one prune immediately and then every 24h, so a
-// long-lived instance does not grow audit_events without bound.
-func (s *Server) startAuditPrune(days int, stop <-chan struct{}) {
+// long-lived instance does not grow audit_events without bound. done is
+// closed on return so Stop can wait for the goroutine before the store is
+// closed by the caller.
+func (s *Server) startAuditPrune(days int, stop <-chan struct{}, done chan<- struct{}) {
+	defer close(done)
 	if days <= 0 {
 		return
 	}

@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sun-praise/static-html/internal/analytics"
 	"github.com/sun-praise/static-html/internal/live"
@@ -80,10 +81,17 @@ type Server struct {
 	httpServer        *http.Server
 	listener          net.Listener
 	liveMgr           *live.Manager
-	// auditRetentionDays > 0 enables the background audit prune loop;
-	// auditPruneStop closes it on Stop. Both are guarded by mu.
+	// Audit state. auditRetentionDays/auditPruneStop/auditPruneDone are only
+	// accessed with mu held (Start, Stop and SetAuditRetentionDays all hold
+	// it); auditReject* have their own mutex, and auditUsernameCache is a
+	// concurrency-safe sync.Map.
 	auditRetentionDays int
 	auditPruneStop     chan struct{}
+	auditPruneDone     chan struct{}
+	auditRejectMu      sync.Mutex
+	auditRejectWindow  int64
+	auditRejectSeen    map[string]struct{}
+	auditUsernameCache sync.Map
 	mu                 sync.RWMutex
 }
 
@@ -817,9 +825,10 @@ func (s *Server) Start() error {
 
 	s.listener = listener
 
-	if s.auditRetentionDays > 0 {
+	if s.auditRetentionDays > 0 && s.auditPruneStop == nil {
 		s.auditPruneStop = make(chan struct{})
-		go s.startAuditPrune(s.auditRetentionDays, s.auditPruneStop)
+		s.auditPruneDone = make(chan struct{})
+		go s.startAuditPrune(s.auditRetentionDays, s.auditPruneStop, s.auditPruneDone)
 	}
 
 	go func() {
@@ -842,7 +851,15 @@ func (s *Server) Stop(ctx context.Context) error {
 
 	if s.auditPruneStop != nil {
 		close(s.auditPruneStop)
+		// Wait for the prune goroutine before the caller closes the store,
+		// otherwise an in-flight prune reports "database is closed".
+		select {
+		case <-s.auditPruneDone:
+		case <-time.After(2 * time.Second):
+			fmt.Fprintln(os.Stderr, "audit: prune loop did not stop within 2s")
+		}
 		s.auditPruneStop = nil
+		s.auditPruneDone = nil
 	}
 
 	err := s.httpServer.Shutdown(ctx)

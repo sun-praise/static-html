@@ -139,8 +139,9 @@ sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 凭据被拒、分享授权/撤销、预览放行/拒绝、会话创建/删除。每行记录 UTC 时间、
 操作者（用户名 + ID 快照）、事件、目标、结果、客户端 IP、UA 与简短详情。
 
-日志**只在本地只读查询**，刻意不提供 HTTP 接口：系统没有管理员角色，开放 API
-会让任意登录用户读到所有人的活动记录。在宿主机上查：
+日志**只在本地查询、不改动业务数据**，刻意不提供 HTTP 接口：系统没有管理员角色，
+开放 API 会让任意登录用户读到所有人的活动记录。`sth audit` 仍以读写方式打开
+SQLite（会执行建表与 WAL 设置），只读挂载需指向可写副本。在宿主机上查：
 
 ```bash
 sth audit --db /path/to/sessions.db
@@ -154,10 +155,16 @@ docker exec sth-app html-server audit --db /data/sessions.db
 `0` 为永久保留）：启动时清理一次，之后每 24 小时一次；也可手动
 `sth audit --prune-days 90`。
 
-隐私边界：**绝不记录**密码、API key、会话 cookie、请求体与 query string。只审计
-HTML 页面访问（含会话根），css/js/图片等渲染资源与 live-reload websocket 跳过。
-客户端 IP 取 `X-Forwarded-For` 首值（单层可信反代后的真实 IP），该头可被客户端
-伪造，只能作为证据参考，不得用于鉴权判断。
+隐私边界：**绝不记录**密码、API key、会话 cookie、请求体与 query string。登录失败
+不保存提交的用户名（有人会把密码粘到用户名框），只记固定原因与来源信息；匿名 401
+按「IP + 路径」在 60 秒窗口内合并，防止 401 洪水写满审计表；`/logout` 仅在确实
+注销了会话时才记一行。只审计 HTML 页面访问（含会话根），css/js/图片等渲染资源与
+live-reload websocket 跳过。客户端 IP 取 `X-Forwarded-For` 首值（单层可信反代后的
+真实 IP），该头可被客户端伪造，只能作为证据参考，不得用于鉴权判断。
+
+覆盖范围：只审计**服务端**事件。直接写 DB 的本地 CLI 命令（`sth delete`、
+`sth user add`、`user issue-key` / `revoke-key`）与手工 SQL 不经过服务端，不会产生
+审计行。
 
 ## 测试
 

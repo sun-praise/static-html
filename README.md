@@ -224,9 +224,11 @@ revocations, preview allow/deny, and session create/delete. Each row stores a
 UTC timestamp, the actor (username + id snapshot), action, target, outcome,
 client IP, User-Agent and a short detail.
 
-The log is **local read-only**. There is deliberately no HTTP endpoint: the
-server has no admin role, so exposing the log over the API would let any
-logged-in user read everyone else's activity. Query it on the host instead:
+The log is **local-only** and the query never changes business data. There is
+deliberately no HTTP endpoint: the server has no admin role, so exposing the
+log over the API would let any logged-in user read everyone else's activity.
+`sth audit` still opens the SQLite DB read-write (it runs schema init and sets
+WAL mode), so a read-only mount needs a writable copy. Query on the host:
 
 ```bash
 sth audit --db /path/to/sessions.db
@@ -241,11 +243,21 @@ default 90 days, `0` keeps rows indefinitely. The server prunes once at start
 and then every 24 hours; `sth audit --prune-days 90` prunes on demand.
 
 Privacy boundaries: passwords, API keys, session cookies, request bodies and
-query strings are **never** recorded. Only HTML page views are audited —
-css/js/image requests and the live-reload websocket are skipped. The client IP
-comes from the first `X-Forwarded-For` entry (the client IP behind a single
-trusted reverse proxy); a client can spoof that header, so treat IP values as
-evidence rather than proof, and never use them for authorization.
+query strings are **never** recorded. Failed logins do not persist the submitted
+username at all (people sometimes paste a password into the username field) —
+they record a fixed reason plus source metadata. Anonymous 401s are coalesced
+per client IP and path within a 60-second window so a 401 flood cannot fill the
+table, and `/logout` is only audited when it actually invalidates a session.
+Only HTML page views are audited — css/js/image requests and the live-reload
+websocket are skipped. The client IP comes from the first `X-Forwarded-For`
+entry (the client IP behind a single trusted reverse proxy); a client can spoof
+that header, so treat IP values as evidence rather than proof, and never use
+them for authorization.
+
+Coverage: only **server-side** events are audited. Local CLI commands that
+write directly to the DB (`sth delete`, `sth user add`, `user issue-key` /
+`revoke-key`) and manual SQL edits bypass the server and therefore produce no
+audit rows.
 
 ## Test
 

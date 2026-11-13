@@ -34,11 +34,14 @@ func resolveAuditRetentionDays(flags map[string]string) (int, error) {
 	return n, nil
 }
 
-// runAudit is a local, read-only query over the audit table. There is
-// deliberately no HTTP endpoint for it: the server has no admin role, and
-// exposing the log to any authenticated user would leak everyone's activity.
-// Operators read it on the host (or via `docker exec ... html-server audit
-// --db /data/sessions.db`).
+// runAudit is a local-only query over the audit table; it never modifies
+// business data. Note it still opens the SQLite DB read-write (NewSQLiteStore
+// creates the directory, sets WAL mode and runs schema init), so a read-only
+// mount or a read-only replica will fail — point it at the live DB or a
+// writable copy. There is deliberately no HTTP endpoint: the server has no
+// admin role, and exposing the log to any authenticated user would leak
+// everyone's activity. Operators read it on the host (or via
+// `docker exec ... html-server audit --db /data/sessions.db`).
 func runAudit(args []string, stdout io.Writer) error {
 	flags, _, err := parseArgs(args)
 	if err != nil {
