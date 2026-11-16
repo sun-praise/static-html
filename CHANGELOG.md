@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Session titles: `sth send --title <title>` (required) binds a human-readable display title to each session. Everywhere sessions are listed — home page, `sth list`, `sth search`, related-documents drawer — shows the title, falling back to the entry-file basename for legacy sessions
+- `sth title <session-id> <title>` to rename a session after the fact (set-only, mirrors categorize/project)
+- `PUT /api/sessions/<id>/title`; session-create payloads (JSON and multipart) accept a `title` field — optional at the API level so older CLI clients keep working
+- Full-text search (`sth search` and home-page search) now matches titles; `DocumentInfo`, `DocumentMetadata`, and peers payloads include `title`
+
 ## [2.1.0] - 2026-07-14
 
 ### Added

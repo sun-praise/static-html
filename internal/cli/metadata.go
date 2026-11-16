@@ -206,6 +206,44 @@ func runProject(args []string, stdout io.Writer) error {
 	return nil
 }
 
+func runTitle(args []string, stdout io.Writer) error {
+	flags, positionals, err := parseArgs(args)
+	if err != nil {
+		return err
+	}
+
+	if len(positionals) < 2 {
+		return errors.New("usage: sth title <session-id> <title>")
+	}
+
+	sessionID := positionals[0]
+	title := positionals[1]
+
+	if serverURL, ok := flags["server"]; ok {
+		_, err := doJSONRequest(http.MethodPut, serverURL,
+			"/api/sessions/"+sessionID+"/title",
+			map[string]any{"title": title})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "Set title of %s to %s\n", sessionID, title)
+		return nil
+	}
+
+	store, err := openStore(flags)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	if err := store.SetTitle(sessionID, title); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Set title of %s to %s\n", sessionID, title)
+
+	return nil
+}
+
 func runList(args []string, stdout io.Writer) error {
 	flags, _, err := parseArgs(args)
 	if err != nil {

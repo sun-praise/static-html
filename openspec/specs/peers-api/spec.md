@@ -16,7 +16,7 @@ The system SHALL provide a `GET /api/sessions/{id}/peers` endpoint that returns 
 - **THEN** the system SHALL return HTTP 404
 
 ### Requirement: Peers by category
-The `byCategory` field SHALL contain all non-deleted sessions that share the same `category` value as the specified session, excluding the session itself. Each entry SHALL include `sessionId`, `name`, and `createdAt`.
+The `byCategory` field SHALL contain all non-deleted sessions that share the same `category` value as the specified session, excluding the session itself. Each entry SHALL include `sessionId`, `name`, `title`, and `createdAt`.
 
 #### Scenario: Multiple sessions share category
 - **WHEN** sessions A, B, C all have category "ui" and session A's peers are queried
@@ -35,7 +35,7 @@ The `byCategory` field SHALL contain all non-deleted sessions that share the sam
 - **THEN** that session SHALL NOT appear in `byCategory`
 
 ### Requirement: Peers by project
-The `byProject` field SHALL contain all non-deleted sessions that share the same `project` value as the specified session, excluding the session itself. Each entry SHALL include `sessionId`, `name`, and `createdAt`.
+The `byProject` field SHALL contain all non-deleted sessions that share the same `project` value as the specified session, excluding the session itself. Each entry SHALL include `sessionId`, `name`, `title`, and `createdAt`.
 
 #### Scenario: Multiple sessions share project
 - **WHEN** sessions A, B, C all have project "my-app" and session A's peers are queried
@@ -69,3 +69,14 @@ A session that appears in both `byCategory` and `byProject` SHALL appear in both
 #### Scenario: Session in both groups
 - **WHEN** session B shares both category and project with session A
 - **THEN** session B SHALL appear in both `byCategory` and `byProject`
+
+### Requirement: Peer entry title
+Peer entries (`current`, `byCategory`, `byProject`) SHALL include the session's bound display `title`. The field SHALL be empty for sessions created before titles existed; clients fall back to `name` for display.
+
+#### Scenario: Session with title
+- **WHEN** session B was created with title "Login Page v2" and appears in session A's peers
+- **THEN** B's peer entry SHALL contain `title` "Login Page v2"
+
+#### Scenario: Legacy session without title
+- **WHEN** a session created before titles existed appears in a peers result
+- **THEN** its peer entry SHALL contain an empty `title`

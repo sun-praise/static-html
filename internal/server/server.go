@@ -83,6 +83,7 @@ type Server struct {
 
 type createSessionRequest struct {
 	FilePath string   `json:"filePath"`
+	Title    string   `json:"title"`
 	Tags     []string `json:"tags"`
 	Category string   `json:"category"`
 	Project  string   `json:"project"`
@@ -121,6 +122,8 @@ type homePageData struct {
 type homePageSession struct {
 	ID          string
 	Name        string
+	Title       string
+	DisplayName string
 	EntryFile   string
 	CreatedAt   string
 	PreviewPath string
@@ -410,7 +413,7 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       {{- if .Sessions }}
         {{- range .Sessions }}
         <li>
-          <a href="{{ .PreviewPath }}">{{ .Name }}</a>
+          <a href="{{ .PreviewPath }}">{{ .DisplayName }}</a>
           <time datetime="{{ .CreatedAt }}">{{ .CreatedAt }}</time>
           <a class="action-btn download-btn" href="/api/sessions/{{ .ID }}/download" title="Download" download>⬇</a>
           <button class="action-btn share-btn" data-share-url="{{ .PreviewPath }}" title="Share">🔗</button>
@@ -737,6 +740,8 @@ func (s *Server) routes() http.Handler {
 			s.handleSetProject(w, r)
 		case r.Method == http.MethodDelete && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/project"):
 			s.handleClearProject(w, r)
+		case r.Method == http.MethodPut && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/title"):
+			s.handleSetTitle(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/metadata"):
 			s.handleGetMetadata(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/peers"):
@@ -925,9 +930,16 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 func toHomePageSessions(docs []session.DocumentInfo) []homePageSession {
 	items := make([]homePageSession, 0, len(docs))
 	for _, doc := range docs {
+		name := filepath.Base(doc.Name)
+		displayName := doc.Title
+		if displayName == "" {
+			displayName = name
+		}
 		items = append(items, homePageSession{
 			ID:          doc.SessionID,
-			Name:        filepath.Base(doc.Name),
+			Name:        name,
+			Title:       doc.Title,
+			DisplayName: displayName,
 			EntryFile:   doc.Name,
 			CreatedAt:   doc.CreatedAt,
 			PreviewPath: "/s/" + doc.SessionID + "/",
@@ -1033,7 +1045,7 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := s.setSessionMetadata(session.ID, req.Tags, req.Category, req.Project); err != nil {
+	if err := s.setSessionMetadata(session.ID, req.Tags, req.Category, req.Project, req.Title); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1089,6 +1101,7 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 	defer archiveFile.Close()
 
 	tags := r.Form["tags"]
+	title := strings.TrimSpace(r.FormValue("title"))
 	category := strings.TrimSpace(r.FormValue("category"))
 	project := strings.TrimSpace(r.FormValue("project"))
 
@@ -1158,7 +1171,7 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := s.setSessionMetadata(sess.ID, tags, category, project); err != nil {
+	if err := s.setSessionMetadata(sess.ID, tags, category, project, title); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1642,11 +1655,15 @@ type projectRequest struct {
 	Project string `json:"project"`
 }
 
+type titleRequest struct {
+	Title string `json:"title"`
+}
+
 func (s *Server) requireSession(sessionID string) (session.Session, bool, error) {
 	return s.store.Get(sessionID)
 }
 
-func (s *Server) setSessionMetadata(sessionID string, tags []string, category, project string) error {
+func (s *Server) setSessionMetadata(sessionID string, tags []string, category, project, title string) error {
 	if err := s.store.AddTags(sessionID, tags...); err != nil {
 		return err
 	}
@@ -1655,6 +1672,13 @@ func (s *Server) setSessionMetadata(sessionID string, tags []string, category, p
 	}
 	if err := s.store.SetProject(sessionID, project); err != nil {
 		return err
+	}
+	// Title is optional at the API level so older CLI clients that do not
+	// send --title keep working; the CLI itself enforces it for new sessions.
+	if title != "" {
+		if err := s.store.SetTitle(sessionID, title); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1786,6 +1810,32 @@ func (s *Server) handleSetProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClearProject(w http.ResponseWriter, r *http.Request) {
 	writeJSONError(w, http.StatusBadRequest, "project is required and cannot be cleared.")
+}
+
+func (s *Server) handleSetTitle(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/title")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	if !s.requireOwner(w, r, sessionID) {
+		return
+	}
+
+	var req titleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Request body must be valid JSON.")
+		return
+	}
+	if strings.TrimSpace(req.Title) == "" {
+		writeJSONError(w, http.StatusBadRequest, "title is required and cannot be cleared.")
+		return
+	}
+
+	err := s.store.SetTitle(sessionID, req.Title)
+	s.writeMetaOrError(w, sessionID, err)
 }
 
 func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {

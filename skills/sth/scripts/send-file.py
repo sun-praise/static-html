@@ -11,6 +11,7 @@ from pathlib import Path
 USAGE = """Usage: send-file.py <file.html> [options]
 
 Options:
+  --title TITLE      Display title for the session (required)
   --tag TAG          Tag(s) for the session (required)
   --category CAT     Category for the session (required)
   --project PROJ     Project for the session (required)
@@ -45,6 +46,7 @@ def trim(value):
 def parse_args(argv):
     target_file = None
     server_url = os.environ.get("STATIC_HTML_SERVER_URL", "http://127.0.0.1:3939")
+    title = ""
     tag = ""
     category = ""
     project = ""
@@ -67,6 +69,15 @@ def parse_args(argv):
 
         if arg in ("--help", "-h"):
             usage(0)
+        elif arg == "--title":
+            title = need_value("--title", argv[i + 1] if i + 1 < len(argv) else None)
+            i += 2
+        elif arg.startswith("--title="):
+            title = trim(arg[len("--title="):])
+            if not title:
+                print("Error: --title requires a value", file=sys.stderr)
+                usage(1)
+            i += 1
         elif arg == "--tag":
             tag = need_value("--tag", argv[i + 1] if i + 1 < len(argv) else None)
             i += 2
@@ -137,6 +148,9 @@ def parse_args(argv):
         usage(1)
     if not re.match(r"^https?://", server_url):
         die("Error: server URL must start with http:// or https://")
+    if not title:
+        print("Error: --title is required", file=sys.stderr)
+        usage(1)
     if not tag:
         print("Error: --tag is required", file=sys.stderr)
         usage(1)
@@ -147,7 +161,7 @@ def parse_args(argv):
         print("Error: --project is required", file=sys.stderr)
         usage(1)
 
-    return target_file, server_url, tag, category, project, api_key
+    return target_file, server_url, title, tag, category, project, api_key
 
 
 def resolve_target(target_file):
@@ -190,7 +204,7 @@ def bootstrap_repo(script_dir):
 
 
 def main():
-    target_file, server_url, tag, category, project, api_key = parse_args(sys.argv[1:])
+    target_file, server_url, title, tag, category, project, api_key = parse_args(sys.argv[1:])
     resolved, filename = resolve_target(target_file)
 
     script_dir = Path(__file__).resolve().parent
@@ -210,6 +224,8 @@ def main():
             str(tmp_path / filename),
             "--server",
             server_url,
+            "--title",
+            title,
             "--tag",
             tag,
             "--category",

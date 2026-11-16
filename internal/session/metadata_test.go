@@ -1037,3 +1037,189 @@ func TestGetPeersNonexistentSession(t *testing.T) {
 		t.Fatalf("expected ErrSessionNotFound, got %v", err)
 	}
 }
+
+func TestSetTitleAndGetMetadata(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	session, err := store.Create("/tmp/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetTitle(session.ID, "Login Page v2"); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, err := store.GetMetadata(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != "Login Page v2" {
+		t.Fatalf("expected title %q, got %q", "Login Page v2", meta.Title)
+	}
+}
+
+func TestSetTitleTrimsWhitespace(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	session, err := store.Create("/tmp/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetTitle(session.ID, "  Login Page  "); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, err := store.GetMetadata(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != "Login Page" {
+		t.Fatalf("expected trimmed title, got %q", meta.Title)
+	}
+}
+
+func TestSetTitleRejectsEmpty(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	session, err := store.Create("/tmp/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetTitle(session.ID, "   "); err == nil {
+		t.Fatal("expected error for empty title")
+	}
+}
+
+func TestSetTitleForNonexistentSession(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+
+	if err := store.SetTitle("nonexistent", "x"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound, got %v", err)
+	}
+}
+
+func TestSetTitleOverwrites(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	session, err := store.Create("/tmp/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetTitle(session.ID, "v1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTitle(session.ID, "v2"); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, err := store.GetMetadata(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Title != "v2" {
+		t.Fatalf("expected title v2, got %q", meta.Title)
+	}
+}
+
+func TestListDocumentsIncludesTitle(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	withTitle, err := store.Create("/tmp/a.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutTitle, err := store.Create("/tmp/b.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetTitle(withTitle.ID, "Titled Doc"); err != nil {
+		t.Fatal(err)
+	}
+
+	docs, err := store.ListDocuments(FilterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 2 {
+		t.Fatalf("expected 2 docs, got %d", len(docs))
+	}
+
+	byID := map[string]DocumentInfo{}
+	for _, doc := range docs {
+		byID[doc.SessionID] = doc
+	}
+	if byID[withTitle.ID].Title != "Titled Doc" {
+		t.Fatalf("expected title on %s, got %q", withTitle.ID, byID[withTitle.ID].Title)
+	}
+	if byID[withoutTitle.ID].Title != "" {
+		t.Fatalf("expected empty title on %s, got %q", withoutTitle.ID, byID[withoutTitle.ID].Title)
+	}
+}
+
+func TestSearchDocumentsMatchesTitle(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	session, err := store.Create("/tmp/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTitle(session.ID, "Quarterly Report"); err != nil {
+		t.Fatal(err)
+	}
+
+	docs, err := store.SearchDocuments("quarterly", FilterOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(docs) != 1 || docs[0].SessionID != session.ID {
+		t.Fatalf("expected search to match title, got %+v", docs)
+	}
+}
+
+func TestGetPeersIncludeTitle(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	a, err := store.Create("/tmp/a.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := store.Create("/tmp/b.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetCategory(a.ID, "ui"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetCategory(b.ID, "ui"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetTitle(b.ID, "Peer With Title"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.GetPeers(a.ID, DefaultPeerLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ByCategory) != 1 {
+		t.Fatalf("expected 1 peer, got %d", len(result.ByCategory))
+	}
+	if result.ByCategory[0].Title != "Peer With Title" {
+		t.Fatalf("expected peer title, got %q", result.ByCategory[0].Title)
+	}
+}

@@ -43,7 +43,7 @@ go build -o dist/sth ./cmd/html-server
 注册 HTML 文件：
 
 ```bash
-./dist/sth send ./fixtures/basic/index.html
+./dist/sth send ./fixtures/basic/index.html --title "示例页面"
 ```
 
 `send` 命令会将 HTML 文件及其同目录下的所有常规文件打包为 zip 压缩包上传，然后输出一个会话 URL。在浏览器中打开该 URL 即可查看 HTML 文件，其关联的静态资源也会从服务器上传的快照中提供。
@@ -59,10 +59,11 @@ go build -o dist/sth ./cmd/html-server
 
 ```bash
 sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
-sth send <file.html> [--server http://127.0.0.1:3939] [--single] [--root <dir>]
+sth send <file.html> --title <title> [--server http://127.0.0.1:3939] [--single] [--root <dir>]
 sth tag [--rm] <session-id> <tag...>
 sth categorize <session-id> [category]
 sth project <session-id> [project]
+sth title <session-id> <title>
 sth list [--tag <tag>] [--category <cat>] [--project <proj>]
 sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 ```
@@ -94,6 +95,14 @@ sth project <session-id> [project]
 
 为会话设置单个项目标签。省略 `[project]` 可清除已有的项目。
 
+### `sth title` — 设置会话展示标题
+
+```bash
+sth title <session-id> <title>
+```
+
+设置与会话（HTML 文件）绑定的展示标题。`sth send` 时通过 `--title` 必填，标题会显示在所有列表位置（首页、`sth list`、`sth search`、相关文档抽屉）。标题不可清除；早于该功能创建的旧会话回退显示入口文件名。
+
 ### `sth list` — 按元数据筛选会话
 
 ```bash
@@ -108,7 +117,7 @@ sth list [--tag <tag>] [--category <cat>] [--project <proj>]
 sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 ```
 
-对会话元数据（标签、分类、项目、文件名）执行全文匹配。支持与 `list` 相同的 `--tag`、`--category` 和 `--project` 过滤条件来缩小结果范围，搜索和元数据过滤可以在一条命令中组合使用。
+对会话元数据（标题、标签、分类、项目、文件名）执行全文匹配。支持与 `list` 相同的 `--tag`、`--category` 和 `--project` 过滤条件来缩小结果范围，搜索和元数据过滤可以在一条命令中组合使用。
 
 #### `sth list` 与 `sth search` 的区别
 

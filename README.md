@@ -43,7 +43,7 @@ The session store uses `github.com/mattn/go-sqlite3`, so builds typically requir
 Register an HTML file:
 
 ```bash
-./dist/sth send ./fixtures/basic/index.html
+./dist/sth send ./fixtures/basic/index.html --title "Sample Page"
 ```
 
 The `send` command uploads the HTML file and all regular files under the same source directory as a zip archive, then prints a session URL. Open that URL in a browser to view the HTML file with its relative assets served from the uploaded snapshot on the server.
@@ -59,10 +59,11 @@ The two flags are mutually exclusive.
 
 ```bash
 sth start [--host 127.0.0.1] [--port 3939] [--db /path/to/sessions.db]
-sth send <file.html> [--server http://127.0.0.1:3939] [--single] [--root <dir>]
+sth send <file.html> --title <title> [--server http://127.0.0.1:3939] [--single] [--root <dir>]
 sth tag [--rm] <session-id> <tag...>
 sth categorize <session-id> [category]
 sth project <session-id> [project]
+sth title <session-id> <title>
 sth list [--tag <tag>] [--category <cat>] [--project <proj>]
 sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 ```
@@ -94,6 +95,14 @@ sth project <session-id> [project]
 
 Sets a single project label on the session. Omit `[project]` to clear the existing project.
 
+### `sth title` — set a session's display title
+
+```bash
+sth title <session-id> <title>
+```
+
+Sets the human-readable display title bound to the session. The title is required at `sth send` time (`--title`) and is shown wherever the session is listed (home page, `sth list`, `sth search`, related-documents drawer). It cannot be cleared; sessions created before titles existed fall back to showing the entry-file basename.
+
 ### `sth list` — filter sessions by metadata
 
 ```bash
@@ -108,7 +117,7 @@ Filters sessions by exact match on the given metadata fields and prints matching
 sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 ```
 
-Performs full-text matching across session metadata (tags, category, project, filename). Supports the same `--tag`, `--category`, and `--project` filters as `list` for narrowing results, so search and metadata filters can be combined in a single command.
+Performs full-text matching across session metadata (title, tags, category, project, filename). Supports the same `--tag`, `--category`, and `--project` filters as `list` for narrowing results, so search and metadata filters can be combined in a single command.
 
 #### `sth list` vs `sth search`
 
