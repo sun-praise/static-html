@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.5.0] - 2026-11-16
 
 ### Added
 - Session titles: `sth send --title <title>` (required) binds a human-readable display title to each session. Everywhere sessions are listed — home page, `sth list`, `sth search`, related-documents drawer — shows the title, falling back to the entry-file basename for legacy sessions
