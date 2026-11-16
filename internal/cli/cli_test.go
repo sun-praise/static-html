@@ -45,7 +45,7 @@ func TestSendPrintsSessionURL(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := Run([]string{"send", fixtureHTML, "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.Origin()}, &stdout, &stderr); err != nil {
+	if err := Run([]string{"send", fixtureHTML, "--title", "Test Doc", "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.Origin()}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 
@@ -65,7 +65,7 @@ func TestSendFailsClearlyWhenServerUnavailable(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err = Run([]string{"send", fixtureHTML, "--tag", "test", "--category", "cat", "--project", "proj", "--server", "http://127.0.0.1:4399"}, &stdout, &stderr)
+	err = Run([]string{"send", fixtureHTML, "--title", "Test Doc", "--tag", "test", "--category", "cat", "--project", "proj", "--server", "http://127.0.0.1:4399"}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected send to fail")
 	}
@@ -93,7 +93,7 @@ func TestSendSurfacesServerJSONError(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	err := Run([]string{"send", fixtureHTML, "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr)
+	err := Run([]string{"send", fixtureHTML, "--title", "Test Doc", "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected send to fail")
 	}
@@ -177,6 +177,9 @@ func TestSendUploadsMultipartArchive(t *testing.T) {
 		if fields["entryPath"] != "index.html" {
 			t.Fatalf("unexpected entryPath: %q", fields["entryPath"])
 		}
+		if fields["title"] != "Test Doc" {
+			t.Fatalf("unexpected title: %q", fields["title"])
+		}
 		if archiveEntries["index.html"] == "" || archiveEntries["assets/style.css"] == "" {
 			t.Fatalf("archive missing expected files: %#v", archiveEntries)
 		}
@@ -188,7 +191,7 @@ func TestSendUploadsMultipartArchive(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := Run([]string{"send", entryFile, "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
+	if err := Run([]string{"send", entryFile, "--title", "Test Doc", "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 
@@ -366,7 +369,7 @@ func TestSendOnlyIncludesWebAssetsInArchive(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := Run([]string{"send", entryFile, "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
+	if err := Run([]string{"send", entryFile, "--title", "Test Doc", "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -464,7 +467,7 @@ func TestSingleFileSkipsWalkOnLargeDirectory(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	if err := Run([]string{"send", entryFile, "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
+	if err := Run([]string{"send", entryFile, "--title", "Test Doc", "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -663,7 +666,7 @@ func TestSendSingleFlagForcesSingleFile(t *testing.T) {
 	defer srv.Close()
 
 	var stdout, stderr bytes.Buffer
-	if err := Run([]string{"send", entryFile, "--single", "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
+	if err := Run([]string{"send", entryFile, "--single", "--title", "Test Doc", "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	capture.requireHandlerOK(t)
@@ -701,7 +704,7 @@ func TestSendSingleFlagAcceptsExplicitTrue(t *testing.T) {
 	defer srv.Close()
 
 	var stdout, stderr bytes.Buffer
-	if err := Run([]string{"send", entryFile, "--single=true", "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
+	if err := Run([]string{"send", entryFile, "--single=true", "--title", "Test Doc", "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	capture.requireHandlerOK(t)
@@ -734,7 +737,7 @@ func TestSendRootFlagArchivesSpecifiedRoot(t *testing.T) {
 	defer srv.Close()
 
 	var stdout, stderr bytes.Buffer
-	args := []string{"send", entryFile, "--root", projectRoot, "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}
+	args := []string{"send", entryFile, "--root", projectRoot, "--title", "Test Doc", "--tag", "test", "--category", "cat", "--project", "proj", "--server", srv.URL}
 	if err := Run(args, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +769,7 @@ func TestSendSingleAndRootAreMutuallyExclusive(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := Run([]string{"send", entryFile, "--single", "--root", rootDir, "--tag", "t", "--category", "c", "--project", "p"}, &stdout, &stderr)
+	err := Run([]string{"send", entryFile, "--single", "--root", rootDir, "--title", "T", "--tag", "t", "--category", "c", "--project", "p"}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for --single together with --root")
 	}
@@ -786,7 +789,7 @@ func TestSendRootRejectsEntryOutsideRoot(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := Run([]string{"send", entryFile, "--root", a, "--tag", "t", "--category", "c", "--project", "p"}, &stdout, &stderr)
+	err := Run([]string{"send", entryFile, "--root", a, "--title", "T", "--tag", "t", "--category", "c", "--project", "p"}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for entry outside --root")
 	}
@@ -807,7 +810,7 @@ func TestSendRootRejectsEmpty(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := Run([]string{"send", entryFile, "--root", "", "--tag", "t", "--category", "c", "--project", "p"}, &stdout, &stderr)
+	err := Run([]string{"send", entryFile, "--root", "", "--title", "T", "--tag", "t", "--category", "c", "--project", "p"}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for empty --root")
 	}

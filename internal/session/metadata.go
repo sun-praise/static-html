@@ -3,15 +3,18 @@ package session
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var ErrSessionNotFound = errors.New("session not found")
 
 type DocumentMetadata struct {
 	SessionID string
+	Title     string
 	Tags      []string
 	Category  string
 	Project   string
@@ -31,6 +34,7 @@ type FilterOptions struct {
 type DocumentInfo struct {
 	SessionID string   `json:"sessionId"`
 	Name      string   `json:"name"`
+	Title     string   `json:"title"`
 	Tags      []string `json:"tags"`
 	Category  string   `json:"category"`
 	Project   string   `json:"project"`
@@ -195,6 +199,53 @@ func (s *Store) ClearProject(sessionID string) error {
 	return err
 }
 
+// MaxTitleRunes caps the display title length so over-long titles cannot
+// blow out the home-page list or drawer layout.
+const MaxTitleRunes = 200
+
+var (
+	// ErrTitleEmpty is returned when a title is present but whitespace-only.
+	ErrTitleEmpty = errors.New("title must not be empty or whitespace-only")
+	// ErrTitleTooLong is returned when a title exceeds MaxTitleRunes.
+	ErrTitleTooLong = fmt.Errorf("title must be at most %d characters", MaxTitleRunes)
+)
+
+// NormalizeTitle validates a user-supplied display title and returns the
+// trimmed value. A title that is present but whitespace-only, or one that
+// exceeds MaxTitleRunes, is rejected. An entirely absent title ("") is
+// accepted and normalized to "" so older clients without a title keep
+// working.
+func NormalizeTitle(title string) (string, error) {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" && title != "" {
+		return "", ErrTitleEmpty
+	}
+	if utf8.RuneCountInString(trimmed) > MaxTitleRunes {
+		return "", ErrTitleTooLong
+	}
+	return trimmed, nil
+}
+
+// SetTitle binds a display title to the session. Empty titles are rejected:
+// title is required at send time and, unlike category/project, has no clear
+// semantics — the display falls back to the entry-file basename only for
+// legacy sessions that never had a title.
+func (s *Store) SetTitle(sessionID, title string) error {
+	title, err := NormalizeTitle(title)
+	if err != nil {
+		return err
+	}
+	if title == "" {
+		return ErrTitleEmpty
+	}
+	if !s.sessionExists(sessionID) {
+		return ErrSessionNotFound
+	}
+
+	_, err = s.db.Exec(`UPDATE sessions SET title = ? WHERE session_id = ?`, title, sessionID)
+	return err
+}
+
 func (s *Store) GetMetadata(sessionID string) (DocumentMetadata, error) {
 	var meta DocumentMetadata
 	meta.SessionID = sessionID
@@ -222,6 +273,11 @@ func (s *Store) GetMetadata(sessionID string) (DocumentMetadata, error) {
 	}
 
 	err = s.db.QueryRow(`SELECT project FROM document_projects WHERE session_id = ?`, sessionID).Scan(&meta.Project)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return DocumentMetadata{}, err
+	}
+
+	err = s.db.QueryRow(`SELECT COALESCE(title, '') FROM sessions WHERE session_id = ?`, sessionID).Scan(&meta.Title)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return DocumentMetadata{}, err
 	}
@@ -267,7 +323,7 @@ func (s *Store) CountDocuments(filter FilterOptions) (int, error) {
 
 func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 	query := `
-		SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix,
+		SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), COALESCE(s.title, ''), s.created_at_unix,
 			GROUP_CONCAT(dt.tag, char(1)),
 			dc.category,
 			dp.project,
@@ -326,6 +382,7 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 		var (
 			sessionID     string
 			entryFile     string
+			title         sql.NullString
 			createdAtUnix int64
 			tagsStr       sql.NullString
 			category      sql.NullString
@@ -333,13 +390,14 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 			chainID       string
 			versionNo     int
 		)
-		if err := rows.Scan(&sessionID, &entryFile, &createdAtUnix, &tagsStr, &category, &project, &chainID, &versionNo); err != nil {
+		if err := rows.Scan(&sessionID, &entryFile, &title, &createdAtUnix, &tagsStr, &category, &project, &chainID, &versionNo); err != nil {
 			return nil, err
 		}
 
 		doc := DocumentInfo{
 			SessionID: sessionID,
 			Name:      entryFile,
+			Title:     title.String,
 			Category:  category.String,
 			Project:   project.String,
 			ChainID:   chainID,
@@ -382,6 +440,7 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 	}
 
 	conditions = append(conditions, `(COALESCE(s.stored_entry_file, s.entry_file) LIKE ? ESCAPE '\'
+	   OR COALESCE(s.title, '') LIKE ? ESCAPE '\'
 	   OR s.session_id IN (
 		   SELECT session_id FROM document_tags WHERE tag LIKE ? ESCAPE '\'
 	   )
@@ -391,7 +450,7 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 	   OR s.session_id IN (
 		   SELECT session_id FROM document_projects WHERE project LIKE ? ESCAPE '\'
 	   ))`)
-	args = append(args, pattern, pattern, pattern, pattern)
+	args = append(args, pattern, pattern, pattern, pattern, pattern)
 
 	if filter.Tag != "" {
 		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_tags WHERE tag = ?)`)
@@ -407,7 +466,7 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 	}
 
 	queryStr := `
-		SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix,
+		SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), COALESCE(s.title, ''), s.created_at_unix,
 			GROUP_CONCAT(dt.tag, char(1)),
 			dc.category,
 			dp.project,
@@ -442,6 +501,7 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 		var (
 			sessionID     string
 			entryFile     string
+			title         sql.NullString
 			createdAtUnix int64
 			tagsStr       sql.NullString
 			category      sql.NullString
@@ -449,13 +509,14 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 			chainID       string
 			versionNo     int
 		)
-		if err := rows.Scan(&sessionID, &entryFile, &createdAtUnix, &tagsStr, &category, &project, &chainID, &versionNo); err != nil {
+		if err := rows.Scan(&sessionID, &entryFile, &title, &createdAtUnix, &tagsStr, &category, &project, &chainID, &versionNo); err != nil {
 			return nil, err
 		}
 
 		doc := DocumentInfo{
 			SessionID: sessionID,
 			Name:      entryFile,
+			Title:     title.String,
 			Category:  category.String,
 			Project:   project.String,
 			ChainID:   chainID,
@@ -486,12 +547,14 @@ func (s *Store) sessionExists(sessionID string) bool {
 type PeerEntry struct {
 	SessionID string `json:"sessionId"`
 	Name      string `json:"name"`
+	Title     string `json:"title"`
 	CreatedAt string `json:"createdAt"`
 }
 
 type PeerCurrent struct {
 	SessionID string `json:"sessionId"`
 	Name      string `json:"name"`
+	Title     string `json:"title"`
 	Category  string `json:"category"`
 	Project   string `json:"project"`
 }
@@ -546,6 +609,7 @@ func (s *Store) GetPeersForOwner(sessionID string, limit int, ownerID string) (*
 		Current: PeerCurrent{
 			SessionID: sessionID,
 			Name:      filepath.Base(entryFile),
+			Title:     current.Title,
 			Category:  meta.Category,
 			Project:   meta.Project,
 		},
@@ -562,7 +626,7 @@ func (s *Store) GetPeersForOwner(sessionID string, limit int, ownerID string) (*
 
 	if meta.Category != "" {
 		byCategory, err := s.queryPeers(
-			`SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix
+			`SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), COALESCE(s.title, ''), s.created_at_unix
 			 FROM sessions s
 			 JOIN document_categories dc ON s.session_id = dc.session_id
 			 WHERE dc.category = ? AND s.session_id != ? AND s.deleted_at IS NULL`+ownerClause+`
@@ -578,7 +642,7 @@ func (s *Store) GetPeersForOwner(sessionID string, limit int, ownerID string) (*
 
 	if meta.Project != "" {
 		byProject, err := s.queryPeers(
-			`SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix
+			`SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), COALESCE(s.title, ''), s.created_at_unix
 			 FROM sessions s
 			 JOIN document_projects dp ON s.session_id = dp.session_id
 			 WHERE dp.project = ? AND s.session_id != ? AND s.deleted_at IS NULL`+ownerClause+`
@@ -609,14 +673,16 @@ func (s *Store) queryPeers(query string, args ...any) ([]PeerEntry, error) {
 		var (
 			sessionID     string
 			entryFile     string
+			title         string
 			createdAtUnix int64
 		)
-		if err := rows.Scan(&sessionID, &entryFile, &createdAtUnix); err != nil {
+		if err := rows.Scan(&sessionID, &entryFile, &title, &createdAtUnix); err != nil {
 			return nil, err
 		}
 		peers = append(peers, PeerEntry{
 			SessionID: sessionID,
 			Name:      filepath.Base(entryFile),
+			Title:     title,
 			CreatedAt: time.Unix(0, createdAtUnix).UTC().Format(time.RFC3339),
 		})
 	}

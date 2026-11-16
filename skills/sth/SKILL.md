@@ -1,11 +1,11 @@
 ---
 name: sth
-description: Start or use the `sth` local HTML preview server from sun-praise/static-html. Use when the user mentions `sth`, wants `sth start`, `sth send`, `sth tag`, `sth categorize`, `sth project`, `sth list`, `sth search`, `sth share`, needs to preview a local HTML file in a browser, manage session metadata, share a session with another user, or register preview sessions from the CLI.
+description: Start or use the `sth` local HTML preview server from sun-praise/static-html. Use when the user mentions `sth`, wants `sth start`, `sth send`, `sth tag`, `sth categorize`, `sth project`, `sth title`, `sth list`, `sth search`, `sth share`, needs to preview a local HTML file in a browser, manage session metadata, share a session with another user, or register preview sessions from the CLI.
 ---
 
 # STH Preview
 
-Use this skill when a user wants a quick local preview for an HTML file and its relative assets, manage metadata (tags, categories, projects), or search sessions.
+Use this skill when a user wants a quick local preview for an HTML file and its relative assets, manage metadata (titles, tags, categories, projects), or search sessions.
 
 ## Workflow
 
@@ -37,7 +37,7 @@ Defaults:
 3. Register an HTML file:
 
 ```bash
-python3 scripts/send-file.py /absolute/or/relative/file.html --tag TAG --category CAT --project PROJ [--server URL]
+python3 scripts/send-file.py /absolute/or/relative/file.html --title TITLE --tag TAG --category CAT --project PROJ [--server URL]
 ```
 
 The command copies the HTML file to an isolated temporary directory (avoiding packaging unrelated files), uploads it, and prints a session URL like `http://192.168.2.14:3939/s/<id>/`.
@@ -45,13 +45,13 @@ The command copies the HTML file to an isolated temporary directory (avoiding pa
 If you need to include sibling resources (CSS, JS, images) alongside the HTML file, use `sth send` directly with the directory containing those resources instead of `send-file.py`:
 
 ```bash
-sth send ./my-project-dir --tag demo --category preview --project myproj [--server URL]
+sth send ./my-project-dir --title "My Project Preview" --tag demo --category preview --project myproj [--server URL]
 ```
 
 When calling `sth send` directly, `--tag` accepts multiple comma-separated values:
 
 ```bash
-sth send file.html --tag tag1,tag2,tag3 --category cat --project proj
+sth send file.html --title "Login Page v2" --tag tag1,tag2,tag3 --category cat --project proj
 ```
 
 4. Manage session metadata:
@@ -68,6 +68,9 @@ sth categorize <session-id> [category]
 
 # Set project (omit [project] to clear)
 sth project <session-id> [project]
+
+# Set display title (required at send time; rename later)
+sth title <session-id> <title>
 
 # List sessions (with optional filters)
 sth list [--tag <tag>] [--category <cat>] [--project <proj>]
@@ -86,7 +89,7 @@ All metadata commands accept `--db /path/to/sessions.db` to override the databas
 ### `sth list` vs `sth search`
 
 - `sth list` filters by exact metadata field values (`--tag`, `--category`, `--project`).
-- `sth search <query>` does full-text matching across session metadata (tags, category, project, filename). Filters and search can be combined, e.g. `sth search <query> --tag <tag>`.
+- `sth search <query>` does full-text matching across session metadata (title, tags, category, project, filename). Filters and search can be combined, e.g. `sth search <query> --tag <tag>`.
 
 ## Environment overrides
 

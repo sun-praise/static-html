@@ -97,6 +97,7 @@ type Server struct {
 
 type createSessionRequest struct {
 	FilePath string   `json:"filePath"`
+	Title    string   `json:"title"`
 	Tags     []string `json:"tags"`
 	Category string   `json:"category"`
 	Project  string   `json:"project"`
@@ -137,6 +138,8 @@ type homePageData struct {
 type homePageSession struct {
 	ID          string
 	Name        string
+	Title       string
+	DisplayName string
 	EntryFile   string
 	CreatedAt   string
 	PreviewPath string
@@ -491,7 +494,7 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       {{- if .Sessions }}
         {{- range .Sessions }}
         <li data-session-id="{{ .ID }}">
-          <a href="{{ .PreviewPath }}">{{ .Name }}</a>
+          <a href="{{ .PreviewPath }}">{{ .DisplayName }}</a>
           <time datetime="{{ .CreatedAt }}">{{ .CreatedAt }}</time>
           <a class="action-btn download-btn" href="/api/sessions/{{ .ID }}/download" title="Download" download>⬇</a>
           <button class="action-btn share-btn" data-share-url="{{ .PreviewPath }}" title="Share">🔗</button>
@@ -544,7 +547,7 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       <ul>
         {{- range .SharedSessions }}
         <li>
-          <a href="{{ .PreviewPath }}">{{ .Name }}</a>
+          <a href="{{ .PreviewPath }}">{{ .DisplayName }}</a>
           <time datetime="{{ .CreatedAt }}">{{ .CreatedAt }}</time>
           <span class="meta project">by {{ .Owner }}</span>
           {{- if .SharePath }}
@@ -988,6 +991,8 @@ func (s *Server) routes() http.Handler {
 			s.handleSetProject(w, r)
 		case r.Method == http.MethodDelete && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/project"):
 			s.handleClearProject(w, r)
+		case r.Method == http.MethodPut && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/title"):
+			s.handleSetTitle(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/metadata"):
 			s.handleGetMetadata(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/peers"):
@@ -1166,9 +1171,15 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			if d.Path != "" {
 				previewPath = "/s/" + d.SessionID + "/" + (&url.URL{Path: d.Path}).EscapedPath()
 			}
+			displayName := d.Title
+			if displayName == "" {
+				displayName = filepath.Base(d.Name)
+			}
 			sharedItems = append(sharedItems, homePageSession{
 				ID:          d.SessionID,
 				Name:        filepath.Base(d.Name),
+				Title:       d.Title,
+				DisplayName: displayName,
 				EntryFile:   d.Name,
 				CreatedAt:   d.CreatedAt,
 				PreviewPath: previewPath,
@@ -1222,9 +1233,16 @@ func analyticsScript(r *http.Request) template.HTML {
 func toHomePageSessions(docs []session.DocumentInfo) []homePageSession {
 	items := make([]homePageSession, 0, len(docs))
 	for _, doc := range docs {
+		name := filepath.Base(doc.Name)
+		displayName := doc.Title
+		if displayName == "" {
+			displayName = name
+		}
 		items = append(items, homePageSession{
 			ID:          doc.SessionID,
-			Name:        filepath.Base(doc.Name),
+			Name:        name,
+			Title:       doc.Title,
+			DisplayName: displayName,
 			EntryFile:   doc.Name,
 			CreatedAt:   doc.CreatedAt,
 			PreviewPath: "/s/" + doc.SessionID + "/",
@@ -1298,6 +1316,14 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Validate before creating the session row, so a rejected title cannot
+	// orphan a session on the server's local disk.
+	trimmedTitle, err := session.NormalizeTitle(req.Title)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	entryFile, err := filepath.Abs(req.FilePath)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Failed to resolve filePath.")
@@ -1330,7 +1356,10 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := s.setSessionMetadata(session.ID, req.Tags, req.Category, req.Project); err != nil {
+	if err := s.setSessionMetadata(session.ID, req.Tags, req.Category, req.Project, trimmedTitle); err != nil {
+		if writeTitleValidationError(w, err) {
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1388,6 +1417,9 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 	defer archiveFile.Close()
 
 	tags := r.Form["tags"]
+	// Keep the raw form value: NormalizeTitle distinguishes an absent title
+	// (accepted, for legacy clients) from a whitespace-only one (rejected 400).
+	title := r.FormValue("title")
 	category := strings.TrimSpace(r.FormValue("category"))
 	project := strings.TrimSpace(r.FormValue("project"))
 
@@ -1401,6 +1433,14 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 	}
 	if project == "" {
 		writeJSONError(w, http.StatusBadRequest, "project is required.")
+		return
+	}
+
+	// Validate before creating the session row or unpacking the archive, so a
+	// rejected title cannot orphan a session or leave uploaded files behind.
+	trimmedTitle, err := session.NormalizeTitle(title)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1457,7 +1497,10 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := s.setSessionMetadata(sess.ID, tags, category, project); err != nil {
+	if err := s.setSessionMetadata(sess.ID, tags, category, project, trimmedTitle); err != nil {
+		if writeTitleValidationError(w, err) {
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1947,11 +1990,24 @@ type projectRequest struct {
 	Project string `json:"project"`
 }
 
+type titleRequest struct {
+	Title string `json:"title"`
+}
+
 func (s *Server) requireSession(sessionID string) (session.Session, bool, error) {
 	return s.store.Get(sessionID)
 }
 
-func (s *Server) setSessionMetadata(sessionID string, tags []string, category, project string) error {
+func (s *Server) setSessionMetadata(sessionID string, tags []string, category, project, title string) error {
+	// Validate the title before any metadata is written, so a rejected title
+	// can never leave half-written tags/category/project behind. The title is
+	// optional at the API level so older CLI clients that do not send one
+	// keep working; the CLI itself enforces --title for new sessions.
+	trimmedTitle, err := session.NormalizeTitle(title)
+	if err != nil {
+		return err
+	}
+
 	if err := s.store.AddTags(sessionID, tags...); err != nil {
 		return err
 	}
@@ -1961,7 +2017,23 @@ func (s *Server) setSessionMetadata(sessionID string, tags []string, category, p
 	if err := s.store.SetProject(sessionID, project); err != nil {
 		return err
 	}
+	if trimmedTitle != "" {
+		if err := s.store.SetTitle(sessionID, trimmedTitle); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// writeTitleValidationError maps title-validation errors from
+// setSessionMetadata to a 400 response and reports whether it handled the
+// error. Anything else is left to the caller's generic handling.
+func writeTitleValidationError(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, session.ErrTitleEmpty) || errors.Is(err, session.ErrTitleTooLong) {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return true
+	}
+	return false
 }
 
 func (s *Server) writeMetaOrError(w http.ResponseWriter, sessionID string, storeErr error) {
@@ -2091,6 +2163,37 @@ func (s *Server) handleSetProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClearProject(w http.ResponseWriter, r *http.Request) {
 	writeJSONError(w, http.StatusBadRequest, "project is required and cannot be cleared.")
+}
+
+func (s *Server) handleSetTitle(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/title")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	if !s.requireOwner(w, r, sessionID) {
+		return
+	}
+
+	var req titleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "Request body must be valid JSON.")
+		return
+	}
+	trimmedTitle, err := session.NormalizeTitle(req.Title)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if trimmedTitle == "" {
+		writeJSONError(w, http.StatusBadRequest, "title is required and cannot be cleared.")
+		return
+	}
+
+	err = s.store.SetTitle(sessionID, trimmedTitle)
+	s.writeMetaOrError(w, sessionID, err)
 }
 
 func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {

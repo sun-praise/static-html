@@ -116,7 +116,7 @@ const drawerJS = `<script>
     }else{
       h+='<ul>';
       for(var i=0;i<peers.length;i++){
-        h+='<li><a href="/s/'+encodeURIComponent(peers[i].sessionId)+'/">'+escapeHtml(peers[i].name)+'</a></li>';
+        h+='<li><a href="/s/'+encodeURIComponent(peers[i].sessionId)+'/">'+escapeHtml(peers[i].title||peers[i].name)+'</a></li>';
       }
       h+='</ul>';
     }

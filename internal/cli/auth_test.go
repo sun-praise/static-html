@@ -28,7 +28,7 @@ func TestSendAttachesAPIKeyHeader(t *testing.T) {
 	defer srv.Close()
 
 	var stdout, stderr strings.Builder
-	err = Run([]string{"send", fixtureHTML, "--tag", "t", "--category", "c", "--project", "p", "--server", srv.URL, "--api-key", "sth_testkey123456"}, &stdout, &stderr)
+	err = Run([]string{"send", fixtureHTML, "--title", "T", "--tag", "t", "--category", "c", "--project", "p", "--server", srv.URL, "--api-key", "sth_testkey123456"}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("send failed: %v (stderr: %s)", err, stderr.String())
 	}
@@ -58,7 +58,7 @@ func TestSendAPIKeyFromEnv(t *testing.T) {
 	t.Setenv("STH_API_KEY", "sth_envkey_ABCDEF")
 
 	var stdout, stderr strings.Builder
-	err = Run([]string{"send", fixtureHTML, "--tag", "t", "--category", "c", "--project", "p", "--server", srv.URL}, &stdout, &stderr)
+	err = Run([]string{"send", fixtureHTML, "--title", "T", "--tag", "t", "--category", "c", "--project", "p", "--server", srv.URL}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("send failed: %v (stderr: %s)", err, stderr.String())
 	}
@@ -88,7 +88,7 @@ func TestSendFlagOverridesEnvAPIKey(t *testing.T) {
 	t.Setenv("STH_API_KEY", "sth_envkey_should_lose")
 
 	var stdout, stderr strings.Builder
-	err = Run([]string{"send", fixtureHTML, "--tag", "t", "--category", "c", "--project", "p", "--server", srv.URL, "--api-key", "sth_flag_wins12345"}, &stdout, &stderr)
+	err = Run([]string{"send", fixtureHTML, "--title", "T", "--tag", "t", "--category", "c", "--project", "p", "--server", srv.URL, "--api-key", "sth_flag_wins12345"}, &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("send failed: %v (stderr: %s)", err, stderr.String())
 	}
@@ -116,7 +116,7 @@ func TestSend401GivesActionableHint(t *testing.T) {
 	defer srv.Close()
 
 	var stdout, stderr strings.Builder
-	err = Run([]string{"send", fixtureHTML, "--tag", "t", "--category", "c", "--project", "p", "--server", srv.URL}, &stdout, &stderr)
+	err = Run([]string{"send", fixtureHTML, "--title", "T", "--tag", "t", "--category", "c", "--project", "p", "--server", srv.URL}, &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected send to fail on 401")
 	}

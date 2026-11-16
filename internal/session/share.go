@@ -221,7 +221,7 @@ func (s *Store) IsSessionSharedWith(sessionID, userID string) (bool, error) {
 // the granted page path ("" = whole session).
 func (s *Store) ListSharedWithUser(userID string) ([]SharedDocument, error) {
 	rows, err := s.db.Query(`
-		SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), s.created_at_unix,
+		SELECT s.session_id, COALESCE(s.stored_entry_file, s.entry_file), COALESCE(s.title, ''), s.created_at_unix,
 			GROUP_CONCAT(dt.tag, char(1)),
 			dc.category,
 			dp.project,
@@ -250,19 +250,21 @@ func (s *Store) ListSharedWithUser(userID string) ([]SharedDocument, error) {
 		var (
 			doc           SharedDocument
 			entryFile     string
+			title         string
 			createdAtUnix int64
 			tagsStr       sql.NullString
 			category      sql.NullString
 			project       sql.NullString
 		)
 		if err := rows.Scan(
-			&doc.SessionID, &entryFile, &createdAtUnix,
+			&doc.SessionID, &entryFile, &title, &createdAtUnix,
 			&tagsStr, &category, &project,
 			&doc.ChainID, &doc.VersionNo, &doc.OwnerUsername, &doc.Path,
 		); err != nil {
 			return nil, err
 		}
 		doc.Name = entryFile
+		doc.Title = title
 		doc.Category = category.String
 		doc.Project = project.String
 		doc.CreatedAt = time.Unix(0, createdAtUnix).UTC().Format(time.RFC3339)

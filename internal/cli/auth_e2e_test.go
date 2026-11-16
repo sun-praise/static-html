@@ -94,7 +94,7 @@ func (f *authE2EFixture) cliUser(args ...string) string {
 // cliSend runs `sth send` and returns (stdout, err).
 func (f *authE2EFixture) cliSend(file, apiKey string) (string, error) {
 	f.t.Helper()
-	args := []string{"send", file, "--tag", "t", "--category", "c", "--project", "p", "--server", f.origin}
+	args := []string{"send", file, "--title", "E2E Doc", "--tag", "t", "--category", "c", "--project", "p", "--server", f.origin}
 	if apiKey != "" {
 		args = append(args, "--api-key", apiKey)
 	}

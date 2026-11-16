@@ -42,6 +42,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runCategorize(args[1:], stdout)
 	case "project":
 		return runProject(args[1:], stdout)
+	case "title":
+		return runTitle(args[1:], stdout)
 	case "list":
 		return runList(args[1:], stdout)
 	case "search":
@@ -68,10 +70,11 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--server-port <n>] [--db /path/to/sessions.db] [--upload-root /path/to/uploads] [--auth] [--protect-previews] [--audit-retention-days <n>]
-  sth send <file.html> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939] [--single] [--root <dir>] [--api-key <key>]
+  sth send <file.html> --title <title> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939] [--single] [--root <dir>] [--api-key <key>]
   sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
   sth categorize <session-id> <category> [--db /path/to/sessions.db] [--server http://...]
   sth project <session-id> <project> [--db /path/to/sessions.db] [--server http://...]
+  sth title <session-id> <title> [--db /path/to/sessions.db] [--server http://...]
   sth list [--tag <tag>] [--category <cat>] [--project <proj>] [--limit <n>] [--offset <n>] [--db /path/to/sessions.db]
   sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>] [--limit <n>] [--offset <n>] [--db /path/to/sessions.db]
   sth delete <session-id> [--db /path/to/sessions.db]
@@ -299,11 +302,20 @@ func runSend(args []string, stdout, stderr io.Writer) error {
 		return errors.New("missing HTML file path")
 	}
 
+	// Normalize up front so a whitespace-only or over-long title fails before
+	// the archive is built and uploaded.
+	title, err := session.NormalizeTitle(flags["title"])
+	if err != nil {
+		return err
+	}
 	tag := flags["tag"]
 	category := flags["category"]
 	project := flags["project"]
 	rootArg, hasRoot := flags["root"]
 
+	if title == "" {
+		return errors.New("--title is required")
+	}
 	if tag == "" {
 		return errors.New("--tag is required")
 	}
@@ -375,7 +387,7 @@ func runSend(args []string, stdout, stderr io.Writer) error {
 
 	tags := strings.Split(tag, ",")
 
-	requestBody, contentType, err := newUploadRequestBody(entryFile, rootDir, entryPath, forceSingle, tags, category, project)
+	requestBody, contentType, err := newUploadRequestBody(entryFile, rootDir, entryPath, title, forceSingle, tags, category, project)
 	if err != nil {
 		return err
 	}
@@ -451,7 +463,7 @@ func resolveAPIKey(flags map[string]string) string {
 	return os.Getenv("STH_API_KEY")
 }
 
-func newUploadRequestBody(entryFile, rootDir, entryPath string, forceSingle bool, tags []string, category, project string) (io.Reader, string, error) {
+func newUploadRequestBody(entryFile, rootDir, entryPath, title string, forceSingle bool, tags []string, category, project string) (io.Reader, string, error) {
 	uploadName := filepath.Base(entryFile)
 	entryPathSlash := filepath.ToSlash(entryPath)
 
@@ -466,6 +478,10 @@ func newUploadRequestBody(entryFile, rootDir, entryPath string, forceSingle bool
 			return
 		}
 		if err := formWriter.WriteField("entryPath", entryPathSlash); err != nil {
+			_ = writer.CloseWithError(err)
+			return
+		}
+		if err := formWriter.WriteField("title", title); err != nil {
 			_ = writer.CloseWithError(err)
 			return
 		}

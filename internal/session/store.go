@@ -18,6 +18,7 @@ type Session struct {
 	RootDir         string    `json:"rootDir"`
 	StoredEntryFile string    `json:"-"`
 	StoredRootDir   string    `json:"-"`
+	Title           string    `json:"-"`
 	CreatedAt       time.Time `json:"-"`
 }
 
@@ -149,7 +150,7 @@ func (s *Store) CreateUploaded(entryFile string, storedEntryFile string) (Sessio
 
 func (s *Store) Get(id string) (Session, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, entry_file, root_dir, COALESCE(stored_entry_file, entry_file), COALESCE(stored_root_dir, root_dir), created_at_unix FROM sessions WHERE session_id = ?`,
+		`SELECT session_id, entry_file, root_dir, COALESCE(stored_entry_file, entry_file), COALESCE(stored_root_dir, root_dir), COALESCE(title, ''), created_at_unix FROM sessions WHERE session_id = ?`,
 		id,
 	)
 
@@ -157,7 +158,7 @@ func (s *Store) Get(id string) (Session, bool, error) {
 		session       Session
 		createdAtUnix int64
 	)
-	if err := row.Scan(&session.ID, &session.EntryFile, &session.RootDir, &session.StoredEntryFile, &session.StoredRootDir, &createdAtUnix); err != nil {
+	if err := row.Scan(&session.ID, &session.EntryFile, &session.RootDir, &session.StoredEntryFile, &session.StoredRootDir, &session.Title, &createdAtUnix); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, false, nil
 		}
@@ -189,7 +190,7 @@ func (s *Store) SoftDelete(id string) error {
 }
 
 func (s *Store) ListRecent(limit int) ([]Session, error) {
-	query := `SELECT session_id, entry_file, root_dir, COALESCE(stored_entry_file, entry_file), COALESCE(stored_root_dir, root_dir), created_at_unix FROM sessions ORDER BY created_at_unix DESC`
+	query := `SELECT session_id, entry_file, root_dir, COALESCE(stored_entry_file, entry_file), COALESCE(stored_root_dir, root_dir), COALESCE(title, ''), created_at_unix FROM sessions ORDER BY created_at_unix DESC`
 	args := make([]any, 0, 1)
 	if limit > 0 {
 		query += ` LIMIT ?`
@@ -208,7 +209,7 @@ func (s *Store) ListRecent(limit int) ([]Session, error) {
 			session       Session
 			createdAtUnix int64
 		)
-		if err := rows.Scan(&session.ID, &session.EntryFile, &session.RootDir, &session.StoredEntryFile, &session.StoredRootDir, &createdAtUnix); err != nil {
+		if err := rows.Scan(&session.ID, &session.EntryFile, &session.RootDir, &session.StoredEntryFile, &session.StoredRootDir, &session.Title, &createdAtUnix); err != nil {
 			return nil, err
 		}
 
@@ -233,6 +234,7 @@ func (s *Store) init() error {
 			session_id TEXT PRIMARY KEY,
 			entry_file TEXT NOT NULL,
 			root_dir TEXT NOT NULL,
+			title TEXT DEFAULT NULL,
 			created_at_unix INTEGER NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS idx_sessions_created_at_unix
@@ -339,6 +341,15 @@ func (s *Store) ensureColumns() error {
 	}
 	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_sessions_chain ON sessions(chain_id, version_no)`); err != nil {
 		return err
+	}
+
+	// title: nullable display title bound to the session. NULL/empty means
+	// "no title" (legacy sessions created before the column existed);
+	// display falls back to the entry-file basename.
+	if !columns["title"] {
+		if _, err := s.db.Exec(`ALTER TABLE sessions ADD COLUMN title TEXT DEFAULT NULL`); err != nil {
+			return err
+		}
 	}
 
 	return nil
