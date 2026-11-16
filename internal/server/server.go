@@ -1316,6 +1316,14 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Validate before creating the session row, so a rejected title cannot
+	// orphan a session on the server's local disk.
+	trimmedTitle, err := session.NormalizeTitle(req.Title)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	entryFile, err := filepath.Abs(req.FilePath)
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Failed to resolve filePath.")
@@ -1348,7 +1356,7 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := s.setSessionMetadata(session.ID, req.Tags, req.Category, req.Project, req.Title); err != nil {
+	if err := s.setSessionMetadata(session.ID, req.Tags, req.Category, req.Project, trimmedTitle); err != nil {
 		if writeTitleValidationError(w, err) {
 			return
 		}
@@ -1409,7 +1417,9 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 	defer archiveFile.Close()
 
 	tags := r.Form["tags"]
-	title := strings.TrimSpace(r.FormValue("title"))
+	// Keep the raw form value: NormalizeTitle distinguishes an absent title
+	// (accepted, for legacy clients) from a whitespace-only one (rejected 400).
+	title := r.FormValue("title")
 	category := strings.TrimSpace(r.FormValue("category"))
 	project := strings.TrimSpace(r.FormValue("project"))
 
@@ -1423,6 +1433,14 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 	}
 	if project == "" {
 		writeJSONError(w, http.StatusBadRequest, "project is required.")
+		return
+	}
+
+	// Validate before creating the session row or unpacking the archive, so a
+	// rejected title cannot orphan a session or leave uploaded files behind.
+	trimmedTitle, err := session.NormalizeTitle(title)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1479,7 +1497,7 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := s.setSessionMetadata(sess.ID, tags, category, project, title); err != nil {
+	if err := s.setSessionMetadata(sess.ID, tags, category, project, trimmedTitle); err != nil {
 		if writeTitleValidationError(w, err) {
 			return
 		}

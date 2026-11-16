@@ -32,6 +32,45 @@ func TestSendRequiresTitle(t *testing.T) {
 	}
 }
 
+func TestSendRejectsWhitespaceTitle(t *testing.T) {
+	t.Parallel()
+
+	fixtureHTML, err := filepath.Abs(filepath.Join("..", "..", "fixtures", "basic", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = Run([]string{"send", fixtureHTML, "--title", "   ", "--tag", "test", "--category", "cat", "--project", "proj"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected send to fail with a whitespace-only --title")
+	}
+	if !strings.Contains(err.Error(), "whitespace-only") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendRejectsTooLongTitle(t *testing.T) {
+	t.Parallel()
+
+	fixtureHTML, err := filepath.Abs(filepath.Join("..", "..", "fixtures", "basic", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	long := strings.Repeat("长", session.MaxTitleRunes+1)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	err = Run([]string{"send", fixtureHTML, "--title", long, "--tag", "test", "--category", "cat", "--project", "proj"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected send to fail with an over-long --title")
+	}
+	if !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestTitleCommandSetsTitle(t *testing.T) {
 	t.Parallel()
 
@@ -133,7 +172,7 @@ func TestTitleCommandRejectsEmptyTitle(t *testing.T) {
 	}
 }
 
-func TestTitleCommandRejectsTooLongTitle(t *testing.T) {
+func TestStoreSetTitleRejectsTooLongTitle(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
@@ -155,6 +194,30 @@ func TestTitleCommandRejectsTooLongTitle(t *testing.T) {
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTitleCommandRejectsTooLongTitle(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := session.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := store.Create("/tmp/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	long := strings.Repeat("长", session.MaxTitleRunes+1)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := Run([]string{"title", sess.ID, long, "--db", dbPath}, &stdout, &stderr); err == nil {
+		t.Fatal("expected CLI title command to reject an over-long title")
 	}
 }
 

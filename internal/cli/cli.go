@@ -302,7 +302,12 @@ func runSend(args []string, stdout, stderr io.Writer) error {
 		return errors.New("missing HTML file path")
 	}
 
-	title := flags["title"]
+	// Normalize up front so a whitespace-only or over-long title fails before
+	// the archive is built and uploaded.
+	title, err := session.NormalizeTitle(flags["title"])
+	if err != nil {
+		return err
+	}
 	tag := flags["tag"]
 	category := flags["category"]
 	project := flags["project"]

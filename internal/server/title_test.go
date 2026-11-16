@@ -1,10 +1,12 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -198,6 +200,63 @@ func TestCreateSessionRejectsWhitespaceTitle(t *testing.T) {
 	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected whitespace-only title to be rejected with 400, got %d body=%s", resp.StatusCode, respBody)
+	}
+}
+
+func TestCreateUploadedRejectsWhitespaceTitle(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv := newTitleTestServer(t, store)
+
+	var archive bytes.Buffer
+	zipWriter := zip.NewWriter(&archive)
+	fileWriter, err := zipWriter.Create("index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fileWriter.Write([]byte("<!doctype html><title>ok</title>")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	form := &bytes.Buffer{}
+	formWriter := multipart.NewWriter(form)
+	fields := map[string]string{
+		"entryFile": "index.html",
+		"entryPath": "index.html",
+		"title":     "   ",
+		"category":  "cat",
+		"project":   "proj",
+		"tags":      "test",
+	}
+	for name, value := range fields {
+		if err := formWriter.WriteField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archiveWriter, err := formWriter.CreateFormFile("archive", "site.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := archiveWriter.Write(archive.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := formWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Post(srv.Origin()+"/api/sessions", formWriter.FormDataContentType(), form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected whitespace-only multipart title to be rejected with 400, got %d body=%s", resp.StatusCode, respBody)
 	}
 }
 
