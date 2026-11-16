@@ -3,9 +3,11 @@ package session
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 var ErrSessionNotFound = errors.New("session not found")
@@ -197,20 +199,50 @@ func (s *Store) ClearProject(sessionID string) error {
 	return err
 }
 
+// MaxTitleRunes caps the display title length so over-long titles cannot
+// blow out the home-page list or drawer layout.
+const MaxTitleRunes = 200
+
+var (
+	// ErrTitleEmpty is returned when a title is present but whitespace-only.
+	ErrTitleEmpty = errors.New("title must not be empty or whitespace-only")
+	// ErrTitleTooLong is returned when a title exceeds MaxTitleRunes.
+	ErrTitleTooLong = fmt.Errorf("title must be at most %d characters", MaxTitleRunes)
+)
+
+// NormalizeTitle validates a user-supplied display title and returns the
+// trimmed value. A title that is present but whitespace-only, or one that
+// exceeds MaxTitleRunes, is rejected. An entirely absent title ("") is
+// accepted and normalized to "" so older clients without a title keep
+// working.
+func NormalizeTitle(title string) (string, error) {
+	trimmed := strings.TrimSpace(title)
+	if trimmed == "" && title != "" {
+		return "", ErrTitleEmpty
+	}
+	if utf8.RuneCountInString(trimmed) > MaxTitleRunes {
+		return "", ErrTitleTooLong
+	}
+	return trimmed, nil
+}
+
 // SetTitle binds a display title to the session. Empty titles are rejected:
 // title is required at send time and, unlike category/project, has no clear
 // semantics — the display falls back to the entry-file basename only for
 // legacy sessions that never had a title.
 func (s *Store) SetTitle(sessionID, title string) error {
-	title = strings.TrimSpace(title)
+	title, err := NormalizeTitle(title)
+	if err != nil {
+		return err
+	}
 	if title == "" {
-		return errors.New("title must not be empty")
+		return ErrTitleEmpty
 	}
 	if !s.sessionExists(sessionID) {
 		return ErrSessionNotFound
 	}
 
-	_, err := s.db.Exec(`UPDATE sessions SET title = ? WHERE session_id = ?`, title, sessionID)
+	_, err = s.db.Exec(`UPDATE sessions SET title = ? WHERE session_id = ?`, title, sessionID)
 	return err
 }
 

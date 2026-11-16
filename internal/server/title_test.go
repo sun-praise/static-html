@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sun-praise/static-html/internal/session"
 )
@@ -165,6 +167,40 @@ func TestCreateSessionWithTitleAndRename(t *testing.T) {
 	}
 }
 
+func TestCreateSessionRejectsWhitespaceTitle(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv := newTitleTestServer(t, store)
+
+	fixtureHTML, err := filepath.Abs(filepath.Join("..", "..", "fixtures", "basic", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"filePath": fixtureHTML,
+		"title":    "   ",
+		"tags":     []string{"test"},
+		"category": "test-cat",
+		"project":  "test-proj",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Post(srv.Origin()+"/api/sessions", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected whitespace-only title to be rejected with 400, got %d body=%s", resp.StatusCode, respBody)
+	}
+}
+
 func TestSetTitleEndpointRejectsEmptyTitle(t *testing.T) {
 	t.Parallel()
 
@@ -182,6 +218,43 @@ func TestSetTitleEndpointRejectsEmptyTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 	req, err := http.NewRequest(http.MethodPut, srv.Origin()+"/api/sessions/"+sessionID+"/title", bytes.NewReader(emptyBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		result, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected status 400, got %d body=%s", resp.StatusCode, result)
+	}
+}
+
+func TestSetTitleEndpointRejectsTooLongTitle(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv := newTitleTestServer(t, store)
+
+	fixtureHTML, err := filepath.Abs(filepath.Join("..", "..", "fixtures", "basic", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := createTestSession(t, srv.Origin(), fixtureHTML)
+
+	tooLong := strings.Repeat("长", session.MaxTitleRunes+1)
+	if utf8.RuneCountInString(tooLong) <= session.MaxTitleRunes {
+		t.Fatalf("test title should exceed the cap")
+	}
+
+	longBody, err := json.Marshal(map[string]string{"title": tooLong})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPut, srv.Origin()+"/api/sessions/"+sessionID+"/title", bytes.NewReader(longBody))
 	if err != nil {
 		t.Fatal(err)
 	}

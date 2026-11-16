@@ -234,6 +234,7 @@ func (s *Store) init() error {
 			session_id TEXT PRIMARY KEY,
 			entry_file TEXT NOT NULL,
 			root_dir TEXT NOT NULL,
+			title TEXT DEFAULT NULL,
 			created_at_unix INTEGER NOT NULL
 		);
 		CREATE INDEX IF NOT EXISTS idx_sessions_created_at_unix

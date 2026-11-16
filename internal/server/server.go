@@ -547,7 +547,7 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
       <ul>
         {{- range .SharedSessions }}
         <li>
-          <a href="{{ .PreviewPath }}">{{ .Name }}</a>
+          <a href="{{ .PreviewPath }}">{{ .DisplayName }}</a>
           <time datetime="{{ .CreatedAt }}">{{ .CreatedAt }}</time>
           <span class="meta project">by {{ .Owner }}</span>
           {{- if .SharePath }}
@@ -1171,9 +1171,15 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			if d.Path != "" {
 				previewPath = "/s/" + d.SessionID + "/" + (&url.URL{Path: d.Path}).EscapedPath()
 			}
+			displayName := d.Title
+			if displayName == "" {
+				displayName = filepath.Base(d.Name)
+			}
 			sharedItems = append(sharedItems, homePageSession{
 				ID:          d.SessionID,
 				Name:        filepath.Base(d.Name),
+				Title:       d.Title,
+				DisplayName: displayName,
 				EntryFile:   d.Name,
 				CreatedAt:   d.CreatedAt,
 				PreviewPath: previewPath,
@@ -1343,6 +1349,9 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 	}
 
 	if err := s.setSessionMetadata(session.ID, req.Tags, req.Category, req.Project, req.Title); err != nil {
+		if writeTitleValidationError(w, err) {
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1471,6 +1480,9 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := s.setSessionMetadata(sess.ID, tags, category, project, title); err != nil {
+		if writeTitleValidationError(w, err) {
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1969,6 +1981,15 @@ func (s *Server) requireSession(sessionID string) (session.Session, bool, error)
 }
 
 func (s *Server) setSessionMetadata(sessionID string, tags []string, category, project, title string) error {
+	// Validate the title before any metadata is written, so a rejected title
+	// can never leave half-written tags/category/project behind. The title is
+	// optional at the API level so older CLI clients that do not send one
+	// keep working; the CLI itself enforces --title for new sessions.
+	trimmedTitle, err := session.NormalizeTitle(title)
+	if err != nil {
+		return err
+	}
+
 	if err := s.store.AddTags(sessionID, tags...); err != nil {
 		return err
 	}
@@ -1978,14 +1999,23 @@ func (s *Server) setSessionMetadata(sessionID string, tags []string, category, p
 	if err := s.store.SetProject(sessionID, project); err != nil {
 		return err
 	}
-	// Title is optional at the API level so older CLI clients that do not
-	// send --title keep working; the CLI itself enforces it for new sessions.
-	if title != "" {
-		if err := s.store.SetTitle(sessionID, title); err != nil {
+	if trimmedTitle != "" {
+		if err := s.store.SetTitle(sessionID, trimmedTitle); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// writeTitleValidationError maps title-validation errors from
+// setSessionMetadata to a 400 response and reports whether it handled the
+// error. Anything else is left to the caller's generic handling.
+func writeTitleValidationError(w http.ResponseWriter, err error) bool {
+	if errors.Is(err, session.ErrTitleEmpty) || errors.Is(err, session.ErrTitleTooLong) {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return true
+	}
+	return false
 }
 
 func (s *Server) writeMetaOrError(w http.ResponseWriter, sessionID string, storeErr error) {
@@ -2134,12 +2164,17 @@ func (s *Server) handleSetTitle(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusBadRequest, "Request body must be valid JSON.")
 		return
 	}
-	if strings.TrimSpace(req.Title) == "" {
+	trimmedTitle, err := session.NormalizeTitle(req.Title)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if trimmedTitle == "" {
 		writeJSONError(w, http.StatusBadRequest, "title is required and cannot be cleared.")
 		return
 	}
 
-	err := s.store.SetTitle(sessionID, req.Title)
+	err = s.store.SetTitle(sessionID, trimmedTitle)
 	s.writeMetaOrError(w, sessionID, err)
 }
 

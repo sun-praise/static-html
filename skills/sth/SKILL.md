@@ -45,7 +45,7 @@ The command copies the HTML file to an isolated temporary directory (avoiding pa
 If you need to include sibling resources (CSS, JS, images) alongside the HTML file, use `sth send` directly with the directory containing those resources instead of `send-file.py`:
 
 ```bash
-sth send ./my-project-dir --title demo --tag demo --category preview --project myproj [--server URL]
+sth send ./my-project-dir --title "My Project Preview" --tag demo --category preview --project myproj [--server URL]
 ```
 
 When calling `sth send` directly, `--tag` accepts multiple comma-separated values:
