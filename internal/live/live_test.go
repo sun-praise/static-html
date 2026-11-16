@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+
+	"github.com/sun-praise/static-html/internal/analytics"
 )
 
 func TestInjectMiddlewareSkipsNonSessionPaths(t *testing.T) {
@@ -32,6 +34,9 @@ func TestInjectMiddlewareSkipsNonSessionPaths(t *testing.T) {
 	body := rec.Body.String()
 	if strings.Contains(body, "WebSocket") {
 		t.Fatal("non-session path should not have script injected")
+	}
+	if strings.Contains(body, "analysis.sun-praise.com") {
+		t.Fatal("non-session path should not have analytics injected")
 	}
 	if body != `{"ok":true}` {
 		t.Fatalf("body = %q, want unchanged JSON", body)
@@ -82,8 +87,65 @@ func TestInjectMiddlewareSkipsNonHTML(t *testing.T) {
 	if strings.Contains(body, "WebSocket") {
 		t.Fatal("CSS response should not have script injected")
 	}
+	if strings.Contains(body, "analysis.sun-praise.com") {
+		t.Fatal("CSS response should not have analytics injected")
+	}
 	if body != `body { color: red; }` {
 		t.Fatalf("body = %q, want unchanged CSS", body)
+	}
+}
+
+// TestInjectMiddlewareAddsAnalyticsOnPublicHost pins the analytics contract:
+// /s/ preview HTML served for the public deployment carries the Umami tracker,
+// including its data-domains reporting guard.
+func TestInjectMiddlewareAddsAnalyticsOnPublicHost(t *testing.T) {
+	t.Parallel()
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<html><head><title>Test</title></head><body>Hello</body></html>`))
+	})
+
+	handler := InjectMiddleware(inner)
+	req := httptest.NewRequest(http.MethodGet, "/s/abc123/", nil)
+	req.Host = analytics.PublicHost
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		"analysis.sun-praise.com/script.js",
+		`data-domains="` + analytics.PublicHost + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("public-host HTML response missing %q in body:\n%s", want, body)
+		}
+	}
+}
+
+// TestInjectMiddlewareOmitsAnalyticsOnOtherHosts pins the server-side host
+// gate: any host other than the public deployment must not receive the
+// tracker at all (intranet/local pages load no external script).
+func TestInjectMiddlewareOmitsAnalyticsOnOtherHosts(t *testing.T) {
+	t.Parallel()
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<html><head><title>Test</title></head><body>Hello</body></html>`))
+	})
+
+	for _, host := range []string{"192.168.2.15:3939", "localhost:3939", "example.com"} {
+		handler := InjectMiddleware(inner)
+		req := httptest.NewRequest(http.MethodGet, "/s/abc123/", nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if strings.Contains(rec.Body.String(), "analysis.sun-praise.com") {
+			t.Fatalf("host %q must not receive the analytics script:\n%s", host, rec.Body.String())
+		}
 	}
 }
 

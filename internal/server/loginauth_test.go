@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sun-praise/static-html/internal/analytics"
 	"github.com/sun-praise/static-html/internal/session"
 )
 
@@ -318,6 +319,60 @@ func TestHome_NoLogoutBarWhenAuthOff(t *testing.T) {
 	}
 }
 
+// TestHome_AnalyticsOnPublicHostOnly pins the server-side host gate on the
+// home page: the Umami tracker renders only for the public deployment host;
+// any other host (local dev, intranet IP) gets a page with no tracker at all.
+func TestHome_AnalyticsOnPublicHostOnly(t *testing.T) {
+	t.Parallel()
+	srv, _ := newLoginServer(t, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = analytics.PublicHost
+	rec := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"analysis.sun-praise.com/script.js",
+		`data-domains="` + analytics.PublicHost + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("public-host homepage missing %q", want)
+		}
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
+	req2.Host = "192.168.2.15:3939"
+	rec2 := httptest.NewRecorder()
+	srv.httpServer.Handler.ServeHTTP(rec2, req2)
+	if strings.Contains(rec2.Body.String(), "analysis.sun-praise.com") {
+		t.Fatalf("non-public homepage must not carry the tracker:\n%s", rec2.Body.String())
+	}
+}
+
+// TestLoginAndRegister_NeverShipAnalytics guards the credential pages: login
+// and register templates must not load the analytics tracker at all — the
+// same-origin execution face is not worth the analytics value there.
+func TestLoginAndRegister_NeverShipAnalytics(t *testing.T) {
+	t.Parallel()
+	srv, _ := newLoginServer(t, true)
+
+	for _, path := range []string{"/login", "/register"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Host = analytics.PublicHost // even on the public host, no tracker
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: expected 200, got %d", path, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "analysis.sun-praise.com") {
+			t.Fatalf("%s page must not ship the analytics tracker:\n%s", path, rec.Body.String())
+		}
+	}
+}
+
 func TestMiddleware_CookieDoesNotAuthorizeMutating(t *testing.T) {
 	t.Parallel()
 	srv, _ := newLoginServer(t, true)
@@ -405,11 +460,11 @@ func TestSafeRedirectTarget(t *testing.T) {
 		{"", "/"},
 		{"/", "/"},
 		{"/dashboard", "/dashboard"},
-		{"//evil.com", "/"},      // protocol-relative absolute
-		{"/\\evil.com", "/"},     // backslash trick
+		{"//evil.com", "/"},       // protocol-relative absolute
+		{"/\\evil.com", "/"},      // backslash trick
 		{"https://evil.com", "/"}, // scheme
 		{"http://evil.com", "/"},
-		{"dashboard", "/"},       // relative, no leading slash
+		{"dashboard", "/"}, // relative, no leading slash
 	}
 	for _, c := range cases {
 		if got := safeRedirectTarget(c.in); got != c.want {

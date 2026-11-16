@@ -28,7 +28,10 @@ const userCtxKey ctxKey = iota
 //     session cookie is deliberately ignored here to make CSRF structurally
 //     impossible: a cross-site request cannot set a custom Authorization
 //     header, so it can never satisfy this check. Browser users browse with
-//     the cookie; writes still go through CLI (sth send --api-key).
+//     the cookie; writes still go through CLI (sth send --api-key). The one
+//     exception is share management (PUT/DELETE /api/sessions/<id>/shares),
+//     which additionally accepts the login cookie for the browser share
+//     panel — safe because the cookie is SameSite=Lax plus an Origin check.
 //   - Read methods (GET/HEAD) on other paths accept EITHER a valid session
 //     cookie OR a Bearer key, so both browsers and API clients work. When
 //     neither is present and the client wants HTML (a browser), we redirect
@@ -57,8 +60,15 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		// Mutating requests: Bearer only (CSRF-safe). The session cookie is
 		// intentionally NOT consulted, so a stolen/leaked cookie cannot be
-		// used to perform writes via a cross-site request.
+		// used to perform writes via a cross-site request. Exception: share
+		// management also accepts the login cookie, because the home-page
+		// share panel is a browser feature (see requireBearerOrCookie for
+		// why that stays CSRF-safe).
 		if isMutatingMethod(r.Method) {
+			if isShareManagementPath(r.Method, r.URL.Path) {
+				s.requireBearerOrCookie(w, r, next)
+				return
+			}
 			s.requireBearer(w, r, next)
 			return
 		}
@@ -85,6 +95,9 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			w.Header().Set("WWW-Authenticate", `Bearer realm="sth"`)
+			// A 302 to /login is ordinary browser navigation and is not
+			// audited; only the API-client 401 is a credential rejection.
+			s.auditRejected(r, "no_credentials")
 			http.Error(w, "Unauthorized: a valid API key is required.", http.StatusUnauthorized)
 			return
 		}
@@ -105,11 +118,76 @@ func (s *Server) requireBearer(w http.ResponseWriter, r *http.Request, next http
 	}
 	if !ok {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="sth"`)
+		s.auditRejected(r, "invalid_bearer")
 		http.Error(w, "Unauthorized: a valid API key is required.", http.StatusUnauthorized)
 		return
 	}
 	ctx := context.WithValue(r.Context(), userCtxKey, uid)
 	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// isShareManagementPath reports whether a mutating request targets the
+// share-management API — the one mutating surface browsers need (the home
+// page share panel), so it may authenticate with the login cookie.
+func isShareManagementPath(method, path string) bool {
+	if !strings.HasPrefix(path, "/api/sessions/") {
+		return false
+	}
+	if method == http.MethodPut && strings.HasSuffix(path, "/shares") {
+		return true
+	}
+	return method == http.MethodDelete && parseShareTargetPathOK(path)
+}
+
+// requireBearerOrCookie authenticates a share-management mutation via either
+// a Bearer key (CLI) or the login session cookie (browser share panel). The
+// cookie path stays CSRF-safe: the session cookie is SameSite=Lax, so
+// cross-site requests never carry it, and any Origin header present must
+// still match the request host (defense in depth for older browsers).
+func (s *Server) requireBearerOrCookie(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	uid, ok, err := s.verifyBearer(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	viaCookie := false
+	if !ok {
+		uid, ok, err = s.verifySessionCookie(r)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		viaCookie = ok
+	}
+	if !ok {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="sth"`)
+		s.auditRejected(r, "invalid_bearer_or_cookie")
+		http.Error(w, "Unauthorized: a valid API key is required.", http.StatusUnauthorized)
+		return
+	}
+	if viaCookie && !sameOrigin(r) {
+		s.auditRejected(r, "cross_origin")
+		http.Error(w, "Forbidden: cross-origin request rejected.", http.StatusForbidden)
+		return
+	}
+	ctx := context.WithValue(r.Context(), userCtxKey, uid)
+	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// sameOrigin reports whether the request's Origin header, when present,
+// matches the request host. Browsers attach Origin to cross-site fetches; an
+// absent Origin means a non-browser client (curl, sth CLI), which presents a
+// Bearer key and has no cookie to abuse.
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return u.Host == r.Host
 }
 
 // isAuthPage reports whether path is one of the browser auth pages that must

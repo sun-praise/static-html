@@ -114,9 +114,9 @@ func watchAndSync(ctx context.Context, dir, sessionID, serverURL, apiKey string,
 	defer stop()
 
 	var (
-		mu         sync.Mutex
-		pending    = make(map[string]struct{})
-		debounce   *time.Timer
+		mu       sync.Mutex
+		pending  = make(map[string]struct{})
+		debounce *time.Timer
 	)
 	const debounceMs = 300 * time.Millisecond
 

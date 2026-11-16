@@ -19,7 +19,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/sun-praise/static-html/internal/analytics"
 	"github.com/sun-praise/static-html/internal/live"
 	"github.com/sun-praise/static-html/internal/session"
 )
@@ -65,20 +67,32 @@ type Server struct {
 	// protectPreviews is also set.
 	authEnabled bool
 	// protectPreviews, when true (implies authEnabled), additionally
-	// requires a valid API key for GET /s/<id>/... and /s/<id>/ws. The key
-	// need not belong to the session owner — preview access is gated only
-	// by key validity, not ownership.
+	// requires an authenticated user for GET /s/<id>/... and /s/<id>/ws. An
+	// owned session is visible only to its owner and the users it is shared
+	// with (see authorizePreview); legacy unowned sessions stay visible to
+	// any authenticated user.
 	protectPreviews bool
 	// allowRegistration gates the /register page. It is meaningful only when
 	// authEnabled is true (when auth is off the whole auth layer is a no-op).
 	// Defaults to true via SetAllowRegistration so deployments are open by
 	// default; set false to require CLI-managed accounts only.
 	allowRegistration bool
-	store      *session.Store
-	httpServer *http.Server
-	listener   net.Listener
-	liveMgr    *live.Manager
-	mu         sync.RWMutex
+	store             *session.Store
+	httpServer        *http.Server
+	listener          net.Listener
+	liveMgr           *live.Manager
+	// Audit state. auditRetentionDays/auditPruneStop/auditPruneDone are only
+	// accessed with mu held (Start, Stop and SetAuditRetentionDays all hold
+	// it); auditReject* have their own mutex, and auditUsernameCache is a
+	// concurrency-safe sync.Map.
+	auditRetentionDays int
+	auditPruneStop     chan struct{}
+	auditPruneDone     chan struct{}
+	auditRejectMu      sync.Mutex
+	auditRejectWindow  int64
+	auditRejectSeen    map[string]struct{}
+	auditUsernameCache sync.Map
+	mu                 sync.RWMutex
 }
 
 type createSessionRequest struct {
@@ -99,24 +113,26 @@ type createSessionResponse struct {
 }
 
 type homePageData struct {
-	Sessions     []homePageSession
-	CurrentUser  string // authenticated username, empty when auth is off
-	Search       string
-	FilterTag   string
-	FilterCat   string
-	FilterProj  string
-	ClearSearch string
-	ClearTag    string
-	ClearCat    string
-	ClearProj   string
-	Page        int
-	TotalPages  int
-	HasPrev     bool
-	HasNext     bool
-	PrevPage    int
-	NextPage    int
-	PageRange   []int
-	PageURL     map[int]string
+	Sessions       []homePageSession
+	SharedSessions []homePageSession
+	CurrentUser    string // authenticated username, empty when auth is off
+	Search         string
+	FilterTag      string
+	FilterCat      string
+	FilterProj     string
+	ClearSearch    string
+	ClearTag       string
+	ClearCat       string
+	ClearProj      string
+	Page           int
+	TotalPages     int
+	HasPrev        bool
+	HasNext        bool
+	PrevPage       int
+	NextPage       int
+	PageRange      []int
+	PageURL        map[int]string
+	Analytics      template.HTML // Umami tracker on the public deployment, empty otherwise
 }
 
 type homePageSession struct {
@@ -130,6 +146,10 @@ type homePageSession struct {
 	Tags        []string
 	Category    string
 	Project     string
+	Owner       string // sharing owner's username, set for shared entries only
+	// SharePath is the page path granted to the viewer; empty for whole-
+	// session grants. Set for shared entries only.
+	SharePath string
 }
 
 var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
@@ -137,6 +157,7 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
   <head>
     <meta charset="utf-8">
     <title>HTML Preview Server</title>
+    {{.Analytics}}
     <style>
       :root {
         color-scheme: light;
@@ -375,6 +396,66 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         border: 1px solid transparent;
         cursor: default;
       }
+      .share-panel {
+        margin-top: 0.4rem;
+        padding: 0.5rem 0.6rem;
+        border: 1px solid #d6d1c6;
+        border-radius: 8px;
+        background: #fafaf7;
+        font-size: 0.85rem;
+        max-width: 360px;
+      }
+      .share-panel .share-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.15rem 0;
+      }
+      .share-panel .share-scope {
+        color: #5a5a5a;
+        font-size: 0.78rem;
+        margin-left: 0.3rem;
+      }
+      .share-panel .share-remove {
+        border: none;
+        background: none;
+        color: #aaa;
+        cursor: pointer;
+        font-size: 0.9rem;
+        padding: 0 0.3rem;
+      }
+      .share-panel .share-remove:hover {
+        color: #dc2626;
+      }
+      .share-panel .share-empty {
+        color: #5a5a5a;
+      }
+      .share-panel .share-add {
+        display: flex;
+        gap: 0.4rem;
+        margin-top: 0.4rem;
+      }
+      .share-panel .share-add input {
+        flex: 1;
+        min-width: 0;
+        padding: 0.25rem 0.5rem;
+        border: 1px solid #d6d1c6;
+        border-radius: 6px;
+        background: #fff;
+        font-size: 0.85rem;
+      }
+      .share-panel .share-add button {
+        padding: 0.25rem 0.7rem;
+        border: 1px solid #d6d1c6;
+        border-radius: 6px;
+        background: #f2efe6;
+        cursor: pointer;
+        font-size: 0.85rem;
+      }
+      .share-panel .share-error {
+        margin-top: 0.3rem;
+        color: #dc2626;
+      }
     </style>
   </head>
   <body>
@@ -409,14 +490,17 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         {{- end }}
       </div>
       {{- end }}
-      <ul>
+      <ul class="session-list">
       {{- if .Sessions }}
         {{- range .Sessions }}
-        <li>
+        <li data-session-id="{{ .ID }}">
           <a href="{{ .PreviewPath }}">{{ .DisplayName }}</a>
           <time datetime="{{ .CreatedAt }}">{{ .CreatedAt }}</time>
           <a class="action-btn download-btn" href="/api/sessions/{{ .ID }}/download" title="Download" download>⬇</a>
           <button class="action-btn share-btn" data-share-url="{{ .PreviewPath }}" title="Share">🔗</button>
+          {{- if $.CurrentUser }}
+          <button class="action-btn shares-btn" title="Manage shares">👥</button>
+          {{- end }}
           <button class="delete-btn" data-session-id="{{ .ID }}" title="Delete session">&times;</button>
           {{- if or .Tags .Category .Project }}
           <div class="meta">
@@ -458,16 +542,49 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         {{- end }}
       </nav>
       {{- end }}
+      {{- if .SharedSessions }}
+      <h2>Shared with you</h2>
+      <ul>
+        {{- range .SharedSessions }}
+        <li>
+          <a href="{{ .PreviewPath }}">{{ .Name }}</a>
+          <time datetime="{{ .CreatedAt }}">{{ .CreatedAt }}</time>
+          <span class="meta project">by {{ .Owner }}</span>
+          {{- if .SharePath }}
+          <span class="meta tag">page: {{ .SharePath }}</span>
+          {{- end }}
+          {{- if or .Tags .Category .Project }}
+          <div class="meta">
+            {{- range .Tags }}
+            <a href="?tag={{ . }}" class="tag">{{ . }}</a>
+            {{- end }}
+            {{- if .Category }}
+            <a href="?category={{ .Category }}" class="category">{{ .Category }}</a>
+            {{- end }}
+            {{- if .Project }}
+            <a href="?project={{ .Project }}" class="project">{{ .Project }}</a>
+            {{- end }}
+          </div>
+          {{- end }}
+        </li>
+        {{- end }}
+      </ul>
+      {{- end }}
     </main>
     <script>
-    document.querySelector('ul').addEventListener('click', function(e) {
+    var listEl = document.querySelector('.session-list');
+    if (listEl) {
+      listEl.addEventListener('click', onListClick);
+      listEl.addEventListener('submit', onListSubmit);
+    }
+
+    function onListClick(e) {
       var btn = e.target.closest('.delete-btn');
       if (btn) {
-        var id = btn.dataset.sessionId;
         var li = btn.closest('li');
         var name = li.querySelector('a').textContent;
         if (!confirm('Delete "' + name + '"?')) return;
-        fetch('/api/sessions/' + id, { method: 'DELETE' }).then(function(r) {
+        fetch('/api/sessions/' + li.dataset.sessionId, { method: 'DELETE' }).then(function(r) {
           if (r.ok) { li.remove(); } else { alert('Delete failed: ' + r.status); }
         }).catch(function() { alert('Network error'); });
         return;
@@ -484,12 +601,119 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
             setTimeout(function() { shareBtn.textContent = original; }, 1500);
           }).catch(function() {});
         }
+        return;
       }
-    });
+      var sharesBtn = e.target.closest('.shares-btn');
+      if (sharesBtn) {
+        var panel = sharePanelFor(sharesBtn.closest('li'));
+        if (panel.hidden) {
+          panel.hidden = false;
+          loadShares(panel);
+        } else {
+          panel.hidden = true;
+        }
+        return;
+      }
+      var removeBtn = e.target.closest('.share-remove');
+      if (removeBtn) {
+        var row = removeBtn.closest('.share-row');
+        var panel2 = removeBtn.closest('.share-panel');
+        var li2 = removeBtn.closest('li');
+        var target = '/api/sessions/' + li2.dataset.sessionId + '/shares/' + encodeURIComponent(row.dataset.user);
+        if (row.dataset.path) target += '?path=' + encodeURIComponent(row.dataset.path);
+        apiCall('DELETE', target, null, panel2, function(data) {
+          renderShares(panel2, data);
+        });
+      }
+    }
+
+    function onListSubmit(e) {
+      var form = e.target.closest('.share-add');
+      if (!form) return;
+      e.preventDefault();
+      var user = (form.querySelector('input[name=user]').value || '').trim();
+      var pagePath = (form.querySelector('input[name=page]').value || '').trim();
+      var panel = form.closest('.share-panel');
+      var li = form.closest('li');
+      if (!user) return;
+      apiCall('PUT', '/api/sessions/' + li.dataset.sessionId + '/shares', { user: user, path: pagePath }, panel, function(data) {
+        renderShares(panel, data);
+      });
+    }
+
+    function apiCall(method, url, body, panel, onDone) {
+      var opts = { method: method, credentials: 'same-origin' };
+      if (body) {
+        opts.headers = { 'Content-Type': 'application/json' };
+        opts.body = JSON.stringify(body);
+      }
+      fetch(url, opts)
+        .then(function(r) {
+          return r.json().then(function(data) { return { ok: r.ok, data: data }; });
+        })
+        .then(function(res) {
+          if (!res.ok) {
+            showError(panel, (res.data && res.data.error) || 'Request failed.');
+            return;
+          }
+          onDone(res.data);
+        })
+        .catch(function() { showError(panel, 'Network error'); });
+    }
+
+    function sharePanelFor(li) {
+      var panel = li.querySelector('.share-panel');
+      if (!panel) {
+        panel = document.createElement('div');
+        panel.className = 'share-panel';
+        panel.hidden = true;
+        li.appendChild(panel);
+      }
+      return panel;
+    }
+
+    function loadShares(panel) {
+      var li = panel.closest('li');
+      panel.innerHTML = '<div class="share-list">Loading…</div><div class="share-error"></div>';
+      apiCall('GET', '/api/sessions/' + li.dataset.sessionId + '/shares', null, panel, function(data) {
+        renderShares(panel, data);
+      });
+    }
+
+    function renderShares(panel, data) {
+      var rows = '';
+      var shares = (data && data.shares) || [];
+      for (var i = 0; i < shares.length; i++) {
+        var name = escapeHtml(shares[i].username);
+        var scope = shares[i].path ? escapeHtml(shares[i].path) : 'whole session';
+        var pathAttr = shares[i].path ? escapeHtml(shares[i].path) : '';
+        rows += '<div class="share-row" data-user="' + name + '" data-path="' + pathAttr + '">' +
+          '<span>' + name + ' <span class="share-scope">' + scope + '</span></span>' +
+          '<button class="share-remove" type="button" title="Revoke access">&times;</button></div>';
+      }
+      if (!rows) rows = '<div class="share-empty">Not shared with anyone.</div>';
+      panel.innerHTML =
+        '<div class="share-list">' + rows + '</div>' +
+        '<form class="share-add">' +
+        '<input name="user" placeholder="username" required maxlength="64">' +
+        '<input name="page" placeholder="page (optional)" maxlength="200">' +
+        '<button type="submit">Share</button></form>' +
+        '<div class="share-error"></div>';
+    }
+
+    function showError(panel, msg) {
+      var el = panel.querySelector('.share-error');
+      if (el) el.textContent = msg;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, function(c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
     </script>
   </body>
 </html>`))
-
 
 func New(host string, port int, store *session.Store, serverName string, serverPort int, uploadRoot string) (*Server, error) {
 	if host == "" {
@@ -505,7 +729,6 @@ func New(host string, port int, store *session.Store, serverName string, serverP
 	if serverPort < 0 || serverPort > 65535 {
 		return nil, fmt.Errorf("server: --server-port must be in range 1-65535, got %d", serverPort)
 	}
-
 
 	if store == nil {
 		return nil, errors.New("server: store must not be nil")
@@ -605,6 +828,12 @@ func (s *Server) Start() error {
 
 	s.listener = listener
 
+	if s.auditRetentionDays > 0 && s.auditPruneStop == nil {
+		s.auditPruneStop = make(chan struct{})
+		s.auditPruneDone = make(chan struct{})
+		go s.startAuditPrune(s.auditRetentionDays, s.auditPruneStop, s.auditPruneDone)
+	}
+
 	go func() {
 		err := s.httpServer.Serve(listener)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -617,14 +846,33 @@ func (s *Server) Start() error {
 
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.listener == nil {
+		s.mu.Unlock()
 		return nil
+	}
+
+	var pruneDone <-chan struct{}
+	if s.auditPruneStop != nil {
+		close(s.auditPruneStop)
+		pruneDone = s.auditPruneDone
+		s.auditPruneStop = nil
+		s.auditPruneDone = nil
 	}
 
 	err := s.httpServer.Shutdown(ctx)
 	s.listener = nil
+	s.mu.Unlock()
+
+	// Wait outside the lock: holding mu for up to 2s would block readers of
+	// AuthEnabled()/ProtectPreviews(). The caller must not close the store
+	// before this returns, or an in-flight prune reports "database is closed".
+	if pruneDone != nil {
+		select {
+		case <-pruneDone:
+		case <-time.After(2 * time.Second):
+			fmt.Fprintln(os.Stderr, "audit: prune loop did not stop within 2s")
+		}
+	}
 	return err
 }
 
@@ -713,9 +961,12 @@ func (s *Server) routes() http.Handler {
 			if strings.HasSuffix(r.URL.Path, "/ws") {
 				sid := strings.TrimPrefix(r.URL.Path, "/s/")
 				sid = strings.TrimSuffix(sid, "/ws")
-				_, found, err := s.store.Get(sid)
+				sess, found, err := s.store.Get(sid)
 				if err != nil || !found {
 					http.NotFound(w, r)
+					return
+				}
+				if !s.authorizePreview(w, r, sess, "", true) {
 					return
 				}
 				live.HandleWebSocket(s.liveMgr, func(id string) string {
@@ -748,6 +999,14 @@ func (s *Server) routes() http.Handler {
 			s.handleGetPeers(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/chain"):
 			s.handleGetChain(w, r)
+		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/shares"):
+			s.handleListShares(w, r)
+		case r.Method == http.MethodPut && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/shares"):
+			s.handleAddShare(w, r)
+		case r.Method == http.MethodDelete && parseShareTargetPathOK(r.URL.Path):
+			s.handleRemoveShare(w, r)
+		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/diff"):
+			s.handleGetDiff(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/download"):
 			s.handleDownloadSession(w, r)
 		case r.Method == http.MethodDelete && isExactSessionPath(r.URL.Path):
@@ -896,35 +1155,73 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	// who is logged in and a logout control. Empty means "no login context"
 	// (auth off), which the template treats as "don't render the logout UI".
 	loggedInUser := ""
+	var sharedItems []homePageSession
 	if uid, ok := currentUser(r); ok {
 		if u, err := s.store.FindUserByID(uid); err == nil {
 			loggedInUser = u.Username
+		}
+		sharedDocs, err := s.store.ListSharedWithUser(uid)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		sharedItems = make([]homePageSession, 0, len(sharedDocs))
+		for _, d := range sharedDocs {
+			previewPath := "/s/" + d.SessionID + "/"
+			if d.Path != "" {
+				previewPath = "/s/" + d.SessionID + "/" + (&url.URL{Path: d.Path}).EscapedPath()
+			}
+			sharedItems = append(sharedItems, homePageSession{
+				ID:          d.SessionID,
+				Name:        filepath.Base(d.Name),
+				EntryFile:   d.Name,
+				CreatedAt:   d.CreatedAt,
+				PreviewPath: previewPath,
+				Tags:        d.Tags,
+				Category:    d.Category,
+				Project:     d.Project,
+				Owner:       d.OwnerUsername,
+				SharePath:   d.Path,
+			})
 		}
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := homePageTemplate.Execute(w, homePageData{
-		Sessions:    items,
-		CurrentUser: loggedInUser,
-		Search:      search,
-		FilterTag:   filterTag,
-		FilterCat:   filterCat,
-		FilterProj:  filterProj,
-		ClearSearch: clearSearch,
-		ClearTag:    clearTag,
-		ClearCat:    clearCat,
-		ClearProj:   clearProj,
-		Page:        page,
-		TotalPages:  totalPages,
-		HasPrev:     page > 1,
-		HasNext:     page < totalPages,
-		PrevPage:    page - 1,
-		NextPage:    page + 1,
-		PageRange:   pageRange,
-		PageURL:     pageURL,
+		Sessions:       items,
+		SharedSessions: sharedItems,
+		CurrentUser:    loggedInUser,
+		Search:         search,
+		FilterTag:      filterTag,
+		FilterCat:      filterCat,
+		FilterProj:     filterProj,
+		ClearSearch:    clearSearch,
+		ClearTag:       clearTag,
+		ClearCat:       clearCat,
+		ClearProj:      clearProj,
+		Page:           page,
+		TotalPages:     totalPages,
+		HasPrev:        page > 1,
+		HasNext:        page < totalPages,
+		PrevPage:       page - 1,
+		NextPage:       page + 1,
+		PageRange:      pageRange,
+		PageURL:        pageURL,
+		Analytics:      analyticsScript(r),
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// analyticsScript renders the Umami tracker for first-party pages. It is
+// non-empty only for the public deployment (internal/analytics.PublicHost);
+// local dev and intranet hosts get an empty string, so the template emits
+// nothing at all.
+func analyticsScript(r *http.Request) template.HTML {
+	if analytics.EnabledForHost(r.Host) {
+		return template.HTML(analytics.ScriptTag)
+	}
+	return ""
 }
 
 func toHomePageSessions(docs []session.DocumentInfo) []homePageSession {
@@ -1058,6 +1355,8 @@ func (s *Server) handleCreatePathSession(w http.ResponseWriter, r *http.Request)
 		RootDir:   session.RootDir,
 	}
 
+	s.recordAudit(r, auditSessionCreate, response.SessionID, auditOK,
+		"entry="+response.EntryFile, "")
 	writeJSON(w, http.StatusCreated, response)
 }
 
@@ -1195,6 +1494,8 @@ func (s *Server) handleCreateUploadedSession(w http.ResponseWriter, r *http.Requ
 		VersionNo: versionNo,
 	}
 
+	s.recordAudit(r, auditSessionCreate, response.SessionID, auditOK,
+		"entry="+response.EntryFile, "")
 	writeJSON(w, http.StatusCreated, response)
 }
 
@@ -1218,6 +1519,10 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 
 	if !found {
 		http.Error(w, "Session not found.", http.StatusNotFound)
+		return
+	}
+
+	if !s.authorizePreview(w, r, session, assetPath, false) {
 		return
 	}
 
@@ -1856,7 +2161,7 @@ func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.requireOwner(w, r, sessionID) {
+	if !s.requireViewer(w, r, sessionID) {
 		return
 	}
 
@@ -1887,7 +2192,7 @@ func (s *Server) handleGetPeers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.requireOwner(w, r, sessionID) {
+	if !s.requireViewer(w, r, sessionID) {
 		return
 	}
 
@@ -1911,9 +2216,9 @@ func (s *Server) handleGetPeers(w http.ResponseWriter, r *http.Request) {
 // whole chain (including v1 vs. an empty baseline), so the timeline UI can
 // render "+tag" / "category: a→b" between adjacent versions.
 type chainResponse struct {
-	Chain        session.ChainInfo          `json:"chain"`
-	Current      session.ChainVersion       `json:"current"`
-	Versions     []session.ChainVersion     `json:"versions"`
+	Chain        session.ChainInfo             `json:"chain"`
+	Current      session.ChainVersion          `json:"current"`
+	Versions     []session.ChainVersion        `json:"versions"`
 	MetadataDiff []session.VersionMetadataDiff `json:"metadataDiff"`
 }
 
@@ -1935,7 +2240,7 @@ func (s *Server) handleGetChain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.requireOwner(w, r, sessionID) {
+	if !s.requireViewer(w, r, sessionID) {
 		return
 	}
 
@@ -1984,6 +2289,166 @@ func (s *Server) handleGetChain(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// diffLine is one line of an HTML content diff, with a stable kind token for
+// JSON consumers ("equal" / "add" / "delete") alongside the 1-based line
+// numbers in each document (0 when N/A).
+type diffLine struct {
+	Kind  string `json:"kind"`
+	Text  string `json:"text"`
+	OldNo int    `json:"oldNo"`
+	NewNo int    `json:"newNo"`
+}
+
+// diffResponse is the payload of GET /api/sessions/{id}/diff?from=vN&to=vM.
+// Lines is the full line-level diff in reading order; Summary gives additive
+// counts so the UI can render a "+a −b" hint without scanning the slice.
+// TooLarge is true when either input exceeded MaxDiffLines and the diff was
+// skipped: Lines then carries a single explanatory sentinel line and Summary
+// is zeroed. The UI branches on TooLarge rather than sniffing the sentinel
+// text, so the contract is explicit and locale-independent.
+type diffResponse struct {
+	FromVersion int         `json:"fromVersion"`
+	ToVersion   int         `json:"toVersion"`
+	Lines       []diffLine  `json:"lines"`
+	Summary     diffSummary `json:"summary"`
+	TooLarge    bool        `json:"tooLarge"`
+}
+
+type diffSummary struct {
+	Added   int `json:"added"`
+	Removed int `json:"removed"`
+}
+
+// handleGetDiff computes a line-level HTML content diff between two versions
+// of the same chain. The {id} in the path identifies any session in the chain
+// (used to resolve chain membership + ownership); from / to are 1-based
+// version numbers of the same chain. Cross-chain or out-of-range version
+// numbers yield 400; a missing or soft-deleted session yields 404.
+//
+// Access matches the preview drawer's other read endpoints (owner ∪ sharee),
+// except that a page-scoped grant is not enough: the payload is the full text
+// of two documents, which a single-page grant does not cover.
+func (s *Server) handleGetDiff(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	sessionID, ok := extractSessionIDFromMetaPath(r.URL.Path, "/api/sessions/", "/diff")
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "Invalid session ID.")
+		return
+	}
+
+	_, found, err := s.requireSession(sessionID)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "Session not found.")
+		return
+	}
+	if !s.requireViewerSessionScope(w, r, sessionID) {
+		return
+	}
+
+	fromVer, toVer, bad := parseDiffVersions(r)
+	if bad != "" {
+		writeJSONError(w, http.StatusBadRequest, bad)
+		return
+	}
+
+	// Resolve the chain via the requested session; this also enforces the
+	// soft-delete visibility rule (404 on deleted sessions).
+	_, versions, err := s.store.GetChainOfSession(sessionID)
+	if err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeJSONError(w, http.StatusNotFound, "Session not found.")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	fromSID, ok := versionSessionID(versions, fromVer)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "from version not found in this chain.")
+		return
+	}
+	toSID, ok := versionSessionID(versions, toVer)
+	if !ok {
+		writeJSONError(w, http.StatusBadRequest, "to version not found in this chain.")
+		return
+	}
+	if fromSID == toSID {
+		writeJSONError(w, http.StatusBadRequest, "from and to versions must differ.")
+		return
+	}
+
+	result, err := s.store.DiffSessionHTML(fromSID, toSID)
+	if err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			writeJSONError(w, http.StatusNotFound, "Session not found.")
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	lines := make([]diffLine, 0, len(result.Ops))
+	for _, op := range result.Ops {
+		lines = append(lines, diffLine{
+			Kind:  op.KindString(),
+			Text:  op.Text,
+			OldNo: op.OldNo,
+			NewNo: op.NewNo,
+		})
+	}
+	summary := session.Summarize(result.Ops)
+
+	writeJSON(w, http.StatusOK, diffResponse{
+		FromVersion: fromVer,
+		ToVersion:   toVer,
+		Lines:       lines,
+		Summary: diffSummary{
+			Added:   summary.Added,
+			Removed: summary.Removed,
+		},
+		// TooLarge is propagated verbatim from the diff layer's explicit
+		// signal rather than inferred from op text, so a legitimate document
+		// whose content equals DiffTooLargeText is not misclassified.
+		TooLarge: result.TooLarge,
+	})
+}
+
+// parseDiffVersions reads the from / to query params as positive integers.
+// Returns a human-readable error string (empty when OK).
+func parseDiffVersions(r *http.Request) (from, to int, errMsg string) {
+	q := r.URL.Query()
+	fromStr := strings.TrimSpace(q.Get("from"))
+	toStr := strings.TrimSpace(q.Get("to"))
+	if fromStr == "" || toStr == "" {
+		return 0, 0, "Both 'from' and 'to' version numbers are required."
+	}
+	f, err := strconv.Atoi(fromStr)
+	if err != nil || f < 1 {
+		return 0, 0, "'from' must be a positive integer version number."
+	}
+	t, err := strconv.Atoi(toStr)
+	if err != nil || t < 1 {
+		return 0, 0, "'to' must be a positive integer version number."
+	}
+	return f, t, ""
+}
+
+// versionSessionID finds the session id for a given version number within a
+// chain's version list. Returns ok=false when no live version matches.
+func versionSessionID(versions []session.ChainVersion, versionNo int) (string, bool) {
+	for _, v := range versions {
+		if v.VersionNo == versionNo {
+			return v.SessionID, true
+		}
+	}
+	return "", false
+}
+
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
 
@@ -2001,6 +2466,7 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordAudit(r, auditSessionDelete, sessionID, auditOK, "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 

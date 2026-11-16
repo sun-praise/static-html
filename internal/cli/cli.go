@@ -54,6 +54,14 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runWatch(args[1:], stdout)
 	case "user":
 		return runUser(args[1:], stdout)
+	case "share":
+		return runShare(args[1:], stdout)
+	case "unshare":
+		return runUnshare(args[1:], stdout)
+	case "shares":
+		return runShares(args[1:], stdout)
+	case "audit":
+		return runAudit(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -61,7 +69,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
-  sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--server-port <n>] [--db /path/to/sessions.db] [--upload-root /path/to/uploads] [--auth] [--protect-previews]
+  sth start [--host 0.0.0.0] [--bind 0.0.0.0] [--port 3939] [--server-name <addr>] [--server-port <n>] [--db /path/to/sessions.db] [--upload-root /path/to/uploads] [--auth] [--protect-previews] [--audit-retention-days <n>]
   sth send <file.html> --title <title> --tag <tag1,tag2,...> --category <cat> --project <proj> [--server http://127.0.0.1:3939] [--single] [--root <dir>] [--api-key <key>]
   sth tag [--rm] <session-id> <tag...> [--db /path/to/sessions.db] [--server http://...]
   sth categorize <session-id> <category> [--db /path/to/sessions.db] [--server http://...]
@@ -72,10 +80,19 @@ func printUsage(w io.Writer) {
   sth delete <session-id> [--db /path/to/sessions.db]
   sth watch <path> --session <id> [--server http://127.0.0.1:3939] [--api-key <key>]
   sth user <add <name> | issue-key <name> | revoke-key <id|prefix> | list> [--db /path/to/sessions.db]
+  sth share <session-id> <username> [--page <path>] [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
+  sth unshare <session-id> <username> [--page <path>] [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
+  sth shares <session-id> [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
+  sth audit [--db /path/to/sessions.db] [--limit <n>] [--offset <n>] [--action <name>] [--actor <user>] [--outcome ok|denied] [--since YYYY-MM-DD]
+  sth audit --prune-days <n> [--db /path/to/sessions.db]
 
 Authentication:
   --auth                 Enable API-key auth on the server (or STH_AUTH=true). Default off.
-  --protect-previews     Require a key for /s/<id>/ previews too (implies --auth).
+  --protect-previews     Require login for /s/<id>/ previews too (implies --auth). Owned
+                         sessions are then visible only to their owner and users they are
+                         shared with via "sth share".
+  --audit-retention-days <n>  Audit log retention in days (or STH_AUDIT_RETENTION_DAYS).
+                          Default 90; 0 keeps events indefinitely.
   --api-key <key>        API key for send/watch (or STH_API_KEY env var).`)
 }
 
@@ -155,6 +172,12 @@ func runStart(args []string, stdout io.Writer) error {
 	if err != nil {
 		return errors.Join(err, store.Close())
 	}
+
+	retentionDays, err := resolveAuditRetentionDays(flags)
+	if err != nil {
+		return errors.Join(err, store.Close())
+	}
+	srv.SetAuditRetentionDays(retentionDays)
 
 	// Resolve auth posture: explicit flag wins, else env, else false.
 	authEnabled := resolveBool(authSet, authFlag, "STH_AUTH")

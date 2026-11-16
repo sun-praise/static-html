@@ -66,6 +66,7 @@ sth project <session-id> [project]
 sth title <session-id> <title>
 sth list [--tag <tag>] [--category <cat>] [--project <proj>]
 sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
+sth audit [--db /path/to/sessions.db] [--action <name>] [--actor <user>] [--outcome ok|denied] [--since YYYY-MM-DD] [--limit <n>]
 ```
 
 All commands accept `--db /path/to/sessions.db` to override the database path.
@@ -142,12 +143,52 @@ sth start --auth
 
 When auth is on, all mutating endpoints and list/search/peers/download require
 a valid `Authorization: Bearer <key>` header. `/s/<id>/` previews stay **open**
-by default so you can still share preview links. To also require a key for
+by default so you can still share preview links. To also require a login for
 previews, add `--protect-previews` (implies `--auth`):
 
 ```bash
 sth start --auth --protect-previews
 ```
+
+Under `--protect-previews`, an owned session is visible only to its owner and
+the users it is explicitly shared with (see below). Sessions created before
+auth was enabled (no owner) remain visible to any logged-in user.
+
+### Sharing a session with another user
+
+Session owners can grant a specific user read access to a preview — without
+opening it up to everyone else:
+
+```bash
+sth share <session-id> bob              # grant bob read access to the whole session
+sth share <session-id> bob --page report.html   # grant access to ONE page only
+sth shares <session-id>                 # list who the session is shared with (and scope)
+sth unshare <session-id> bob            # revoke the whole-session grant
+sth unshare <session-id> bob --page report.html # revoke the page grant
+```
+
+A **page share** (`--page`, a path inside the session) grants exactly that
+HTML page: sibling HTML pages and the session root stay 403, and only render
+assets (css/js/images/fonts/media) stay reachable so the page renders. Other
+files in the session — JSON payloads, text dumps, PDFs, archives — are session
+content rather than page plumbing, so they need a whole-session share. Use this
+to share a single report out of a multi-page upload. A whole-session share and
+page shares are independent grants and can coexist.
+
+These commands work against a remote server (`--server URL --api-key <key>`,
+or `STH_API_KEY`) or a local database (`--db /path/to/sessions.db`), like the
+other metadata commands.
+
+You can also manage the share list in the browser: on the home page each of
+your sessions has a 👥 button that opens a panel listing the share roster,
+with a form to grant access by username (optionally scoped to a single page
+path) and a × to revoke it. The panel authenticates with your login cookie
+(cross-origin requests are rejected); no API key is needed.
+
+A shared user can open the `/s/<id>/` preview and its drawer data (metadata,
+version chain, related documents), and sees the session listed under
+"Shared with you" on the home page. Editing, deleting, downloading, and share
+management remain owner-only.
 
 ### Managing users and API keys
 
@@ -183,6 +224,52 @@ only list, search, read, modify, or download their own sessions. Sessions
 created before auth was enabled have no owner and are not accessible to any
 authenticated user — re-upload them after enabling auth if you need to keep
 them.
+
+### Audit log
+
+Every server records security-relevant events in the `audit_events` SQLite
+table: login success/failure, logout, rejected credentials, share grants and
+revocations, preview allow/deny, and session create/delete. Each row stores a
+UTC timestamp, the actor (username + id snapshot), action, target, outcome,
+client IP, User-Agent and a short detail.
+
+The log is **local-only** and the query never changes business data. There is
+deliberately no HTTP endpoint: the server has no admin role, so exposing the
+log over the API would let any logged-in user read everyone else's activity.
+`sth audit` still opens the SQLite DB read-write (it runs schema init and sets
+WAL mode), so a read-only mount needs a writable copy. Query on the host:
+
+```bash
+sth audit --db /path/to/sessions.db
+sth audit --action auth.login_failed --since 2026-11-01
+sth audit --actor alice --outcome denied --limit 50
+# container deployment (the binary is named html-server):
+docker exec sth-app html-server audit --db /data/sessions.db
+```
+
+`--audit-retention-days` (or `STH_AUDIT_RETENTION_DAYS`) controls retention —
+default 90 days, `0` keeps rows indefinitely. The server prunes once at start
+and then every 24 hours; `sth audit --prune-days 90` prunes on demand.
+
+Privacy boundaries: passwords, API keys, session cookies, request bodies and
+query strings are **never** recorded. Failed logins do not persist the submitted
+username at all (people sometimes paste a password into the username field) —
+they record a fixed reason plus source metadata. Anonymous 401s are coalesced
+per **proxy-observed peer** (`RemoteAddr` host) and path within a 60-second
+window, with a hard cap per window, so a 401 flood cannot fill the table. The
+bucket deliberately ignores `X-Forwarded-For` — a client can rotate that header
+at will — while the XFF-derived IP is still stored in the row as evidence.
+`/logout` is only audited when it actually invalidates a session.
+Only HTML page views are audited — css/js/image requests and the live-reload
+websocket are skipped. The client IP comes from the first `X-Forwarded-For`
+entry (the client IP behind a single trusted reverse proxy); a client can spoof
+that header, so treat IP values as evidence rather than proof, and never use
+them for authorization.
+
+Coverage: only **server-side** events are audited. Local CLI commands that
+write directly to the DB (`sth delete`, `sth user add`, `user issue-key` /
+`revoke-key`) and manual SQL edits bypass the server and therefore produce no
+audit rows.
 
 ## Test
 

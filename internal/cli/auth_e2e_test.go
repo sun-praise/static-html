@@ -219,7 +219,8 @@ func TestE2E_AuthFullFlow(t *testing.T) {
 }
 
 // TestE2E_PreviewProtection: under --protect-previews, the preview endpoint
-// requires a key (and any valid key works, not just the owner's).
+// requires a key, and an owned session is visible only to its owner and the
+// users it is shared with (legacy "any valid key" behavior is gone).
 func TestE2E_PreviewProtection(t *testing.T) {
 	t.Parallel()
 
@@ -243,16 +244,26 @@ func TestE2E_PreviewProtection(t *testing.T) {
 		t.Fatalf("protected preview without key: expected 401, got %d", code)
 	}
 
-	// Preview with a valid key → passes (API-key-only, no owner gate).
+	// Preview with the owner's key → passes.
 	if code, _ := fx.httpDo(http.MethodGet, previewURL, aliceKey); code != http.StatusOK {
-		t.Fatalf("protected preview with valid key: expected 200, got %d", code)
+		t.Fatalf("protected preview with owner key: expected 200, got %d", code)
 	}
 
-	// A different user's key also passes (preview is not owner-scoped).
+	// Another user's key is rejected until the session is shared with them.
 	fx.cliUser("add", "carol")
 	carolKey := extractKey(t, fx.cliUser("issue-key", "carol"))
+	if code, _ := fx.httpDo(http.MethodGet, previewURL, carolKey); code != http.StatusForbidden {
+		t.Fatalf("protected preview with carol's key before share: expected 403, got %d", code)
+	}
+
+	// Alice shares with carol via the CLI; carol can now open the preview.
+	var shareOut, shareErr bytes.Buffer
+	shareArgs := []string{"share", sessionIDFromURL(t, previewURL), "carol", "--db", fx.dbPath}
+	if err := Run(shareArgs, &shareOut, &shareErr); err != nil {
+		t.Fatalf("sth share: %v (stderr: %s)", err, shareErr.String())
+	}
 	if code, _ := fx.httpDo(http.MethodGet, previewURL, carolKey); code != http.StatusOK {
-		t.Fatalf("protected preview with carol's key: expected 200, got %d", code)
+		t.Fatalf("protected preview with carol's key after share: expected 200, got %d", code)
 	}
 }
 
