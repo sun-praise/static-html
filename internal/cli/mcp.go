@@ -46,6 +46,12 @@ func runMCP(args []string, _ io.Writer, stderr io.Writer) error {
 		apiKey:    resolveAPIKey(flags),
 	}
 
+	// Without --server the configured key only ever reaches the implicit
+	// default (http://127.0.0.1:3939); say so instead of failing silently.
+	if cfg.apiKey != "" && cfg.serverURL == "" {
+		fmt.Fprintf(stderr, "note: --api-key/STH_API_KEY is set without --server; it is only attached to calls targeting %s (pass --server to change the default)\n", server.DefaultServerURL)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -141,9 +147,10 @@ func (c *mcpConfig) openStore() (*session.Store, error) {
 // flag forces local-DB mode even when a server default is configured.
 //
 // Credentials are host-bound: the server-wide API key is only attached when
-// the call targets the configured server. A per-call server override runs
-// without credentials unless the caller supplies an explicit per-call key, so
-// a prompt-injected call cannot leak the configured key to another host.
+// the call targets the configured server (defaulting to
+// server.DefaultServerURL). A per-call server override runs without
+// credentials unless the caller supplies an explicit per-call key, so a
+// prompt-injected call cannot leak the configured key to another host.
 func (c *mcpConfig) resolveRemote(serverParam, apiKeyParam string, local bool) (serverURL, apiKey string, remote bool) {
 	if local {
 		return "", "", false
@@ -158,10 +165,20 @@ func (c *mcpConfig) resolveRemote(serverParam, apiKeyParam string, local bool) (
 	if apiKeyParam != "" {
 		return serverURL, apiKeyParam, true
 	}
-	if serverURL == c.serverURL {
+	defaultURL := c.serverURL
+	if defaultURL == "" {
+		defaultURL = server.DefaultServerURL
+	}
+	if trimSlash(serverURL) == trimSlash(defaultURL) {
 		return serverURL, c.apiKey, true
 	}
 	return serverURL, "", true
+}
+
+// trimSlash normalizes a server base URL for host comparison so trailing
+// slashes do not silently disable credential attachment.
+func trimSlash(url string) string {
+	return strings.TrimRight(url, "/")
 }
 
 // messageResult is the structured output of mutation tools: one human
@@ -199,14 +216,15 @@ func (c *mcpConfig) toolSend(ctx context.Context, req *mcp.CallToolRequest, in s
 		}
 	}
 	// Host-bound credentials: the server-wide key only follows the configured
-	// default server, never a per-call override pointing elsewhere.
+	// default server (defaulting to server.DefaultServerURL), never a per-call
+	// override pointing elsewhere. URLs compare without trailing slashes.
 	apiKey := in.APIKey
 	if apiKey == "" {
 		defaultURL := c.serverURL
 		if defaultURL == "" {
 			defaultURL = server.DefaultServerURL
 		}
-		if serverURL == defaultURL {
+		if trimSlash(serverURL) == trimSlash(defaultURL) {
 			apiKey = c.apiKey
 		}
 	}
@@ -767,6 +785,9 @@ func (c *mcpConfig) toolAudit(ctx context.Context, req *mcp.CallToolRequest, in 
 			return nil, auditResult{}, err
 		}
 		return nil, auditResult{Pruned: removed}, nil
+	}
+	if in.PruneDays < 0 {
+		return nil, auditResult{}, errors.New("prune-days must be a positive integer")
 	}
 
 	filter := session.AuditFilter{

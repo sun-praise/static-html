@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -18,17 +19,38 @@ import (
 )
 
 // zipNames lists the entry names of an in-memory zip archive.
-func zipNames(t *testing.T, data []byte) []string {
-	t.Helper()
+func zipNames(data []byte) ([]string, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		t.Fatalf("open archive: %v", err)
+		return nil, err
 	}
 	names := make([]string, 0, len(zr.File))
 	for _, f := range zr.File {
 		names = append(names, f.Name)
 	}
-	return names
+	return names, nil
+}
+
+// authRecorder collects values written by httptest handler goroutines so the
+// test goroutine can read them safely under -race. Fatal may not be called
+// from a handler goroutine; handlers use t.Errorf + http.Error instead.
+type authRecorder struct {
+	mu   sync.Mutex
+	vals [][]byte
+}
+
+func (a *authRecorder) add(v []byte) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.vals = append(a.vals, v)
+}
+
+func (a *authRecorder) snapshot() [][]byte {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([][]byte, len(a.vals))
+	copy(out, a.vals)
+	return out
 }
 
 // newMCPClient connects an MCP client to an in-process sth MCP server with
@@ -379,18 +401,18 @@ func TestMCPSendRemote(t *testing.T) {
 	t.Parallel()
 
 	var (
-		gotEntry              string
-		gotTitle              string
-		gotCategory           string
-		gotProject            string
-		gotTags               []string
-		gotArchiveHasIndex    bool
-		gotArchiveHasCSS      bool
-		gotAuthorizationBytes []byte
+		gotEntry           string
+		gotTitle           string
+		gotCategory        string
+		gotProject         string
+		gotTags            []string
+		gotArchiveHasIndex bool
+		gotArchiveHasCSS   bool
+		gotAuthorization   authRecorder
 	)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
-		gotAuthorizationBytes = []byte(r.Header.Get("Authorization"))
+		gotAuthorization.add([]byte(r.Header.Get("Authorization")))
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
 			http.Error(w, "bad form", http.StatusBadRequest)
 			return
@@ -409,10 +431,16 @@ func TestMCPSendRemote(t *testing.T) {
 		defer archive.Close()
 		data, err := io.ReadAll(archive)
 		if err != nil {
+			t.Errorf("read archive: %v", err)
 			http.Error(w, "unreadable archive", http.StatusBadRequest)
 			return
 		}
-		entries := zipNames(t, data)
+		entries, err := zipNames(data)
+		if err != nil {
+			t.Errorf("open archive: %v", err)
+			http.Error(w, "bad archive", http.StatusBadRequest)
+			return
+		}
 		for _, name := range entries {
 			switch name {
 			case "index.html":
@@ -462,8 +490,9 @@ func TestMCPSendRemote(t *testing.T) {
 	if !gotArchiveHasIndex || !gotArchiveHasCSS {
 		t.Fatalf("archive missing assets: index=%t css=%t", gotArchiveHasIndex, gotArchiveHasCSS)
 	}
-	if string(gotAuthorizationBytes) != "Bearer k-test" {
-		t.Fatalf("unexpected authorization header: %q", gotAuthorizationBytes)
+	authCalls := gotAuthorization.snapshot()
+	if len(authCalls) != 1 || string(authCalls[0]) != "Bearer k-test" {
+		t.Fatalf("unexpected authorization header: %+v", authCalls)
 	}
 }
 
@@ -626,6 +655,11 @@ func TestMCPAuditLocal(t *testing.T) {
 	if text := toolErrorText(t, bad); !strings.Contains(text, "since must be YYYY-MM-DD") {
 		t.Fatalf("unexpected error text: %q", text)
 	}
+
+	negative := callTool(t, cs, "audit", map[string]any{"prune_days": -1})
+	if text := toolErrorText(t, negative); !strings.Contains(text, "prune-days must be a positive integer") {
+		t.Fatalf("unexpected error text: %q", text)
+	}
 }
 
 // TestMCPDispatchRejectsBadFlags checks the `mcp` command wiring through Run
@@ -646,15 +680,17 @@ func TestMCPDispatchRejectsBadFlags(t *testing.T) {
 func TestMCPKeyNotForwardedToOverriddenServer(t *testing.T) {
 	t.Parallel()
 
+	var defaultAuth authRecorder
 	defaultServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defaultAuth.add([]byte(r.Header.Get("Authorization")))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer defaultServer.Close()
 
-	var overrideAuth []byte
+	var overrideAuth authRecorder
 	overrideServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		overrideAuth = []byte(r.Header.Get("Authorization"))
+		overrideAuth.add([]byte(r.Header.Get("Authorization")))
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{}`))
 	}))
@@ -666,31 +702,43 @@ func TestMCPKeyNotForwardedToOverriddenServer(t *testing.T) {
 	structured[messageResult](t, callTool(t, cs, "tag", map[string]any{
 		"session_id": "s1", "tags": []string{"a"}, "server": overrideServer.URL,
 	}))
-	if len(overrideAuth) != 0 {
-		t.Fatalf("server-wide key leaked to overridden server: %q", overrideAuth)
+	if calls := overrideAuth.snapshot(); len(calls) != 1 || len(calls[0]) != 0 {
+		t.Fatalf("server-wide key leaked to overridden server: %+v", calls)
 	}
 
 	// Same host as the default: the key is attached.
 	structured[messageResult](t, callTool(t, cs, "tag", map[string]any{
 		"session_id": "s1", "tags": []string{"a"}, "server": defaultServer.URL,
 	}))
+	if calls := defaultAuth.snapshot(); len(calls) != 1 || string(calls[0]) != "Bearer secret" {
+		t.Fatalf("default server should carry the configured key: %+v", calls)
+	}
+
+	// A trailing slash on the override URL still counts as a different host.
+	overrideServerTrimmed := strings.TrimSuffix(overrideServer.URL, "/") + "/"
+	structured[messageResult](t, callTool(t, cs, "tag", map[string]any{
+		"session_id": "s1", "tags": []string{"a"}, "server": overrideServerTrimmed,
+	}))
+	if calls := overrideAuth.snapshot(); len(calls) != 2 || len(calls[1]) != 0 {
+		t.Fatalf("trailing-slash override unexpectedly carried credentials: %+v", calls)
+	}
 
 	// Override with an explicit per-call key: that key is attached.
-	overrideAuth = nil
 	structured[messageResult](t, callTool(t, cs, "tag", map[string]any{
 		"session_id": "s1", "tags": []string{"a"}, "server": overrideServer.URL, "api_key": "k-percall",
 	}))
-	if string(overrideAuth) != "Bearer k-percall" {
-		t.Fatalf("unexpected per-call auth: %q", overrideAuth)
+	calls := overrideAuth.snapshot()
+	if len(calls) != 3 || string(calls[2]) != "Bearer k-percall" {
+		t.Fatalf("unexpected per-call auth: %+v", calls)
 	}
 }
 
 func TestMCPLocalForcesLocalDB(t *testing.T) {
 	t.Parallel()
 
-	var remoteHits int
+	var remoteHits authRecorder
 	remoteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		remoteHits++
+		remoteHits.add(nil)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{}`))
 	}))
@@ -709,8 +757,8 @@ func TestMCPLocalForcesLocalDB(t *testing.T) {
 	if !strings.Contains(msg.Message, "Added tags to") {
 		t.Fatalf("unexpected message: %q", msg.Message)
 	}
-	if remoteHits != 0 {
-		t.Fatalf("local=true should not hit the remote server, got %d hits", remoteHits)
+	if calls := remoteHits.snapshot(); len(calls) != 0 {
+		t.Fatalf("local=true should not hit the remote server, got %d hits", len(calls))
 	}
 
 	meta, err := store.GetMetadata(s.ID)
@@ -727,21 +775,21 @@ func TestMCPLocalForcesLocalDB(t *testing.T) {
 func TestMCPSendKeyNotForwarded(t *testing.T) {
 	t.Parallel()
 
-	newSendMux := func(hooks *[][]byte) *http.ServeMux {
+	newSendMux := func(hooks *authRecorder) *http.ServeMux {
 		mux := http.NewServeMux()
 		mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
-			*hooks = append(*hooks, []byte(r.Header.Get("Authorization")))
+			hooks.add([]byte(r.Header.Get("Authorization")))
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"url":"http://example.test/s/x"}`))
 		})
 		return mux
 	}
 
-	var defaultHooks [][]byte
+	var defaultHooks authRecorder
 	defaultServer := httptest.NewServer(newSendMux(&defaultHooks))
 	defer defaultServer.Close()
 
-	var overrideHooks [][]byte
+	var overrideHooks authRecorder
 	overrideServer := httptest.NewServer(newSendMux(&overrideHooks))
 	defer overrideServer.Close()
 
@@ -759,12 +807,12 @@ func TestMCPSendKeyNotForwarded(t *testing.T) {
 	}
 
 	structured[sendResult](t, callTool(t, cs, "send", sendArgs(overrideServer.URL)))
-	if len(overrideHooks) != 1 || len(overrideHooks[0]) != 0 {
-		t.Fatalf("send leaked credentials to overridden server: %+v", overrideHooks)
+	if calls := overrideHooks.snapshot(); len(calls) != 1 || len(calls[0]) != 0 {
+		t.Fatalf("send leaked credentials to overridden server: %+v", calls)
 	}
 
 	structured[sendResult](t, callTool(t, cs, "send", sendArgs("")))
-	if len(defaultHooks) != 1 || string(defaultHooks[0]) != "Bearer secret" {
-		t.Fatalf("default server should carry the configured key, got %+v", defaultHooks)
+	if calls := defaultHooks.snapshot(); len(calls) != 1 || string(calls[0]) != "Bearer secret" {
+		t.Fatalf("default server should carry the configured key, got %+v", calls)
 	}
 }
