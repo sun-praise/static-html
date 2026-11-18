@@ -29,18 +29,20 @@ type mcpConfig struct {
 	dbPath    string
 	serverURL string
 	apiKey    string
-	// allowUserManagement gates user_add / user_issue_key / user_revoke_key.
-	// These tools operate on the local SQLite store with full operator
-	// privileges — creating users and minting API keys — so they are only
-	// registered when the human starting the server explicitly opts in.
-	allowUserManagement bool
+	// allowAdminTools gates the admin-class tools: user_add /
+	// user_issue_key / user_revoke_key mint credentials, and audit exposes
+	// every user's security events (and prune_days can erase them). They
+	// operate on the local SQLite store with full operator privileges, so
+	// they are only registered when the human starting the server
+	// explicitly opts in.
+	allowAdminTools bool
 }
 
 // runMCP runs the `sth mcp` subcommand: an MCP server over stdio that exposes
 // the CLI functionality as tools. The MCP protocol occupies stdout, so this
 // command must not write anything there; diagnostics go to stderr.
 func runMCP(args []string, _ io.Writer, stderr io.Writer) error {
-	args, allowUserMgmtSet, allowUserMgmtFlag, err := popBoolFlagWithPresence(args, "allow-user-management")
+	args, allowAdminSet, allowAdminFlag, err := popBoolFlagWithPresence(args, "allow-admin-tools")
 	if err != nil {
 		return err
 	}
@@ -51,10 +53,10 @@ func runMCP(args []string, _ io.Writer, stderr io.Writer) error {
 	}
 
 	cfg := &mcpConfig{
-		dbPath:              flags["db"],
-		serverURL:           flags["server"],
-		apiKey:              resolveAPIKey(flags),
-		allowUserManagement: resolveBool(allowUserMgmtSet, allowUserMgmtFlag, "STH_ALLOW_USER_MANAGEMENT"),
+		dbPath:          flags["db"],
+		serverURL:       flags["server"],
+		apiKey:          resolveAPIKey(flags),
+		allowAdminTools: resolveBool(allowAdminSet, allowAdminFlag, "STH_ALLOW_ADMIN_TOOLS"),
 	}
 
 	// Without --server the configured key only ever reaches the implicit
@@ -74,8 +76,8 @@ func mcpServe(ctx context.Context, cfg *mcpConfig, stderr io.Writer) error {
 	registerMCPTools(s, cfg)
 
 	fmt.Fprintf(stderr, "sth mcp: serving MCP over stdio (db=%q, server=%q); protocol on stdout, diagnostics here\n", cfg.dbPath, cfg.serverURL)
-	if cfg.allowUserManagement {
-		fmt.Fprintln(stderr, "note: user-management tools (user_add/user_issue_key/user_revoke_key) are exposed; the connected agent can create users and issue API keys")
+	if cfg.allowAdminTools {
+		fmt.Fprintln(stderr, "note: admin tools (user_add/user_issue_key/user_revoke_key/audit) are exposed; the connected agent can create users, issue API keys, and read or prune the audit log")
 	}
 
 	return s.Run(ctx, &mcp.StdioTransport{})
@@ -130,24 +132,24 @@ func registerMCPTools(s *mcp.Server, cfg *mcpConfig) {
 		Name:        "user_list",
 		Description: "List users in the local DB with their active key counts. Mirrors `sth user list`.",
 	}, cfg.toolUserList)
-	if cfg.allowUserManagement {
+	if cfg.allowAdminTools {
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "user_add",
-			Description: "Create a user in the local DB. Mirrors `sth user add`. Admin capability: only exposed when the MCP server runs with --allow-user-management.",
+			Description: "Create a user in the local DB. Mirrors `sth user add`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
 		}, cfg.toolUserAdd)
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "user_issue_key",
-			Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`. Admin capability: only exposed when the MCP server runs with --allow-user-management.",
+			Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
 		}, cfg.toolUserIssueKey)
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "user_revoke_key",
-			Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`. Admin capability: only exposed when the MCP server runs with --allow-user-management.",
+			Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
 		}, cfg.toolUserRevokeKey)
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "audit",
+			Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes — covers every user), or prune old events with prune_days. Mirrors `sth audit`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
+		}, cfg.toolAudit)
 	}
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "audit",
-		Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes), or prune old events with prune_days. Mirrors `sth audit`.",
-	}, cfg.toolAudit)
 }
 
 func (c *mcpConfig) openStore() (*session.Store, error) {

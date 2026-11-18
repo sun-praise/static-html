@@ -140,7 +140,7 @@ func TestMCPToolsListed(t *testing.T) {
 		"send": true, "tag": true, "categorize": true, "project": true,
 		"title": true, "list": true, "search": true, "delete": true,
 		"share": true, "unshare": true, "shares": true,
-		"user_list": true, "audit": true,
+		"user_list": true,
 	}
 	got := map[string]bool{}
 	for _, tool := range resp.Tools {
@@ -154,9 +154,9 @@ func TestMCPToolsListed(t *testing.T) {
 			t.Errorf("missing tool %q", name)
 		}
 	}
-	for _, gated := range []string{"user_add", "user_issue_key", "user_revoke_key"} {
+	for _, gated := range []string{"user_add", "user_issue_key", "user_revoke_key", "audit"} {
 		if got[gated] {
-			t.Errorf("tool %q must not be listed without --allow-user-management", gated)
+			t.Errorf("tool %q must not be listed without --allow-admin-tools", gated)
 		}
 	}
 }
@@ -167,11 +167,13 @@ func TestMCPUserManagementGatedByDefault(t *testing.T) {
 	cs := newMCPClient(t, &mcpConfig{})
 
 	// Calling an unregistered tool is a protocol-level error.
-	if _, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
-		Name:      "user_add",
-		Arguments: map[string]any{"name": "mallory"},
-	}); err == nil {
-		t.Fatal("expected user_add to be unavailable without --allow-user-management")
+	for _, name := range []string{"user_add", "audit"} {
+		if _, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      name,
+			Arguments: map[string]any{"name": "mallory"},
+		}); err == nil {
+			t.Fatalf("expected %s to be unavailable without --allow-admin-tools", name)
+		}
 	}
 }
 
@@ -179,7 +181,7 @@ func TestMCPUserManagementExposedWhenAllowed(t *testing.T) {
 	t.Parallel()
 
 	dbPath, _ := newMCPTestDB(t)
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowUserManagement: true})
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowAdminTools: true})
 
 	resp, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
@@ -189,9 +191,9 @@ func TestMCPUserManagementExposedWhenAllowed(t *testing.T) {
 	for _, tool := range resp.Tools {
 		got[tool.Name] = true
 	}
-	for _, name := range []string{"user_add", "user_issue_key", "user_revoke_key"} {
+	for _, name := range []string{"user_add", "user_issue_key", "user_revoke_key", "audit"} {
 		if !got[name] {
-			t.Errorf("tool %q missing despite --allow-user-management", name)
+			t.Errorf("tool %q missing despite --allow-admin-tools", name)
 		}
 	}
 
@@ -334,7 +336,7 @@ func TestMCPUserLifecycle(t *testing.T) {
 	t.Parallel()
 
 	dbPath, _ := newMCPTestDB(t)
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowUserManagement: true})
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowAdminTools: true})
 
 	created := structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{"name": "alice"}))
 	if created.Username != "alice" || created.ID == "" {
@@ -679,7 +681,7 @@ func TestMCPAuditLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath})
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowAdminTools: true})
 
 	out := structured[auditResult](t, callTool(t, cs, "audit", nil))
 	if len(out.Events) != 2 {

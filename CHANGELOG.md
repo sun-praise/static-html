@@ -5,7 +5,7 @@
 ### Added
 - MCP server support: `sth mcp [--db ...] [--server ...] [--api-key ...]` runs a Model Context Protocol server over stdio exposing the CLI functionality as 16 tools (`send`, `tag`, `categorize`, `project`, `title`, `list`, `search`, `delete`, `share`, `unshare`, `shares`, `user_add`, `user_issue_key`, `user_revoke_key`, `user_list`, `audit`). Dual-mode tools (tag/categorize/project/title/share family) keep the CLI's local-DB vs remote-server semantics; local-only tools (`list`/`search`/`delete`/`user_*`/`audit`) operate on the `--db` store. Long-running commands (`start`, `watch`) stay CLI-only. Built on the official `modelcontextprotocol/go-sdk` v1.0.0 (requires go ≥ 1.23, compatible with the existing go 1.24 CI)
 - MCP credentials are host-bound: the server-wide `--api-key` is attached only to calls targeting the configured `--server`; a per-call `server` override runs keyless unless it passes its own `api_key`. Dual-mode tools accept `local: true` to force local-DB operation even when a `--server` default is configured
-- MCP user-management tools (`user_add` / `user_issue_key` / `user_revoke_key`) are admin capabilities gated behind `--allow-user-management` / `STH_ALLOW_USER_MANAGEMENT`: without it the tools are not registered at all, so the connected agent cannot mint users or API keys; read-only `user_list` stays available
+- MCP admin-class tools (`user_add` / `user_issue_key` / `user_revoke_key` / `audit`) are gated behind `--allow-admin-tools` / `STH_ALLOW_ADMIN_TOOLS`: without it the tools are not registered at all, so the connected agent cannot mint users, issue API keys, or read/prune the audit log; read-only `user_list` stays available
 
 ## [2.6.0] - 2026-11-18
 
