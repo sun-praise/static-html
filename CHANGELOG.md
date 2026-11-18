@@ -5,6 +5,15 @@
 ### Added
 - MCP server support: `sth mcp [--db ...] [--server ...] [--api-key ...]` runs a Model Context Protocol server over stdio exposing the CLI functionality as 16 tools (`send`, `tag`, `categorize`, `project`, `title`, `list`, `search`, `delete`, `share`, `unshare`, `shares`, `user_add`, `user_issue_key`, `user_revoke_key`, `user_list`, `audit`). Dual-mode tools (tag/categorize/project/title/share family) keep the CLI's local-DB vs remote-server semantics; local-only tools (`list`/`search`/`delete`/`user_*`/`audit`) operate on the `--db` store. Long-running commands (`start`, `watch`) stay CLI-only. Built on the official `modelcontextprotocol/go-sdk` v1.0.0 (requires go ≥ 1.23, compatible with the existing go 1.24 CI)
 
+## [2.6.0] - 2026-11-18
+
+### Added
+- Home-page category/tag facets with three switchable layouts: `blocks`（分类/标签计数 chip 行，默认）、`sidebar`（左侧 facet 列表 + 右侧文档列表）、`overview`（Sessions/Categories 双视图，分类卡片带最近文档预览）。右上角下拉切换，选择存入 `sth_layout` cookie，`?layout=` 可显式覆盖
+- Facet 计数互为 facet：分类计数不受当前分类过滤影响（标签反之），tag/project/owner 与搜索词仍会收缩计数；「未分类」桶统计无分类文档、可点击过滤（过滤 URL 使用哨兵值 `__uncategorized__`，不会遮蔽同名真实分类）
+- Overview 布局的 Categories 视图（`?view=categories`）按分类出卡片，每卡含计数与最近 3 篇文档，点击卡片即按该分类过滤；卡片最近文档由单条窗口函数查询取回，请求数与分类数量无关
+- 搜索态 facet 计数从合并结果集（元数据 + 文件内容命中）推导，避免「全部 0」chip 与实际结果列表不一致
+- Store 层新增 `CategoryFacets` / `TagFacets` / `RecentPerCategory` 查询（跟随 owner 与软删标记；搜索词只匹配元数据）
+
 ## [2.5.0] - 2026-11-16
 
 ### Added
