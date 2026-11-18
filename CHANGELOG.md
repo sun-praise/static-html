@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.6.0] - 2026-11-18
 
 ### Added
 - Home-page category/tag facets with three switchable layouts: `blocks`（分类/标签计数 chip 行，默认）、`sidebar`（左侧 facet 列表 + 右侧文档列表）、`overview`（Sessions/Categories 双视图，分类卡片带最近文档预览）。右上角下拉切换，选择存入 `sth_layout` cookie，`?layout=` 可显式覆盖
