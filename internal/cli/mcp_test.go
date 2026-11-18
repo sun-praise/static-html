@@ -128,6 +128,7 @@ func newMCPTestDB(t *testing.T) (string, *session.Store) {
 func TestMCPToolsListed(t *testing.T) {
 	t.Parallel()
 
+	// Default posture: user-management mutation tools are not exposed.
 	cs := newMCPClient(t, &mcpConfig{})
 
 	resp, err := cs.ListTools(context.Background(), nil)
@@ -139,8 +140,7 @@ func TestMCPToolsListed(t *testing.T) {
 		"send": true, "tag": true, "categorize": true, "project": true,
 		"title": true, "list": true, "search": true, "delete": true,
 		"share": true, "unshare": true, "shares": true,
-		"user_add": true, "user_issue_key": true, "user_revoke_key": true, "user_list": true,
-		"audit": true,
+		"user_list": true, "audit": true,
 	}
 	got := map[string]bool{}
 	for _, tool := range resp.Tools {
@@ -153,6 +153,51 @@ func TestMCPToolsListed(t *testing.T) {
 		if !got[name] {
 			t.Errorf("missing tool %q", name)
 		}
+	}
+	for _, gated := range []string{"user_add", "user_issue_key", "user_revoke_key"} {
+		if got[gated] {
+			t.Errorf("tool %q must not be listed without --allow-user-management", gated)
+		}
+	}
+}
+
+func TestMCPUserManagementGatedByDefault(t *testing.T) {
+	t.Parallel()
+
+	cs := newMCPClient(t, &mcpConfig{})
+
+	// Calling an unregistered tool is a protocol-level error.
+	if _, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "user_add",
+		Arguments: map[string]any{"name": "mallory"},
+	}); err == nil {
+		t.Fatal("expected user_add to be unavailable without --allow-user-management")
+	}
+}
+
+func TestMCPUserManagementExposedWhenAllowed(t *testing.T) {
+	t.Parallel()
+
+	dbPath, _ := newMCPTestDB(t)
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowUserManagement: true})
+
+	resp, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, tool := range resp.Tools {
+		got[tool.Name] = true
+	}
+	for _, name := range []string{"user_add", "user_issue_key", "user_revoke_key"} {
+		if !got[name] {
+			t.Errorf("tool %q missing despite --allow-user-management", name)
+		}
+	}
+
+	created := structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{"name": "alice"}))
+	if created.Username != "alice" || created.ID == "" {
+		t.Fatalf("unexpected user: %+v", created)
 	}
 }
 
@@ -289,7 +334,7 @@ func TestMCPUserLifecycle(t *testing.T) {
 	t.Parallel()
 
 	dbPath, _ := newMCPTestDB(t)
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath})
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowUserManagement: true})
 
 	created := structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{"name": "alice"}))
 	if created.Username != "alice" || created.ID == "" {

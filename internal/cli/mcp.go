@@ -23,27 +23,38 @@ import (
 var mcpVersion = "0.1.0"
 
 // mcpConfig holds the server-wide defaults for MCP tool calls: the local --db
-// target and the default remote connection (--server / --api-key). Individual
-// tool calls may override the remote connection per call.
+// target, the default remote connection (--server / --api-key), and whether
+// user-management tools are exposed to the connected agent.
 type mcpConfig struct {
 	dbPath    string
 	serverURL string
 	apiKey    string
+	// allowUserManagement gates user_add / user_issue_key / user_revoke_key.
+	// These tools operate on the local SQLite store with full operator
+	// privileges — creating users and minting API keys — so they are only
+	// registered when the human starting the server explicitly opts in.
+	allowUserManagement bool
 }
 
 // runMCP runs the `sth mcp` subcommand: an MCP server over stdio that exposes
 // the CLI functionality as tools. The MCP protocol occupies stdout, so this
 // command must not write anything there; diagnostics go to stderr.
 func runMCP(args []string, _ io.Writer, stderr io.Writer) error {
+	args, allowUserMgmtSet, allowUserMgmtFlag, err := popBoolFlagWithPresence(args, "allow-user-management")
+	if err != nil {
+		return err
+	}
+
 	flags, _, err := parseArgs(args)
 	if err != nil {
 		return err
 	}
 
 	cfg := &mcpConfig{
-		dbPath:    flags["db"],
-		serverURL: flags["server"],
-		apiKey:    resolveAPIKey(flags),
+		dbPath:              flags["db"],
+		serverURL:           flags["server"],
+		apiKey:              resolveAPIKey(flags),
+		allowUserManagement: resolveBool(allowUserMgmtSet, allowUserMgmtFlag, "STH_ALLOW_USER_MANAGEMENT"),
 	}
 
 	// Without --server the configured key only ever reaches the implicit
@@ -63,6 +74,9 @@ func mcpServe(ctx context.Context, cfg *mcpConfig, stderr io.Writer) error {
 	registerMCPTools(s, cfg)
 
 	fmt.Fprintf(stderr, "sth mcp: serving MCP over stdio (db=%q, server=%q); protocol on stdout, diagnostics here\n", cfg.dbPath, cfg.serverURL)
+	if cfg.allowUserManagement {
+		fmt.Fprintln(stderr, "note: user-management tools (user_add/user_issue_key/user_revoke_key) are exposed; the connected agent can create users and issue API keys")
+	}
 
 	return s.Run(ctx, &mcp.StdioTransport{})
 }
@@ -113,21 +127,23 @@ func registerMCPTools(s *mcp.Server, cfg *mcpConfig) {
 		Description: "List the share grants of a session. Mirrors `sth shares`. Operates on the local DB, or on a remote server when server is set; pass local=true to force the local DB.",
 	}, cfg.toolShares)
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "user_add",
-		Description: "Create a user in the local DB. Mirrors `sth user add`.",
-	}, cfg.toolUserAdd)
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "user_issue_key",
-		Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`.",
-	}, cfg.toolUserIssueKey)
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "user_revoke_key",
-		Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`.",
-	}, cfg.toolUserRevokeKey)
-	mcp.AddTool(s, &mcp.Tool{
 		Name:        "user_list",
 		Description: "List users in the local DB with their active key counts. Mirrors `sth user list`.",
 	}, cfg.toolUserList)
+	if cfg.allowUserManagement {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "user_add",
+			Description: "Create a user in the local DB. Mirrors `sth user add`. Admin capability: only exposed when the MCP server runs with --allow-user-management.",
+		}, cfg.toolUserAdd)
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "user_issue_key",
+			Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`. Admin capability: only exposed when the MCP server runs with --allow-user-management.",
+		}, cfg.toolUserIssueKey)
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "user_revoke_key",
+			Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`. Admin capability: only exposed when the MCP server runs with --allow-user-management.",
+		}, cfg.toolUserRevokeKey)
+	}
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "audit",
 		Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes), or prune old events with prune_days. Mirrors `sth audit`.",
