@@ -126,6 +126,28 @@ Performs full-text matching across session metadata (title, tags, category, proj
 - `sth search <query>` does full-text matching across session content.
 - They can be combined: `sth search <query> --tag <tag>` narrows text results to a specific tag.
 
+## MCP Server
+
+`sth mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio so that AI agents (kimi-code, Claude Code, and any MCP client) can manage sth sessions as structured tools instead of shell calls:
+
+```bash
+sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
+```
+
+- `--db` points at the local SQLite store for the local-only tools (`list`, `search`, `delete`, `user_*`, `audit`).
+- `--server` / `--api-key` (or `STH_API_KEY`) provide defaults for the dual-mode tools; each tool call may override them per call. Omitting `server` operates on the local DB, exactly like the CLI.
+- The MCP protocol occupies stdout; diagnostics go to stderr. Point your MCP client's command at the `sth` binary with the `mcp` subcommand, e.g. `{"command": "sth", "args": ["mcp", "--server", "https://sth.example.com", "--api-key", "..."]}`.
+
+Exposed tools mirror the CLI one-to-one: `send`, `tag`, `categorize`, `project`, `title`, `list`, `search`, `delete`, `share`, `unshare`, `shares`, `user_add`, `user_issue_key`, `user_revoke_key`, `user_list`, `audit`. `sth start` and `sth watch` are long-running processes and stay CLI-only.
+
+Tool arguments and results are JSON (input schemas are generated from the tool definitions), and expected failures — a missing session, a 401 from the server — are reported as tool errors the agent can self-correct from.
+
+### Security notes
+
+- The `send` tool reads files from this machine (the entry file plus sibling assets in its directory or `root`); only point it at content meant to be published.
+- Credentials are host-bound: the server-wide `--api-key` / `STH_API_KEY` is attached only to calls targeting the configured `--server`. A per-call `server` override runs without credentials unless the call passes its own `api_key`, so a prompt-injected call cannot leak the configured key to another host.
+- Run the MCP server with a key scoped to a dedicated low-privilege sth user (`sth user add` + `sth user issue-key`) rather than an admin key.
+
 ## Authentication
 
 By default `sth` runs **without authentication**, which is fine for local

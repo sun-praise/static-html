@@ -3,13 +3,10 @@ package cli
 import (
 	"archive/zip"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
-	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -52,6 +49,8 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) error {
 		return runDelete(args[1:], stdout)
 	case "watch":
 		return runWatch(args[1:], stdout)
+	case "mcp":
+		return runMCP(args[1:], stdout, stderr)
 	case "user":
 		return runUser(args[1:], stdout)
 	case "share":
@@ -79,6 +78,9 @@ func printUsage(w io.Writer) {
   sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>] [--limit <n>] [--offset <n>] [--db /path/to/sessions.db]
   sth delete <session-id> [--db /path/to/sessions.db]
   sth watch <path> --session <id> [--server http://127.0.0.1:3939] [--api-key <key>]
+  sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
+                         Run a Model Context Protocol (MCP) server over stdio that
+                         exposes the CLI functionality as tools; protocol on stdout.
   sth user <add <name> | issue-key <name> | revoke-key <id|prefix> | list> [--db /path/to/sessions.db]
   sth share <session-id> <username> [--page <path>] [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
   sth unshare <session-id> <username> [--page <path>] [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
@@ -302,77 +304,10 @@ func runSend(args []string, stdout, stderr io.Writer) error {
 		return errors.New("missing HTML file path")
 	}
 
-	// Normalize up front so a whitespace-only or over-long title fails before
-	// the archive is built and uploaded.
-	title, err := session.NormalizeTitle(flags["title"])
+	_, hasRoot := flags["root"]
+	target, err := resolveUploadTarget(positionals[0], flags["title"], flags["tag"], flags["category"], flags["project"], flags["root"], hasRoot, forceSingle)
 	if err != nil {
 		return err
-	}
-	tag := flags["tag"]
-	category := flags["category"]
-	project := flags["project"]
-	rootArg, hasRoot := flags["root"]
-
-	if title == "" {
-		return errors.New("--title is required")
-	}
-	if tag == "" {
-		return errors.New("--tag is required")
-	}
-	if category == "" {
-		return errors.New("--category is required")
-	}
-	if project == "" {
-		return errors.New("--project is required")
-	}
-
-	if forceSingle && hasRoot {
-		return errors.New("--single and --root are mutually exclusive")
-	}
-
-	entryFile, err := filepath.Abs(positionals[0])
-	if err != nil {
-		return fmt.Errorf("failed to resolve file path: %w", err)
-	}
-
-	if !server.IsHTMLFile(entryFile) {
-		return errors.New("only .html and .htm files are supported")
-	}
-	if err := ensureLocalFile(entryFile); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("HTML file does not exist on this machine: %q", entryFile)
-		}
-		return err
-	}
-
-	rootDir := filepath.Dir(entryFile)
-	entryPath := filepath.Base(entryFile)
-
-	if hasRoot {
-		if rootArg == "" {
-			return errors.New("--root must not be empty")
-		}
-		absRoot, err := filepath.Abs(rootArg)
-		if err != nil {
-			return fmt.Errorf("failed to resolve --root path: %w", err)
-		}
-		info, err := os.Stat(absRoot)
-		if err != nil {
-			return fmt.Errorf("--root directory does not exist: %q", absRoot)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("--root must be a directory: %q", absRoot)
-		}
-		rel, err := filepath.Rel(absRoot, entryFile)
-		if err != nil {
-			return fmt.Errorf("failed to locate entry file under --root: %w", err)
-		}
-		relSlash := filepath.ToSlash(rel)
-		if rel == ".." || strings.HasPrefix(relSlash, "../") {
-			return fmt.Errorf("entry file %q is outside --root %q", entryFile, absRoot)
-		}
-		rootDir = absRoot
-		entryPath = relSlash
 	}
 
 	serverURL := server.DefaultServerURL
@@ -380,76 +315,16 @@ func runSend(args []string, stdout, stderr io.Writer) error {
 		serverURL = value
 	}
 
-	parsedURL, err := url.Parse(serverURL)
-	if err != nil {
-		return fmt.Errorf("invalid server URL: %w", err)
-	}
-
-	tags := strings.Split(tag, ",")
-
-	requestBody, contentType, err := newUploadRequestBody(entryFile, rootDir, entryPath, title, forceSingle, tags, category, project)
-	if err != nil {
-		return err
-	}
-	request, err := http.NewRequest(http.MethodPost, parsedURL.ResolveReference(&url.URL{Path: "/api/sessions"}).String(), requestBody)
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", contentType)
-
-	// Attach API key when provided (flag or env). The server decides whether
-	// to enforce; the client simply forwards whatever credential it has.
-	if apiKey := resolveAPIKey(flags); apiKey != "" {
-		request.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-
-	client := &http.Client{Timeout: 60 * time.Second}
-	response, err := client.Do(request)
-	if err != nil {
-		displayURL := parsedURL.Scheme + "://" + parsedURL.Host
-		return fmt.Errorf(`could not reach %s: %w. Start the server with "sth start" first.`, displayURL, err)
-	}
-	defer response.Body.Close()
-
-	body, err := io.ReadAll(response.Body)
+	result, err := uploadSite(target, serverURL, resolveAPIKey(flags))
 	if err != nil {
 		return err
 	}
 
-	// Check 401 before JSON parsing: the auth middleware returns plain text,
-	// not JSON, so an unmarshal failure would mask the actionable hint.
-	if response.StatusCode == http.StatusUnauthorized {
-		return errors.New("server requires authentication (401). Provide a valid API key via --api-key or the STH_API_KEY environment variable")
-	}
-
-	var resp struct {
-		URL       string `json:"url"`
-		Error     string `json:"error"`
-		ChainID   string `json:"chainId"`
-		VersionNo int    `json:"versionNo"`
-	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return errors.New("server returned an invalid response")
-	}
-
-	if response.StatusCode == http.StatusForbidden {
-		if resp.Error != "" {
-			return errors.New(resp.Error)
-		}
-		return errors.New("forbidden: the API key does not own this session")
-	}
-	if response.StatusCode >= http.StatusBadRequest {
-		if resp.Error != "" {
-			return errors.New(resp.Error)
-		}
-		return errors.New(strings.TrimSpace(string(body)))
-	}
-
-	fmt.Fprintln(stdout, resp.URL)
+	fmt.Fprintln(stdout, result.URL)
 	// Version-chain context is informational; surface it on stderr so it
 	// never pollutes piped URL capture on stdout.
-	if resp.ChainID != "" {
-		fmt.Fprintf(stderr, "version: v%d of chain %s\n", resp.VersionNo, resp.ChainID)
+	if result.ChainID != "" {
+		fmt.Fprintf(stderr, "version: v%d of chain %s\n", result.VersionNo, result.ChainID)
 	}
 	return nil
 }
