@@ -165,6 +165,42 @@ func TestTagFacetsCountsAndLiftsTagFilter(t *testing.T) {
 	}
 }
 
+func TestRecentPerCategory(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	seedFacetDocs(t, store)
+
+	// limit 1 keeps only the newest document per category; the
+	// uncategorized bucket is never part of the result.
+	recent, err := store.RecentPerCategory("", FilterOptions{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent["报告"]) != 1 || recent["报告"][0].Name != "/tmp/report2.html" {
+		t.Fatalf("expected newest 报告 document only, got %v", recent["报告"])
+	}
+	if len(recent["数据看板"]) != 1 || recent["数据看板"][0].Name != "/tmp/board.html" {
+		t.Fatalf("expected newest 数据看板 document only, got %v", recent["数据看板"])
+	}
+	if len(recent[UncategorizedFilterValue]) != 0 {
+		t.Fatalf("expected no uncategorized bucket, got %v", recent[UncategorizedFilterValue])
+	}
+
+	// Other filter dimensions (tag) still narrow the per-category result:
+	// both 报告 documents carry demo, 数据看板 does not.
+	recent, err = store.RecentPerCategory("", FilterOptions{Tag: "demo"}, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent["报告"]) != 2 {
+		t.Fatalf("expected both demo-tagged 报告 documents, got %v", recent["报告"])
+	}
+	if len(recent["数据看板"]) != 0 {
+		t.Fatalf("expected no 数据看板 documents under tag=demo, got %v", recent["数据看板"])
+	}
+}
+
 func TestListDocumentsFilteredByUncategorized(t *testing.T) {
 	t.Parallel()
 

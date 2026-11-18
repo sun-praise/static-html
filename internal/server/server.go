@@ -16,6 +16,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -165,9 +166,12 @@ type homePageData struct {
 }
 
 // facetItem is one category/tag facet rendered as a chip, sidebar row or card
-// header. Muted marks the "未分类" pseudo-bucket.
+// header. Key is the value used in filter URLs; it equals Value except for
+// the "未分类" bucket, whose URL carries the uncategorized sentinel instead of
+// the display label. Muted marks the "未分类" pseudo-bucket.
 type facetItem struct {
 	Value  string
+	Key    string
 	Count  int
 	URL    string
 	Active bool
@@ -178,6 +182,7 @@ type facetItem struct {
 // recent documents inside that category.
 type catCardItem struct {
 	Category string
+	Key      string
 	Count    int
 	URL      string
 	Muted    bool
@@ -1490,6 +1495,9 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	var items []homePageSession
 	var total int
 	var totalPages int
+	// searchResultDocs holds the search path's merged result set (metadata
+	// plus file-content matches); facet counts are derived from it.
+	var searchResultDocs []session.DocumentInfo
 
 	if search != "" {
 		// Search path: full-text search across metadata + file content.
@@ -1549,6 +1557,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		if start < total {
 			items = toHomePageSessions(docs[start:end])
 		}
+		searchResultDocs = docs
 	} else {
 		// Non-search paths: use SQL-level LIMIT/OFFSET for efficiency.
 		countFilter := session.FilterOptions{
@@ -1594,22 +1603,33 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 
 	// Facet counts power the layout switchers' chip rows / sidebar / cards.
 	// Each dimension lifts its own filter so the full facet list stays
-	// visible: picking "报告" must not collapse the category counts.
+	// visible: picking "报告" must not collapse the category counts. In
+	// search mode the counts are derived from the merged result set so that
+	// file-content matches are reflected too — the store facet queries only
+	// see metadata, and would contradict the visible result list.
 	facetFilter := session.FilterOptions{
 		Tag:      filterTag,
 		Category: filterCat,
 		Project:  filterProj,
 		OwnerID:  ownerID,
 	}
-	catFacets, uncatCount, err := s.store.CategoryFacets(search, facetFilter)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	tagFacets, err := s.store.TagFacets(search, facetFilter)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	var catFacets []session.FacetCount
+	var tagFacets []session.FacetCount
+	var uncatCount int
+	if search != "" {
+		catFacets, uncatCount, tagFacets = facetCountsFromDocs(searchResultDocs)
+	} else {
+		var err error
+		catFacets, uncatCount, err = s.store.CategoryFacets("", facetFilter)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		tagFacets, err = s.store.TagFacets("", facetFilter)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	allDocsCount := uncatCount
@@ -1618,6 +1638,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		allDocsCount += fc.Count
 		catItems = append(catItems, facetItem{
 			Value:  fc.Value,
+			Key:    fc.Value,
 			Count:  fc.Count,
 			URL:    buildFacetURL(r.URL, "category", fc.Value),
 			Active: filterCat == fc.Value,
@@ -1625,7 +1646,8 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 	if uncatCount > 0 || filterCat == session.UncategorizedFilterValue {
 		catItems = append(catItems, facetItem{
-			Value:  session.UncategorizedFilterValue,
+			Value:  uncategorizedLabel,
+			Key:    session.UncategorizedFilterValue,
 			Count:  uncatCount,
 			URL:    buildFacetURL(r.URL, "category", session.UncategorizedFilterValue),
 			Active: filterCat == session.UncategorizedFilterValue,
@@ -1644,18 +1666,40 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 
 	var catCards []catCardItem
 	if layout == layoutOverview && view == "categories" {
+		// One window-function query fetches the recent documents of every
+		// category, so a request costs O(1) queries regardless of how many
+		// categories exist. The uncategorized bucket is not part of that
+		// query and gets its own lookup only when its card is rendered.
+		recentByCat, err := s.store.RecentPerCategory(search, facetFilter, overviewCardRecentLimit)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		catCards = make([]catCardItem, 0, len(catItems))
 		for _, it := range catItems {
 			if it.Count <= 0 {
 				continue
 			}
-			recent, err := s.recentDocsForCategory(it.Value, search, facetFilter, overviewCardRecentLimit)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
+			var recent []session.DocumentInfo
+			if it.Key == session.UncategorizedFilterValue {
+				uncatFilter := facetFilter
+				uncatFilter.Category = session.UncategorizedFilterValue
+				uncatFilter.Limit = overviewCardRecentLimit
+				if search != "" {
+					recent, err = s.store.SearchDocuments(search, uncatFilter)
+				} else {
+					recent, err = s.store.ListDocuments(uncatFilter)
+				}
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			} else {
+				recent = recentByCat[it.Key]
 			}
 			catCards = append(catCards, catCardItem{
 				Category: it.Value,
+				Key:      it.Key,
 				Count:    it.Count,
 				URL:      it.URL,
 				Muted:    it.Muted,
@@ -1916,21 +1960,44 @@ func capFacetItems(items []facetItem, limit int) []facetItem {
 	return trimmed
 }
 
-// recentDocsForCategory fetches a category card's most recent documents. The
-// category constraint applies on top of every other active filter; in search
-// mode the SQL-level metadata search stands in for the file-content pass.
-func (s *Server) recentDocsForCategory(category, search string, filter session.FilterOptions, limit int) ([]session.DocumentInfo, error) {
-	f := session.FilterOptions{
-		Tag:      filter.Tag,
-		Category: category,
-		Project:  filter.Project,
-		OwnerID:  filter.OwnerID,
-		Limit:    limit,
+// uncategorizedLabel is the display name of the uncategorized facet bucket;
+// filter URLs carry the UncategorizedFilterValue sentinel instead.
+const uncategorizedLabel = "未分类"
+
+// facetCountsFromDocs derives facet counts from an already-filtered document
+// set — the search path's merged metadata + file-content matches. Both
+// dimensions are counted over the whole set, which is what lifts each facet
+// under its own filter; the store-level facet queries do the same in SQL.
+func facetCountsFromDocs(docs []session.DocumentInfo) (cats []session.FacetCount, uncategorized int, tags []session.FacetCount) {
+	catMap := make(map[string]int)
+	tagMap := make(map[string]int)
+	for _, d := range docs {
+		if d.Category == "" {
+			uncategorized++
+		} else {
+			catMap[d.Category]++
+		}
+		for _, t := range d.Tags {
+			tagMap[t]++
+		}
 	}
-	if search != "" {
-		return s.store.SearchDocuments(search, f)
+	return sortedFacets(catMap), uncategorized, sortedFacets(tagMap)
+}
+
+// sortedFacets orders facet counts by count descending then value ascending,
+// matching the store-level facet queries.
+func sortedFacets(m map[string]int) []session.FacetCount {
+	out := make([]session.FacetCount, 0, len(m))
+	for v, c := range m {
+		out = append(out, session.FacetCount{Value: v, Count: c})
 	}
-	return s.store.ListDocuments(f)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Value < out[j].Value
+	})
+	return out
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {

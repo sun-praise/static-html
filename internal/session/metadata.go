@@ -549,9 +549,10 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 
 // UncategorizedFilterValue is the pseudo category value the home page uses
 // for its "未分类" bucket: documents match it when they carry no category at
-// all. It is compared literally against filter.Category, so a real category
-// named exactly like this constant would be shadowed by the bucket.
-const UncategorizedFilterValue = "未分类"
+// all. It is only ever compared against filter.Category (never stored), and
+// its value cannot collide with a real category name, so the bucket can never
+// shadow user data. The home page renders the bucket as "未分类".
+const UncategorizedFilterValue = "__uncategorized__"
 
 // likePattern escapes LIKE wildcards so user literals like % and _ match
 // exactly. Backslash must be escaped first because it is the ESCAPE character.
@@ -691,6 +692,64 @@ func (s *Store) TagFacets(search string, filter FilterOptions) (tags []FacetCoun
 		tags = append(tags, fc)
 	}
 	return tags, rows.Err()
+}
+
+// RecentPerCategory returns, in a single window-function query, up to limit
+// recent documents for every category visible under the filter. The filter's
+// Category constraint is lifted (each category partitions its own rows);
+// tag/project/owner and the metadata search term still narrow the result.
+// The map is keyed by category name; the uncategorized bucket is not included
+// (callers needing it can filter ListDocuments/SearchDocuments with
+// UncategorizedFilterValue). Ordering inside each category is newest first.
+func (s *Store) RecentPerCategory(search string, filter FilterOptions, limit int) (map[string][]DocumentInfo, error) {
+	conditions, args := facetConditions(search, filter, "category")
+	query := `
+		SELECT category, session_id, entry, title, created_at_unix FROM (
+			SELECT dc.category AS category,
+				s.session_id,
+				COALESCE(s.stored_entry_file, s.entry_file) AS entry,
+				COALESCE(s.title, '') AS title,
+				s.created_at_unix,
+				ROW_NUMBER() OVER (
+					PARTITION BY dc.category
+					ORDER BY s.created_at_unix DESC, s.session_id ASC
+				) AS rn
+			FROM sessions s
+			JOIN document_categories dc ON s.session_id = dc.session_id
+			WHERE ` + strings.Join(conditions, ` AND `) + `
+		)
+		WHERE rn <= ?
+		ORDER BY category ASC, created_at_unix DESC, session_id ASC
+	`
+	args = append(args, limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string][]DocumentInfo)
+	for rows.Next() {
+		var (
+			category      string
+			sessionID     string
+			entry         string
+			title         sql.NullString
+			createdAtUnix int64
+		)
+		if err := rows.Scan(&category, &sessionID, &entry, &title, &createdAtUnix); err != nil {
+			return nil, err
+		}
+		out[category] = append(out[category], DocumentInfo{
+			SessionID: sessionID,
+			Name:      entry,
+			Title:     title.String,
+			Category:  category,
+			CreatedAt: time.Unix(0, createdAtUnix).UTC().Format(time.RFC3339),
+		})
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) sessionExists(sessionID string) bool {

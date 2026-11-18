@@ -249,6 +249,30 @@ func TestHomeFacetURLsResetPage(t *testing.T) {
 	}
 }
 
+func TestHomeSearchFacetCountsIncludeContentHits(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv := startTestServer(t, store)
+
+	createFacetSession(t, store, "报告", []string{"demo"})
+	createFacetSession(t, store, "数据看板", nil)
+
+	// "loading" appears in the fixture file body but in no metadata field,
+	// so both sessions match via file content only. The facet counts must
+	// reflect the merged result set, not the metadata-only store queries.
+	body, _ := getHome(t, srv.Origin(), "q=loading")
+	if !strings.Contains(body, `>全部 <b>2</b>`) {
+		t.Fatal("expected 全部 chip to count content matches in search mode")
+	}
+	if !strings.Contains(body, `>报告 <b>1</b>`) || !strings.Contains(body, `>数据看板 <b>1</b>`) {
+		t.Fatal("expected category chips derived from content-hit result set")
+	}
+	if !strings.Contains(body, `>demo <b>1</b>`) {
+		t.Fatal("expected tag counts derived from content-hit result set")
+	}
+}
+
 func TestBuildFacetURL(t *testing.T) {
 	t.Parallel()
 
