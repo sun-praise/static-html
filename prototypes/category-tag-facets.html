@@ -1,0 +1,582 @@
+<!doctype html>
+<!--
+  PROTOTYPE (throwaway) — 问题：sth 首页的「分类汇总列表」长什么样？
+  计划：在复刻的 sth 首页上做 3 个结构不同的变体，?variant=A|B|C（或底部浮条）切换，
+  每个变体都带分类 + 标签两个维度的汇总过滤（计数互为 facet）：
+    A — 分类区块：搜索框下方分类、标签各一排带计数的 chip（最贴近现有 UI 习惯）
+    B — 侧边栏：左侧 Categories / Tags 两组列表 + 右侧 session 列表（改变整页布局）
+    C — 概览视图：Sessions / Categories 双视图，分类卡片含最近文档预览，顶部标签 chip 行
+  v4：三种布局并存，搜索框右下「视图」下拉框点击切换（同一数据源，切换保留过滤状态）。
+  数据全部为 mock；真实实现里 chip 即 ?category= / ?tag= 链接，无需 JS。
+-->
+<html lang="zh">
+  <head>
+    <meta charset="utf-8">
+    <title>[原型] sth 分类汇总列表</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      }
+      body {
+        margin: 0;
+        padding: 2rem;
+        background-color: #ebe7dc;
+        background-image: linear-gradient(180deg, #f6f4ee 0%, #ebe7dc 100%);
+        background-attachment: fixed;
+        background-repeat: no-repeat;
+        color: #171717;
+      }
+      main {
+        max-width: 900px;
+        margin: 0 auto;
+        background: rgba(255, 255, 255, 0.8);
+        border: 1px solid #d6d1c6;
+        border-radius: 16px;
+        padding: 2rem;
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.08);
+      }
+      h1 { margin-top: 0; }
+      code {
+        display: inline-block;
+        margin-left: 0.75rem;
+        padding: 0.15rem 0.4rem;
+        border-radius: 6px;
+        background: #f2efe6;
+      }
+      ul { padding-left: 1.2rem; }
+      li { margin-bottom: 0.8rem; }
+      time { margin-left: 0.75rem; color: #5a5a5a; }
+      .search-bar { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+      .search-bar input {
+        flex: 1;
+        padding: 0.5rem 0.75rem;
+        border: 1px solid #d6d1c6;
+        border-radius: 8px;
+        font-size: 0.95rem;
+        background: #fafaf7;
+      }
+      .search-bar button {
+        padding: 0.5rem 1rem;
+        border: 1px solid #d6d1c6;
+        border-radius: 8px;
+        background: #f2efe6;
+        cursor: pointer;
+        font-size: 0.95rem;
+      }
+      .search-bar button:hover { background: #e6e2d6; }
+      .layout-bar {
+        display: flex; justify-content: flex-end; align-items: center; gap: 0.4rem;
+        margin-bottom: 1rem; font-size: 0.85rem; color: #5a5a5a;
+      }
+      .layout-bar select {
+        padding: 0.3rem 0.5rem;
+        border: 1px solid #d6d1c6;
+        border-radius: 8px;
+        background: #fafaf7;
+        color: #171717;
+        font-size: 0.85rem;
+        cursor: pointer;
+      }
+      .filters { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1rem; }
+      .filter-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.3rem;
+        padding: 0.2rem 0.6rem;
+        border-radius: 12px;
+        font-size: 0.85rem;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      .filter-tag.category { background: #dcfce7; color: #166534; }
+      .filter-tag.category:hover { background: #bbf7d0; }
+      .filter-tag .remove { font-weight: bold; margin-left: 0.2rem; }
+      .meta {
+        margin-top: 0.25rem;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.3rem;
+        align-items: center;
+      }
+      .meta .tag {
+        display: inline-block;
+        padding: 0.1rem 0.5rem;
+        border-radius: 10px;
+        font-size: 0.8rem;
+        background: #dbeafe;
+        color: #1e40af;
+        text-decoration: none;
+      }
+      .meta .category {
+        display: inline-block;
+        padding: 0.1rem 0.5rem;
+        border-radius: 10px;
+        font-size: 0.8rem;
+        background: #dcfce7;
+        color: #166534;
+        text-decoration: none;
+      }
+      .meta .project {
+        display: inline-block;
+        padding: 0.1rem 0.5rem;
+        border-radius: 10px;
+        font-size: 0.8rem;
+        background: #fef3c7;
+        color: #92400e;
+        text-decoration: none;
+      }
+      .delete-btn {
+        margin-left: 0.5rem;
+        padding: 0.1rem 0.4rem;
+        border: none;
+        border-radius: 4px;
+        background: none;
+        color: #aaa;
+        cursor: pointer;
+        font-size: 0.85rem;
+        vertical-align: middle;
+      }
+      .action-btn {
+        margin-left: 0.3rem;
+        padding: 0.1rem 0.4rem;
+        border: none;
+        border-radius: 4px;
+        background: none;
+        color: #aaa;
+        cursor: pointer;
+        font-size: 0.85rem;
+        vertical-align: middle;
+        text-decoration: none;
+        display: inline-block;
+      }
+      .pagination {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 0.25rem;
+        margin-top: 1.5rem;
+        padding-top: 1rem;
+        border-top: 1px solid #d6d1c6;
+        flex-wrap: wrap;
+      }
+      .pagination a, .pagination span {
+        display: inline-block;
+        padding: 0.3rem 0.6rem;
+        border-radius: 6px;
+        text-decoration: none;
+        font-size: 0.9rem;
+        min-width: 1.5rem;
+        text-align: center;
+      }
+      .pagination a {
+        background: #f2efe6;
+        color: #171717;
+        border: 1px solid #d6d1c6;
+        cursor: pointer;
+      }
+      .pagination a:hover { background: #e6e2d6; }
+      .pagination .current { background: #171717; color: #fff; border: 1px solid #171717; }
+      .pagination .disabled { color: #aaa; background: transparent; border: 1px solid transparent; }
+
+      /* ---- prototype additions ---- */
+      .proto-badge {
+        position: fixed; top: 12px; right: 12px; z-index: 50;
+        background: #171717; color: #fff; font-size: 0.7rem;
+        padding: 0.2rem 0.65rem; border-radius: 10px; letter-spacing: 0.05em; opacity: 0.85;
+      }
+      .proto-note {
+        margin-top: 1.5rem; font-size: 0.8rem; color: #5a5a5a;
+        border-top: 1px dashed #d6d1c6; padding-top: 0.8rem;
+      }
+      .proto-switcher {
+        position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 60;
+        display: flex; align-items: center; gap: 0.5rem;
+        background: #171717; color: #fff; border-radius: 999px; padding: 0.45rem 1rem;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); font-size: 0.85rem;
+      }
+      .proto-switcher button {
+        border: none; background: transparent; color: #fff;
+        font-size: 1rem; cursor: pointer; padding: 0 0.2rem;
+      }
+      .proto-switcher .label { min-width: 170px; text-align: center; }
+
+      /* Variant A — chips */
+      .cat-block { margin-bottom: 1.25rem; }
+      .cat-block h2 { font-size: 1rem; margin: 0.2rem 0 0.6rem; }
+      .cat-chips { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+      .cat-chip {
+        display: inline-flex; align-items: center; gap: 0.35rem;
+        padding: 0.25rem 0.7rem; border-radius: 14px;
+        background: #dcfce7; color: #166534; font-size: 0.85rem;
+        cursor: pointer; text-decoration: none; border: 1px solid transparent;
+      }
+      .cat-chip b {
+        font-weight: 600; font-size: 0.75rem;
+        background: rgba(22, 101, 52, 0.12); border-radius: 8px; padding: 0 0.35rem;
+      }
+      .cat-chip:hover { background: #bbf7d0; }
+      .cat-chip.active { background: #166534; color: #fff; }
+      .cat-chip.muted { background: #f2efe6; color: #5a5a5a; }
+      .cat-chip.muted b { background: rgba(90, 90, 90, 0.15); color: #5a5a5a; }
+      .cat-chip.muted.active { background: #5a5a5a; color: #fff; }
+      .cat-chip.muted.active b { background: rgba(255, 255, 255, 0.25); color: #fff; }
+      .cat-chip.all { background: #f2efe6; color: #171717; }
+      .cat-chip.all b { background: rgba(23, 23, 23, 0.1); color: #171717; }
+      .cat-chip.all.active { background: #171717; color: #fff; }
+      .cat-chip.all.active b { background: rgba(255, 255, 255, 0.25); color: #fff; }
+
+      /* tag chips (blue) — variant A / C */
+      .tag-chip {
+        display: inline-flex; align-items: center; gap: 0.35rem;
+        padding: 0.25rem 0.7rem; border-radius: 14px;
+        background: #dbeafe; color: #1e40af; font-size: 0.85rem;
+        cursor: pointer; text-decoration: none; border: 1px solid transparent;
+      }
+      .tag-chip b {
+        font-weight: 600; font-size: 0.75rem;
+        background: rgba(30, 64, 175, 0.12); border-radius: 8px; padding: 0 0.35rem;
+      }
+      .tag-chip:hover { background: #bfdbfe; }
+      .tag-chip.active { background: #1e40af; color: #fff; }
+      .tag-chip.active b { background: rgba(255, 255, 255, 0.25); color: #fff; }
+      .tag-row { margin-bottom: 1.25rem; }
+      .filter-tag.tag { background: #dbeafe; color: #1e40af; }
+      .filter-tag.tag:hover { background: #bfdbfe; }
+
+      /* Variant B — sidebar */
+      .two-col {
+        display: grid; grid-template-columns: 190px 1fr;
+        gap: 1.5rem; align-items: start;
+      }
+      .cat-side { border-right: 1px solid #d6d1c6; padding-right: 1.25rem; }
+      .cat-side h2 { font-size: 0.95rem; margin: 0.1rem 0 0.5rem; }
+      .cat-row {
+        display: flex; justify-content: space-between; align-items: center;
+        padding: 0.3rem 0.55rem; border-radius: 8px; font-size: 0.9rem;
+        color: #171717; text-decoration: none; cursor: pointer; margin-bottom: 0.15rem;
+      }
+      .cat-row b {
+        font-size: 0.75rem; background: #dcfce7; color: #166534;
+        padding: 0 0.4rem; border-radius: 8px;
+      }
+      .cat-row:hover { background: #f2efe6; }
+      .cat-row.active { background: #166534; color: #fff; }
+      .cat-row.active b { background: rgba(255, 255, 255, 0.25); color: #fff; }
+      .cat-row.muted { color: #5a5a5a; }
+      .cat-row.muted b { background: #f2efe6; color: #5a5a5a; }
+      .cat-row.muted.active { background: #5a5a5a; color: #fff; }
+      .cat-row.muted.active b { background: rgba(255, 255, 255, 0.25); color: #fff; }
+      .cat-row.all b { background: #f2efe6; color: #171717; }
+      .cat-row.all.active { background: #171717; color: #fff; }
+      .cat-row.all.active b { background: rgba(255, 255, 255, 0.25); color: #fff; }
+      .cat-row.tagrow b { background: #dbeafe; color: #1e40af; }
+      .cat-row.tagrow.active { background: #1e40af; color: #fff; }
+      .cat-row.tagrow.active b { background: rgba(255, 255, 255, 0.25); color: #fff; }
+      @media (max-width: 700px) {
+        .two-col { grid-template-columns: 1fr; }
+        .cat-side { border-right: none; border-bottom: 1px solid #d6d1c6; padding: 0 0 0.8rem; margin-bottom: 0.8rem; }
+      }
+
+      /* Variant C — view tabs + cards */
+      .view-tabs { display: flex; gap: 0.4rem; margin-bottom: 1rem; }
+      .view-tab {
+        padding: 0.3rem 0.9rem; border: 1px solid #d6d1c6; border-radius: 8px;
+        background: #f2efe6; font-size: 0.9rem; cursor: pointer;
+        text-decoration: none; color: #171717;
+      }
+      .view-tab:hover { background: #e6e2d6; }
+      .view-tab.active { background: #171717; color: #fff; border-color: #171717; }
+      .cat-grid {
+        display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        gap: 0.9rem; margin-bottom: 1.25rem;
+      }
+      .cat-card {
+        border: 1px solid #d6d1c6; border-radius: 12px; background: #fafaf7;
+        padding: 0.9rem 1rem; cursor: pointer;
+      }
+      .cat-card:hover { border-color: #166534; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06); }
+      .cat-card h3 {
+        margin: 0; font-size: 0.95rem;
+        display: flex; justify-content: space-between; align-items: center;
+      }
+      .cat-card h3 b {
+        font-size: 0.8rem; background: #dcfce7; color: #166534;
+        border-radius: 8px; padding: 0 0.45rem;
+      }
+      .cat-card ul { margin: 0.5rem 0 0; padding-left: 1rem; font-size: 0.8rem; color: #5a5a5a; }
+      .cat-card ul li { margin-bottom: 0.15rem; }
+      .cat-card .view-all {
+        display: inline-block; margin-top: 0.5rem;
+        font-size: 0.8rem; color: #166534; font-weight: 600;
+      }
+      .cat-card.muted h3 b { background: #f2efe6; color: #5a5a5a; }
+      .cat-card.muted .view-all { color: #5a5a5a; }
+    </style>
+  </head>
+  <body>
+    <div class="proto-badge">PROTOTYPE</div>
+    <main id="app"></main>
+    <div class="proto-switcher">
+      <button id="prevV" title="Previous variant (←)">◀</button>
+      <span class="label" id="vLabel"></span>
+      <button id="nextV" title="Next variant (→)">▶</button>
+    </div>
+    <script>
+      const VARIANT_NAMES = { A: '分类区块', B: '侧边栏', C: '概览视图' };
+      const LAYOUT_LABELS = { A: '区块', B: '侧边栏', C: '概览' };
+      const PER_PAGE = 8;
+      const SESSIONS = [
+        { t: 'Q3 用户增长报告', cat: '报告', tags: ['报告', '增长'], proj: 'sun-praise', d: '2026-11-17' },
+        { t: 'LaTeX Agent 周报 W46', cat: '报告', tags: ['周报'], proj: 'latex-agent', d: '2026-11-16' },
+        { t: '用户画像看板', cat: '数据看板', tags: ['dashboard'], proj: 'sun-praise', d: '2026-11-15' },
+        { t: '消息量监控看板', cat: '数据看板', tags: ['monitor'], proj: 'sun-praise', d: '2026-11-14' },
+        { t: 'sth 产品演示页', cat: '演示', tags: ['demo'], proj: 'sth', d: '2026-11-14' },
+        { t: 'runner 恢复手册', cat: '运维', tags: ['runbook'], proj: 'ops', d: '2026-11-13' },
+        { t: '新用户激活分析', cat: '报告', tags: ['分析'], proj: 'sun-praise', d: '2026-11-12' },
+        { t: '留存曲线 demo', cat: '数据看板', tags: ['demo'], proj: 'sth', d: '2026-11-11' },
+        { t: 'Go 泛型笔记', cat: '笔记', tags: ['go'], proj: '', d: '2026-11-10' },
+        { t: '稳定性事故复盘 11-09', cat: '报告', tags: ['复盘'], proj: 'ops', d: '2026-11-09' },
+        { t: 'nginx 配置样例', cat: '运维', tags: ['nginx'], proj: 'ops', d: '2026-11-08' },
+        { t: 'Claude SDK 接入 demo', cat: '演示', tags: ['demo', 'sdk'], proj: 'latex-agent', d: '2026-11-07' },
+        { t: '10 月运营月报', cat: '报告', tags: ['月报'], proj: 'sun-praise', d: '2026-11-06' },
+        { t: '随手测试页', cat: '', tags: [], proj: '', d: '2026-11-05' },
+        { t: 'hello world', cat: '', tags: ['test'], proj: '', d: '2026-11-04' },
+      ];
+      const state = { variant: 'A', cat: '', tag: '', view: 'sessions', q: '', page: 1 };
+
+      const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+      function baseFiltered(except) {
+        return SESSIONS.filter((s) => {
+          if (except !== 'cat' && state.cat && (state.cat === '未分类' ? s.cat : s.cat !== state.cat)) return false;
+          if (except !== 'tag' && state.tag && !s.tags.includes(state.tag)) return false;
+          if (state.q && !s.t.toLowerCase().includes(state.q.toLowerCase())) return false;
+          return true;
+        });
+      }
+
+      function cats() {
+        const src = baseFiltered('cat');
+        const m = new Map();
+        for (const s of src) if (s.cat) m.set(s.cat, (m.get(s.cat) || 0) + 1);
+        const arr = [...m.entries()]
+          .map(([name, count]) => ({ name, count }))
+          .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+        const un = src.filter((s) => !s.cat).length;
+        if (un) arr.push({ name: '未分类', count: un, none: true });
+        return arr;
+      }
+
+      function tags() {
+        const m = new Map();
+        for (const s of baseFiltered('tag')) for (const t of s.tags) m.set(t, (m.get(t) || 0) + 1);
+        return [...m.entries()]
+          .map(([name, count]) => ({ name, count }))
+          .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+      }
+
+      function filtered() {
+        return baseFiltered('');
+      }
+
+      function filterChipsHTML() {
+        const chips = [];
+        if (state.cat) chips.push(`<a class="filter-tag category" data-act="clearcat">Category: ${esc(state.cat)} <span class="remove">&times;</span></a>`);
+        if (state.tag) chips.push(`<a class="filter-tag tag" data-act="cleartag">Tag: ${esc(state.tag)} <span class="remove">&times;</span></a>`);
+        if (!chips.length) return '';
+        return `<div class="filters">${chips.join('')}</div>`;
+      }
+
+      function listHTML() {
+        const items = filtered();
+        const pages = Math.max(1, Math.ceil(items.length / PER_PAGE));
+        if (state.page > pages) state.page = pages;
+        const slice = items.slice((state.page - 1) * PER_PAGE, state.page * PER_PAGE);
+        const lis = slice
+          .map((s) => `
+            <li>
+              <a href="#" onclick="return false">${esc(s.t)}</a>
+              <time datetime="${s.d}">${s.d}</time>
+              <a class="action-btn download-btn" href="#" onclick="return false" title="Download">&#x2B07;</a>
+              <button class="action-btn share-btn" title="Share">&#128279;</button>
+              <button class="delete-btn" title="Delete session">&times;</button>
+              ${(s.tags.length || s.cat || s.proj) ? `<div class="meta">${s.tags.map((t) => `<a href="#" class="tag" data-act="tag" data-tag="${esc(t)}">${esc(t)}</a>`).join('')}${s.cat ? `<a href="#" class="category" data-act="cat" data-cat="${esc(s.cat)}">${esc(s.cat)}</a>` : ''}${s.proj ? `<a href="#" class="project" onclick="return false">${esc(s.proj)}</a>` : ''}</div>` : ''}
+            </li>`)
+          .join('');
+        let pag = '';
+        if (pages > 1) {
+          let inner = state.page > 1
+            ? `<a data-act="page" data-page="${state.page - 1}">&#8592; Prev</a>`
+            : '<span class="disabled">&#8592; Prev</span>';
+          for (let p = 1; p <= pages; p++) {
+            inner += p === state.page
+              ? `<span class="current">${p}</span>`
+              : `<a data-act="page" data-page="${p}">${p}</a>`;
+          }
+          inner += state.page < pages
+            ? `<a data-act="page" data-page="${state.page + 1}">Next &#8594;</a>`
+            : '<span class="disabled">Next &#8594;</span>';
+          pag = `<nav class="pagination">${inner}</nav>`;
+        }
+        return `<ul class="session-list">${lis || '<li>No preview sessions found.</li>'}</ul>${pag}`;
+      }
+
+      function variantHTML() {
+        const cs = cats();
+        const csTotal = cs.reduce((n, c) => n + c.count, 0);
+        if (state.variant === 'A') {
+          const tagChips = tags()
+            .map((t) => `<a class="tag-chip${state.tag === t.name ? ' active' : ''}" data-act="tag" data-tag="${esc(t.name)}">${esc(t.name)} <b>${t.count}</b></a>`)
+            .join('');
+          return `
+            <div class="cat-block">
+              <h2>Categories</h2>
+              <div class="cat-chips">
+                <a class="cat-chip all${state.cat === '' ? ' active' : ''}" data-act="cat" data-cat="">全部 <b>${csTotal}</b></a>
+                ${cs.map((c) => `<a class="cat-chip${c.none ? ' muted' : ''}${state.cat === c.name ? ' active' : ''}" data-act="cat" data-cat="${esc(c.name)}">${esc(c.name)} <b>${c.count}</b></a>`).join('')}
+              </div>
+            </div>
+            <div class="cat-block">
+              <h2>Tags</h2>
+              <div class="cat-chips">${tagChips}</div>
+            </div>` + filterChipsHTML() + listHTML();
+        }
+        if (state.variant === 'B') {
+          return `
+            <div class="two-col">
+              <aside class="cat-side">
+                <h2>Categories</h2>
+                <a class="cat-row all${state.cat === '' ? ' active' : ''}" data-act="cat" data-cat=""><span>All documents</span><b>${csTotal}</b></a>
+                ${cs.map((c) => `<a class="cat-row${c.none ? ' muted' : ''}${state.cat === c.name ? ' active' : ''}" data-act="cat" data-cat="${esc(c.name)}"><span>${esc(c.name)}</span><b>${c.count}</b></a>`).join('')}
+                <h2 style="margin-top: 1rem;">Tags</h2>
+                ${tags().map((t) => `<a class="cat-row tagrow${state.tag === t.name ? ' active' : ''}" data-act="tag" data-tag="${esc(t.name)}"><span>${esc(t.name)}</span><b>${t.count}</b></a>`).join('')}
+              </aside>
+              <div class="col-main">${filterChipsHTML()}${listHTML()}</div>
+            </div>`;
+        }
+        const tagRow = tags().length
+          ? `<div class="cat-chips tag-row">${tags().map((t) => `<a class="tag-chip${state.tag === t.name ? ' active' : ''}" data-act="tag" data-tag="${esc(t.name)}">${esc(t.name)} <b>${t.count}</b></a>`).join('')}</div>`
+          : '';
+        const tabs = `
+          <div class="view-tabs">
+            <a class="view-tab${state.view === 'sessions' ? ' active' : ''}" data-act="view" data-view="sessions">Sessions (${filtered().length})</a>
+            <a class="view-tab${state.view === 'categories' ? ' active' : ''}" data-act="view" data-view="categories">Categories (${cs.length})</a>
+          </div>` + tagRow;
+        if (state.view === 'categories') {
+          const cards = cs
+            .map((c) => {
+              const recent = SESSIONS.filter((s) => (c.none ? !s.cat : s.cat === c.name)).slice(0, 3);
+              return `
+                <div class="cat-card${c.none ? ' muted' : ''}" data-act="cat" data-cat="${esc(c.name)}">
+                  <h3>${esc(c.name)} <b>${c.count}</b></h3>
+                  <ul>${recent.map((s) => `<li>${esc(s.t)}</li>`).join('')}</ul>
+                  <span class="view-all">View all &#8594;</span>
+                </div>`;
+            })
+            .join('');
+          return tabs + `<div class="cat-grid">${cards}</div>`;
+        }
+        return tabs + filterChipsHTML() + listHTML();
+      }
+
+      function syncURL() {
+        const p = new URLSearchParams();
+        if (state.variant !== 'A') p.set('variant', state.variant);
+        if (state.cat) p.set('cat', state.cat);
+        if (state.tag) p.set('tag', state.tag);
+        if (state.view !== 'sessions') p.set('view', state.view);
+        if (state.q) p.set('q', state.q);
+        const qs = p.toString();
+        history.replaceState(null, '', qs ? '?' + qs : location.pathname);
+        document.getElementById('vLabel').textContent = `${state.variant} — ${VARIANT_NAMES[state.variant]}`;
+      }
+
+      function render() {
+        document.getElementById('app').innerHTML = `
+          <h1>HTML Preview Server</h1>
+          <p>Register a file with <code>sth send path/to/file.html</code> and open the returned session URL.</p>
+          <form class="search-bar" id="searchForm">
+            <input type="text" name="q" placeholder="Search documents..." value="${esc(state.q)}" />
+            <button type="submit">Search</button>
+          </form>
+          <div class="layout-bar">
+            <label for="layoutSelect">视图</label>
+            <select id="layoutSelect">
+              <option value="A">区块</option>
+              <option value="B">侧边栏</option>
+              <option value="C">概览</option>
+            </select>
+          </div>
+          ${variantHTML()}
+          <div class="proto-note">PROTOTYPE &middot; 分类 + 标签汇总过滤 &middot; 变体 ${state.variant}（${VARIANT_NAMES[state.variant]}）&middot; 数据为 mock &middot; 切换：底部浮条 / 键盘 &larr;&rarr; / URL ?variant=A|B|C</div>`;
+        document.getElementById('searchForm').onsubmit = function () {
+          state.q = this.querySelector('input').value;
+          state.page = 1;
+          syncURL();
+          render();
+          return false;
+        };
+        const sel = document.getElementById('layoutSelect');
+        sel.value = state.variant;
+        sel.onchange = function () {
+          state.variant = this.value;
+          render();
+        };
+        syncURL();
+      }
+
+      function cycle(dir) {
+        const vs = ['A', 'B', 'C'];
+        const idx = (vs.indexOf(state.variant) + dir + vs.length) % vs.length;
+        state.variant = vs[idx];
+        render();
+      }
+
+      document.body.addEventListener('click', (e) => {
+        const el = e.target.closest('[data-act]');
+        if (!el) return;
+        const a = el.dataset;
+        if (a.act === 'cat') {
+          state.cat = a.cat;
+          state.page = 1;
+          if (state.variant === 'C') state.view = 'sessions';
+        } else if (a.act === 'clearcat') {
+          state.cat = '';
+          state.page = 1;
+        } else if (a.act === 'tag') {
+          state.tag = state.tag === a.tag ? '' : a.tag;
+          state.page = 1;
+        } else if (a.act === 'cleartag') {
+          state.tag = '';
+          state.page = 1;
+        } else if (a.act === 'view') {
+          state.view = a.view;
+        } else if (a.act === 'layout') {
+          state.variant = a.layout;
+        } else if (a.act === 'page') {
+          state.page = parseInt(a.page, 10);
+        } else {
+          return;
+        }
+        render();
+      });
+      document.getElementById('prevV').onclick = () => cycle(-1);
+      document.getElementById('nextV').onclick = () => cycle(1);
+      document.addEventListener('keydown', (e) => {
+        const t = e.target.tagName;
+        if (t === 'INPUT' || t === 'TEXTAREA' || e.target.isContentEditable) return;
+        if (e.key === 'ArrowLeft') cycle(-1);
+        if (e.key === 'ArrowRight') cycle(1);
+      });
+
+      const params = new URLSearchParams(location.search);
+      if (['A', 'B', 'C'].includes(params.get('variant'))) state.variant = params.get('variant');
+      if (params.get('cat')) state.cat = params.get('cat');
+      if (params.get('tag')) state.tag = params.get('tag');
+      if (params.get('view') === 'categories') state.view = 'categories';
+      if (params.get('q')) state.q = params.get('q');
+      render();
+    </script>
+  </body>
+</html>
