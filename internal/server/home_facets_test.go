@@ -273,6 +273,80 @@ func TestHomeSearchFacetCountsIncludeContentHits(t *testing.T) {
 	}
 }
 
+func TestHomeSearchFacetsLiftOwnDimension(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv := startTestServer(t, store)
+
+	createFacetSession(t, store, "报告", []string{"demo"})
+	createFacetSession(t, store, "数据看板", []string{"demo"})
+	createFacetSession(t, store, "数据看板", []string{"dashboard"})
+
+	// All three sessions content-match q=loading. Under tag=demo the tag
+	// facet list must still show dashboard (own dimension lifted, counts
+	// narrowed to documents passing the other filters).
+	body, _ := getHome(t, srv.Origin(), "q=loading&tag=demo")
+	if !strings.Contains(body, `>demo <b>2</b>`) || !strings.Contains(body, `>dashboard <b>1</b>`) {
+		t.Fatal("expected lifted tag facets under tag filter in search mode")
+	}
+	if !strings.Contains(body, `>报告 <b>1</b>`) || !strings.Contains(body, `>数据看板 <b>1</b>`) {
+		t.Fatal("expected category facets narrowed by tag filter in search mode")
+	}
+
+	// Symmetrically, category facets lift the category filter while tag
+	// counts collapse to the filtered set.
+	body, _ = getHome(t, srv.Origin(), "q=loading&category=%E6%8A%A5%E5%91%8A")
+	if !strings.Contains(body, `>报告 <b>1</b>`) || !strings.Contains(body, `>数据看板 <b>2</b>`) {
+		t.Fatal("expected lifted category facets under category filter in search mode")
+	}
+	if !strings.Contains(body, `>demo <b>1</b>`) || strings.Contains(body, `>dashboard <b>`) {
+		t.Fatal("expected tag facets narrowed by category filter in search mode")
+	}
+}
+
+func TestHomeUncategorizedFilterChipLabel(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv := startTestServer(t, store)
+
+	createFacetSession(t, store, "报告", nil)
+	createFacetSession(t, store, "", []string{"demo"})
+
+	body, _ := getHome(t, srv.Origin(), "category=__uncategorized__")
+	if strings.Contains(body, "Category: __uncategorized__") {
+		t.Fatal("expected sentinel value to be mapped to its display label")
+	}
+	if !strings.Contains(body, "Category: 未分类") {
+		t.Fatal("expected active filter chip to render the 未分类 label")
+	}
+	if !strings.Contains(body, "未分类 <b>1</b>") {
+		t.Fatal("expected uncategorized facet chip with count")
+	}
+}
+
+func TestHomeOverviewCardsConsistentUnderContentSearch(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	srv := startTestServer(t, store)
+
+	createFacetSession(t, store, "报告", []string{"demo"})
+	createFacetSession(t, store, "数据看板", nil)
+
+	// Both cards' documents are content matches only; previews must come
+	// from the same merged set as the counts — no "Empty." previews next to
+	// non-zero counts.
+	body, _ := getHome(t, srv.Origin(), "layout=overview&view=categories&q=loading")
+	if !strings.Contains(body, `>报告 <b>1</b>`) || !strings.Contains(body, `>数据看板 <b>1</b>`) {
+		t.Fatal("expected card counts derived from content-hit result set")
+	}
+	if strings.Contains(body, "<li>Empty.</li>") {
+		t.Fatal("expected card previews to reflect content-hit documents")
+	}
+}
+
 func TestBuildFacetURL(t *testing.T) {
 	t.Parallel()
 

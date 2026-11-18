@@ -120,6 +120,9 @@ type homePageData struct {
 	Search         string
 	FilterTag      string
 	FilterCat      string
+	// FilterCatLabel is FilterCat with the uncategorized sentinel mapped back
+	// to its display name for the active-filter chip.
+	FilterCatLabel string
 	FilterProj     string
 	ClearSearch    string
 	ClearTag       string
@@ -1102,7 +1105,7 @@ var homePageTemplate = template.Must(template.New("home").Parse(`<!doctype html>
         <a href="{{ .ClearTag }}" class="filter-tag tag">Tag: {{ .FilterTag }} <span class="remove">&times;</span></a>
         {{- end }}
         {{- if .FilterCat }}
-        <a href="{{ .ClearCat }}" class="filter-tag category">Category: {{ .FilterCat }} <span class="remove">&times;</span></a>
+        <a href="{{ .ClearCat }}" class="filter-tag category">Category: {{ .FilterCatLabel }} <span class="remove">&times;</span></a>
         {{- end }}
         {{- if .FilterProj }}
         <a href="{{ .ClearProj }}" class="filter-tag project">Project: {{ .FilterProj }} <span class="remove">&times;</span></a>
@@ -1475,6 +1478,10 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	filterTag := strings.TrimSpace(q.Get("tag"))
 	filterCat := strings.TrimSpace(q.Get("category"))
 	filterProj := strings.TrimSpace(q.Get("project"))
+	filterCatLabel := filterCat
+	if filterCat == session.UncategorizedFilterValue {
+		filterCatLabel = uncategorizedLabel
+	}
 	layout := homeLayout(r, w)
 	view := "sessions"
 	if q.Get("view") == "categories" {
@@ -1504,12 +1511,16 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		// File content search happens in Go, so we must fetch all candidates
 		// and paginate in memory. This is the only correct approach when
 		// file content matching is required.
-		docs, err := s.store.SearchDocuments(search, session.FilterOptions{
-			Tag:      filterTag,
-			Category: filterCat,
-			Project:  filterProj,
-			OwnerID:  ownerID,
-		})
+		//
+		// The candidate queries drop the tag/category constraints: the strict
+		// result set is carved out in memory (filterDocsByCatTag), and the
+		// base set doubles as the facet/card input where each dimension
+		// lifts its own filter (facetCountsFromDocs / recentPerCategoryFromDocs).
+		baseFilter := session.FilterOptions{
+			Project: filterProj,
+			OwnerID: ownerID,
+		}
+		docs, err := s.store.SearchDocuments(search, baseFilter)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1520,12 +1531,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			metaMatched[d.SessionID] = true
 		}
 
-		listDocs, err := s.store.ListDocuments(session.FilterOptions{
-			Tag:      filterTag,
-			Category: filterCat,
-			Project:  filterProj,
-			OwnerID:  ownerID,
-		})
+		listDocs, err := s.store.ListDocuments(baseFilter)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1540,6 +1546,9 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 				docs = append(docs, d)
 			}
 		}
+		searchResultDocs = docs
+
+		docs = filterDocsByCatTag(docs, filterTag, filterCat)
 
 		total = len(docs)
 		totalPages = (total + defaultPageSize - 1) / defaultPageSize
@@ -1557,7 +1566,6 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		if start < total {
 			items = toHomePageSessions(docs[start:end])
 		}
-		searchResultDocs = docs
 	} else {
 		// Non-search paths: use SQL-level LIMIT/OFFSET for efficiency.
 		countFilter := session.FilterOptions{
@@ -1617,7 +1625,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 	var tagFacets []session.FacetCount
 	var uncatCount int
 	if search != "" {
-		catFacets, uncatCount, tagFacets = facetCountsFromDocs(searchResultDocs)
+		catFacets, uncatCount, tagFacets = facetCountsFromDocs(searchResultDocs, filterTag, filterCat)
 	} else {
 		var err error
 		catFacets, uncatCount, err = s.store.CategoryFacets("", facetFilter)
@@ -1666,14 +1674,21 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 
 	var catCards []catCardItem
 	if layout == layoutOverview && view == "categories" {
-		// One window-function query fetches the recent documents of every
-		// category, so a request costs O(1) queries regardless of how many
-		// categories exist. The uncategorized bucket is not part of that
-		// query and gets its own lookup only when its card is rendered.
-		recentByCat, err := s.store.RecentPerCategory(search, facetFilter, overviewCardRecentLimit)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		// Non-search mode: one window-function query fetches the recent
+		// documents of every category, so a request costs O(1) queries
+		// regardless of how many categories exist. Search mode derives the
+		// previews from the merged result set so card previews and counts
+		// see the same documents (file-content matches included).
+		var recentByCat map[string][]session.DocumentInfo
+		if search != "" {
+			recentByCat = recentPerCategoryFromDocs(searchResultDocs, filterTag, overviewCardRecentLimit)
+		} else {
+			var err error
+			recentByCat, err = s.store.RecentPerCategory("", facetFilter, overviewCardRecentLimit)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 		}
 		catCards = make([]catCardItem, 0, len(catItems))
 		for _, it := range catItems {
@@ -1682,17 +1697,20 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 			}
 			var recent []session.DocumentInfo
 			if it.Key == session.UncategorizedFilterValue {
-				uncatFilter := facetFilter
-				uncatFilter.Category = session.UncategorizedFilterValue
-				uncatFilter.Limit = overviewCardRecentLimit
+				// The uncategorized bucket is not part of the per-category
+				// query above; derive it separately, only when rendered.
 				if search != "" {
-					recent, err = s.store.SearchDocuments(search, uncatFilter)
+					recent = recentUncategorizedFromDocs(searchResultDocs, filterTag, overviewCardRecentLimit)
 				} else {
+					uncatFilter := facetFilter
+					uncatFilter.Category = session.UncategorizedFilterValue
+					uncatFilter.Limit = overviewCardRecentLimit
+					var err error
 					recent, err = s.store.ListDocuments(uncatFilter)
-				}
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusInternalServerError)
+						return
+					}
 				}
 			} else {
 				recent = recentByCat[it.Key]
@@ -1764,6 +1782,7 @@ func (s *Server) handleHome(w http.ResponseWriter, r *http.Request) {
 		Search:            search,
 		FilterTag:         filterTag,
 		FilterCat:         filterCat,
+		FilterCatLabel:    filterCatLabel,
 		FilterProj:        filterProj,
 		ClearSearch:       clearSearch,
 		ClearTag:          clearTag,
@@ -1964,24 +1983,98 @@ func capFacetItems(items []facetItem, limit int) []facetItem {
 // filter URLs carry the UncategorizedFilterValue sentinel instead.
 const uncategorizedLabel = "未分类"
 
-// facetCountsFromDocs derives facet counts from an already-filtered document
-// set — the search path's merged metadata + file-content matches. Both
-// dimensions are counted over the whole set, which is what lifts each facet
-// under its own filter; the store-level facet queries do the same in SQL.
-func facetCountsFromDocs(docs []session.DocumentInfo) (cats []session.FacetCount, uncategorized int, tags []session.FacetCount) {
+// facetTagPass reports whether a document carries the active tag filter.
+func facetTagPass(tags []string, filterTag string) bool {
+	if filterTag == "" {
+		return true
+	}
+	for _, t := range tags {
+		if t == filterTag {
+			return true
+		}
+	}
+	return false
+}
+
+// facetCatPass reports whether a document matches the active category filter,
+// including the uncategorized sentinel.
+func facetCatPass(category, filterCat string) bool {
+	switch {
+	case filterCat == "":
+		return true
+	case filterCat == session.UncategorizedFilterValue:
+		return category == ""
+	default:
+		return category == filterCat
+	}
+}
+
+// filterDocsByCatTag applies the tag/category facet constraints in memory,
+// carving the strict result set out of the search base set.
+func filterDocsByCatTag(docs []session.DocumentInfo, filterTag, filterCat string) []session.DocumentInfo {
+	out := make([]session.DocumentInfo, 0, len(docs))
+	for _, d := range docs {
+		if facetTagPass(d.Tags, filterTag) && facetCatPass(d.Category, filterCat) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// facetCountsFromDocs derives facet counts from the search base set. Each
+// dimension is counted over documents that pass the *other* filters only, so
+// the facet list lifts its own filter exactly like the store-level queries.
+func facetCountsFromDocs(docs []session.DocumentInfo, filterTag, filterCat string) (cats []session.FacetCount, uncategorized int, tags []session.FacetCount) {
 	catMap := make(map[string]int)
 	tagMap := make(map[string]int)
 	for _, d := range docs {
-		if d.Category == "" {
-			uncategorized++
-		} else {
-			catMap[d.Category]++
+		tagPass := facetTagPass(d.Tags, filterTag)
+		catPass := facetCatPass(d.Category, filterCat)
+		if tagPass {
+			if d.Category == "" {
+				uncategorized++
+			} else {
+				catMap[d.Category]++
+			}
 		}
-		for _, t := range d.Tags {
-			tagMap[t]++
+		if catPass {
+			for _, t := range d.Tags {
+				tagMap[t]++
+			}
 		}
 	}
 	return sortedFacets(catMap), uncategorized, sortedFacets(tagMap)
+}
+
+// recentPerCategoryFromDocs derives the overview cards' recent documents from
+// the search base set (tag-narrowed, category-lifted), mirroring
+// Store.RecentPerCategory so card previews and counts see the same documents.
+func recentPerCategoryFromDocs(docs []session.DocumentInfo, filterTag string, limit int) map[string][]session.DocumentInfo {
+	out := make(map[string][]session.DocumentInfo)
+	for _, d := range docs {
+		if d.Category == "" || !facetTagPass(d.Tags, filterTag) {
+			continue
+		}
+		if len(out[d.Category]) < limit {
+			out[d.Category] = append(out[d.Category], d)
+		}
+	}
+	return out
+}
+
+// recentUncategorizedFromDocs mirrors recentPerCategoryFromDocs for the
+// uncategorized card.
+func recentUncategorizedFromDocs(docs []session.DocumentInfo, filterTag string, limit int) []session.DocumentInfo {
+	var out []session.DocumentInfo
+	for _, d := range docs {
+		if d.Category == "" && facetTagPass(d.Tags, filterTag) {
+			out = append(out, d)
+			if len(out) >= limit {
+				break
+			}
+		}
+	}
+	return out
 }
 
 // sortedFacets orders facet counts by count descending then value ascending,
