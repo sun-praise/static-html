@@ -142,6 +142,22 @@ sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 - `sth search <query>` 对会话内容进行全文匹配。
 - 可以组合使用：`sth search <query> --tag <tag>` 将全文搜索结果限定到特定标签。
 
+## MCP Server
+
+`sth mcp` 以 stdio 方式运行 [Model Context Protocol](https://modelcontextprotocol.io) 服务器，让 AI agent（kimi-code、Claude Code 等任何 MCP 客户端）以结构化 tools 管理会话，不再依赖 shell 调用：
+
+```bash
+sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
+```
+
+- `--db` 指定本地 SQLite 数据库，供本地工具（`list`、`search`、`delete`、`user_*`、`audit`）使用。
+- `--server` / `--api-key`（或 `STH_API_KEY`）为双模式工具提供默认远端连接；每次工具调用也可以单独覆盖。不传 `server` 即操作本地数据库，与 CLI 语义一致。
+- MCP 协议占用 stdout，诊断信息走 stderr。在 MCP 客户端配置里把命令指向 `sth` 二进制并带上 `mcp` 子命令，例如 `{"command": "sth", "args": ["mcp", "--server", "https://sth.example.com", "--api-key", "..."]}`。
+
+暴露的 tools 与 CLI 一一对应：`send`、`tag`、`categorize`、`project`、`title`、`list`、`search`、`delete`、`share`、`unshare`、`shares`、`user_add`、`user_issue_key`、`user_revoke_key`、`user_list`、`audit`。`sth start` 与 `sth watch` 是长驻进程，仍为 CLI 专属。
+
+工具参数与返回值均为 JSON（input schema 由工具定义自动生成）；预期内的失败（会话不存在、服务端 401 等）按 MCP 规范以 tool error 返回，agent 可据此自行纠正。
+
 ## 审计日志
 
 服务端把安全相关事件写入 SQLite 的 `audit_events` 表：登录成功/失败、登出、

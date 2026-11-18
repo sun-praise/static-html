@@ -176,10 +176,15 @@ func runShares(args []string, stdout io.Writer) error {
 }
 
 func printSharesResult(stdout io.Writer, result map[string]any) {
+	printShares(stdout, sharesFromResult(result))
+}
+
+// sharesFromResult converts the JSON payload returned by the remote share
+// endpoints into share entries; missing or non-string fields degrade to "".
+func sharesFromResult(result map[string]any) []session.ShareEntry {
 	raw, ok := result["shares"].([]any)
 	if !ok {
-		fmt.Fprintln(stdout, "No shares.")
-		return
+		return nil
 	}
 	shares := make([]session.ShareEntry, 0, len(raw))
 	for _, item := range raw {
@@ -195,7 +200,7 @@ func printSharesResult(stdout io.Writer, result map[string]any) {
 		}
 		shares = append(shares, entry)
 	}
-	printShares(stdout, shares)
+	return shares
 }
 
 func printShares(stdout io.Writer, shares []session.ShareEntry) {
