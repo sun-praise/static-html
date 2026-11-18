@@ -301,8 +301,12 @@ func (s *Store) CountDocuments(filter FilterOptions) (int, error) {
 		args = append(args, filter.Tag)
 	}
 	if filter.Category != "" {
-		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_categories WHERE category = ?)`)
-		args = append(args, filter.Category)
+		if filter.Category == UncategorizedFilterValue {
+			conditions = append(conditions, `s.session_id NOT IN (SELECT session_id FROM document_categories)`)
+		} else {
+			conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_categories WHERE category = ?)`)
+			args = append(args, filter.Category)
+		}
 	}
 	if filter.Project != "" {
 		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_projects WHERE project = ?)`)
@@ -348,8 +352,12 @@ func (s *Store) ListDocuments(filter FilterOptions) ([]DocumentInfo, error) {
 		args = append(args, filter.Tag)
 	}
 	if filter.Category != "" {
-		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_categories WHERE category = ?)`)
-		args = append(args, filter.Category)
+		if filter.Category == UncategorizedFilterValue {
+			conditions = append(conditions, `s.session_id NOT IN (SELECT session_id FROM document_categories)`)
+		} else {
+			conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_categories WHERE category = ?)`)
+			args = append(args, filter.Category)
+		}
 	}
 	if filter.Project != "" {
 		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_projects WHERE project = ?)`)
@@ -424,10 +432,7 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 		return nil, errors.New("search query is required")
 	}
 
-	// Escape LIKE wildcards so user literals like % and _ are matched exactly.
-	// Backslash must be escaped first because it is the ESCAPE character.
-	escaped := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(query, `\`, `\\`), `%`, `\%`), `_`, `\_`)
-	pattern := "%" + escaped + "%"
+	pattern := likePattern(query)
 
 	var conditions []string
 	var args []any
@@ -457,8 +462,12 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 		args = append(args, filter.Tag)
 	}
 	if filter.Category != "" {
-		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_categories WHERE category = ?)`)
-		args = append(args, filter.Category)
+		if filter.Category == UncategorizedFilterValue {
+			conditions = append(conditions, `s.session_id NOT IN (SELECT session_id FROM document_categories)`)
+		} else {
+			conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_categories WHERE category = ?)`)
+			args = append(args, filter.Category)
+		}
 	}
 	if filter.Project != "" {
 		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_projects WHERE project = ?)`)
@@ -536,6 +545,152 @@ func (s *Store) SearchDocuments(query string, filter FilterOptions) ([]DocumentI
 	}
 
 	return docs, nil
+}
+
+// UncategorizedFilterValue is the pseudo category value the home page uses
+// for its "未分类" bucket: documents match it when they carry no category at
+// all. It is compared literally against filter.Category, so a real category
+// named exactly like this constant would be shadowed by the bucket.
+const UncategorizedFilterValue = "未分类"
+
+// likePattern escapes LIKE wildcards so user literals like % and _ match
+// exactly. Backslash must be escaped first because it is the ESCAPE character.
+func likePattern(query string) string {
+	escaped := strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(query, `\`, `\\`), `%`, `\%`), `_`, `\_`)
+	return "%" + escaped + "%"
+}
+
+// FacetCount is one metadata value together with the number of non-deleted
+// documents carrying it.
+type FacetCount struct {
+	Value string
+	Count int
+}
+
+// facetConditions builds the WHERE conditions shared by the facet queries.
+// Every filter constraint applies (owner, tag, category, project and the
+// metadata search term), except the dimension named in skip — picking one
+// category must not collapse the category facet counts themselves. Note the
+// search term matches metadata only (no file-content pass), which is what
+// the SQL layer is able to count.
+func facetConditions(search string, filter FilterOptions, skip string) ([]string, []any) {
+	var conditions []string
+	var args []any
+
+	conditions = append(conditions, `s.deleted_at IS NULL`)
+
+	if filter.OwnerID != "" {
+		conditions = append(conditions, `s.user_id = ?`)
+		args = append(args, filter.OwnerID)
+	}
+	if skip != "tag" && filter.Tag != "" {
+		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_tags WHERE tag = ?)`)
+		args = append(args, filter.Tag)
+	}
+	if skip != "category" && filter.Category != "" {
+		if filter.Category == UncategorizedFilterValue {
+			conditions = append(conditions, `s.session_id NOT IN (SELECT session_id FROM document_categories)`)
+		} else {
+			conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_categories WHERE category = ?)`)
+			args = append(args, filter.Category)
+		}
+	}
+	if filter.Project != "" {
+		conditions = append(conditions, `s.session_id IN (SELECT session_id FROM document_projects WHERE project = ?)`)
+		args = append(args, filter.Project)
+	}
+	if search != "" {
+		pattern := likePattern(search)
+		conditions = append(conditions, `(COALESCE(s.stored_entry_file, s.entry_file) LIKE ? ESCAPE '\'
+		   OR COALESCE(s.title, '') LIKE ? ESCAPE '\'
+		   OR s.session_id IN (
+			   SELECT session_id FROM document_tags WHERE tag LIKE ? ESCAPE '\'
+		   )
+		   OR s.session_id IN (
+			   SELECT session_id FROM document_categories WHERE category LIKE ? ESCAPE '\'
+		   )
+		   OR s.session_id IN (
+			   SELECT session_id FROM document_projects WHERE project LIKE ? ESCAPE '\'
+		   ))`)
+		args = append(args, pattern, pattern, pattern, pattern, pattern)
+	}
+
+	return conditions, args
+}
+
+// CategoryFacets counts documents per category, ordered by count descending
+// then category name. The filter's Category constraint is lifted so the full
+// category list stays visible while tag/project/owner and the metadata search
+// term still narrow the counts. uncategorized counts the matching documents
+// that carry no category at all; the home page renders it as the "未分类"
+// bucket.
+func (s *Store) CategoryFacets(search string, filter FilterOptions) (cats []FacetCount, uncategorized int, err error) {
+	cats = []FacetCount{}
+
+	conditions, args := facetConditions(search, filter, "category")
+	rows, err := s.db.Query(`
+		SELECT dc.category, COUNT(DISTINCT s.session_id)
+		FROM sessions s
+		JOIN document_categories dc ON s.session_id = dc.session_id
+		WHERE `+strings.Join(conditions, ` AND `)+`
+		GROUP BY dc.category
+		ORDER BY COUNT(DISTINCT s.session_id) DESC, dc.category ASC
+	`, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fc FacetCount
+		if err := rows.Scan(&fc.Value, &fc.Count); err != nil {
+			return nil, 0, err
+		}
+		cats = append(cats, fc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	uncatConds, uncatArgs := facetConditions(search, filter, "category")
+	uncatConds = append(uncatConds, `s.session_id NOT IN (SELECT session_id FROM document_categories)`)
+	if err := s.db.QueryRow(
+		`SELECT COUNT(DISTINCT s.session_id) FROM sessions s WHERE `+strings.Join(uncatConds, ` AND `),
+		uncatArgs...,
+	).Scan(&uncategorized); err != nil {
+		return nil, 0, err
+	}
+
+	return cats, uncategorized, nil
+}
+
+// TagFacets counts documents per tag, ordered by count descending then tag.
+// The filter's Tag constraint is lifted; category/project/owner and the
+// metadata search term still narrow the counts. The list is uncapped — the
+// caller decides how much of the tag long tail to display.
+func (s *Store) TagFacets(search string, filter FilterOptions) (tags []FacetCount, err error) {
+	tags = []FacetCount{}
+
+	conditions, args := facetConditions(search, filter, "tag")
+	rows, err := s.db.Query(`
+		SELECT dt.tag, COUNT(DISTINCT s.session_id)
+		FROM sessions s
+		JOIN document_tags dt ON s.session_id = dt.session_id
+		WHERE `+strings.Join(conditions, ` AND `)+`
+		GROUP BY dt.tag
+		ORDER BY COUNT(DISTINCT s.session_id) DESC, dt.tag ASC
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fc FacetCount
+		if err := rows.Scan(&fc.Value, &fc.Count); err != nil {
+			return nil, err
+		}
+		tags = append(tags, fc)
+	}
+	return tags, rows.Err()
 }
 
 func (s *Store) sessionExists(sessionID string) bool {
