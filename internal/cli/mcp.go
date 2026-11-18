@@ -64,23 +64,23 @@ func mcpServe(ctx context.Context, cfg *mcpConfig, stderr io.Writer) error {
 func registerMCPTools(s *mcp.Server, cfg *mcpConfig) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "send",
-		Description: "Upload a local HTML file to an sth server, creating a preview session (or a new version of an existing chain). Sibling web assets in the entry file's directory (or --root) are uploaded with it unless single=true. Mirrors `sth send`. Returns the preview URL.",
+		Description: "Upload a local HTML file to an sth server, creating a preview session (or a new version of an existing chain). Sibling web assets in the entry file's directory (or --root) are uploaded with it unless single=true. Mirrors `sth send`. Returns the preview URL. Note: this reads files from this machine — only point it at content meant to be published.",
 	}, cfg.toolSend)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "tag",
-		Description: "Add or remove tags on a session. Mirrors `sth tag [--rm]`. Operates on the local DB, or on a remote server when server is set.",
+		Description: "Add or remove tags on a session. Mirrors `sth tag [--rm]`. Operates on the local DB, or on a remote server when server is set; pass local=true to force the local DB.",
 	}, cfg.toolTag)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "categorize",
-		Description: "Set the category of a session. Mirrors `sth categorize`.",
+		Description: "Set the category of a session. Mirrors `sth categorize`. Pass local=true to force the local DB.",
 	}, cfg.toolCategorize)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "project",
-		Description: "Set the project of a session. Mirrors `sth project`.",
+		Description: "Set the project of a session. Mirrors `sth project`. Operates on the local DB, or on a remote server when server is set; pass local=true to force the local DB.",
 	}, cfg.toolProject)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "title",
-		Description: "Set the display title of a session (max 200 characters). Mirrors `sth title`.",
+		Description: "Set the display title of a session (max 200 characters). Mirrors `sth title`. Operates on the local DB, or on a remote server when server is set; pass local=true to force the local DB.",
 	}, cfg.toolTitle)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list",
@@ -96,15 +96,15 @@ func registerMCPTools(s *mcp.Server, cfg *mcpConfig) {
 	}, cfg.toolDelete)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "share",
-		Description: "Grant a user read access to a session (whole session, or a single page via page). Mirrors `sth share`.",
+		Description: "Grant a user read access to a session (whole session, or a single page via page). Mirrors `sth share`. Operates on the local DB, or on a remote server when server is set; pass local=true to force the local DB.",
 	}, cfg.toolShare)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "unshare",
-		Description: "Revoke a user's share grant on a session. Mirrors `sth unshare`.",
+		Description: "Revoke a user's share grant on a session. Mirrors `sth unshare`. Operates on the local DB, or on a remote server when server is set; pass local=true to force the local DB.",
 	}, cfg.toolUnshare)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "shares",
-		Description: "List the share grants of a session. Mirrors `sth shares`.",
+		Description: "List the share grants of a session. Mirrors `sth shares`. Operates on the local DB, or on a remote server when server is set; pass local=true to force the local DB.",
 	}, cfg.toolShares)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "user_add",
@@ -137,17 +137,31 @@ func (c *mcpConfig) openStore() (*session.Store, error) {
 
 // resolveRemote decides between remote-server and local-DB mode for the dual
 // mode tools: a per-call server parameter wins over the server-wide default;
-// when neither is set the call operates on the local DB.
-func (c *mcpConfig) resolveRemote(serverParam, apiKeyParam string) (serverURL, apiKey string, remote bool) {
+// when neither is set the call operates on the local DB. An explicit local
+// flag forces local-DB mode even when a server default is configured.
+//
+// Credentials are host-bound: the server-wide API key is only attached when
+// the call targets the configured server. A per-call server override runs
+// without credentials unless the caller supplies an explicit per-call key, so
+// a prompt-injected call cannot leak the configured key to another host.
+func (c *mcpConfig) resolveRemote(serverParam, apiKeyParam string, local bool) (serverURL, apiKey string, remote bool) {
+	if local {
+		return "", "", false
+	}
 	serverURL = serverParam
 	if serverURL == "" {
 		serverURL = c.serverURL
 	}
-	apiKey = apiKeyParam
-	if apiKey == "" {
-		apiKey = c.apiKey
+	if serverURL == "" {
+		return "", "", false
 	}
-	return serverURL, apiKey, serverURL != ""
+	if apiKeyParam != "" {
+		return serverURL, apiKeyParam, true
+	}
+	if serverURL == c.serverURL {
+		return serverURL, c.apiKey, true
+	}
+	return serverURL, "", true
 }
 
 // messageResult is the structured output of mutation tools: one human
@@ -184,9 +198,17 @@ func (c *mcpConfig) toolSend(ctx context.Context, req *mcp.CallToolRequest, in s
 			serverURL = server.DefaultServerURL
 		}
 	}
+	// Host-bound credentials: the server-wide key only follows the configured
+	// default server, never a per-call override pointing elsewhere.
 	apiKey := in.APIKey
 	if apiKey == "" {
-		apiKey = c.apiKey
+		defaultURL := c.serverURL
+		if defaultURL == "" {
+			defaultURL = server.DefaultServerURL
+		}
+		if serverURL == defaultURL {
+			apiKey = c.apiKey
+		}
 	}
 
 	result, err := uploadSite(target, serverURL, apiKey)
@@ -204,6 +226,7 @@ type tagParams struct {
 	Remove    bool     `json:"remove,omitempty" jsonschema:"remove the tags instead of adding them (like sth tag --rm)"`
 	Server    string   `json:"server,omitempty" jsonschema:"operate against a remote sth server instead of the local DB"`
 	APIKey    string   `json:"api_key,omitempty" jsonschema:"API key for the remote server"`
+	Local     bool     `json:"local,omitempty" jsonschema:"force local-DB operation even when a --server default is configured"`
 }
 
 func (c *mcpConfig) toolTag(ctx context.Context, req *mcp.CallToolRequest, in tagParams) (*mcp.CallToolResult, messageResult, error) {
@@ -211,7 +234,7 @@ func (c *mcpConfig) toolTag(ctx context.Context, req *mcp.CallToolRequest, in ta
 		return nil, messageResult{}, errors.New("at least one tag is required")
 	}
 
-	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey)
+	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey, in.Local)
 	if remote {
 		method := http.MethodPut
 		if in.Remove {
@@ -250,10 +273,11 @@ type categorizeParams struct {
 	Category  string `json:"category" jsonschema:"category to set"`
 	Server    string `json:"server,omitempty" jsonschema:"operate against a remote sth server instead of the local DB"`
 	APIKey    string `json:"api_key,omitempty" jsonschema:"API key for the remote server"`
+	Local     bool   `json:"local,omitempty" jsonschema:"force local-DB operation even when a --server default is configured"`
 }
 
 func (c *mcpConfig) toolCategorize(ctx context.Context, req *mcp.CallToolRequest, in categorizeParams) (*mcp.CallToolResult, messageResult, error) {
-	return c.setSessionField(in.SessionID, "category", in.Category, in.Server, in.APIKey)
+	return c.setSessionField(in.SessionID, "category", in.Category, in.Server, in.APIKey, in.Local)
 }
 
 type projectParams struct {
@@ -261,10 +285,11 @@ type projectParams struct {
 	Project   string `json:"project" jsonschema:"project to set"`
 	Server    string `json:"server,omitempty" jsonschema:"operate against a remote sth server instead of the local DB"`
 	APIKey    string `json:"api_key,omitempty" jsonschema:"API key for the remote server"`
+	Local     bool   `json:"local,omitempty" jsonschema:"force local-DB operation even when a --server default is configured"`
 }
 
 func (c *mcpConfig) toolProject(ctx context.Context, req *mcp.CallToolRequest, in projectParams) (*mcp.CallToolResult, messageResult, error) {
-	return c.setSessionField(in.SessionID, "project", in.Project, in.Server, in.APIKey)
+	return c.setSessionField(in.SessionID, "project", in.Project, in.Server, in.APIKey, in.Local)
 }
 
 type titleParams struct {
@@ -272,16 +297,17 @@ type titleParams struct {
 	Title     string `json:"title" jsonschema:"display title to set (max 200 characters)"`
 	Server    string `json:"server,omitempty" jsonschema:"operate against a remote sth server instead of the local DB"`
 	APIKey    string `json:"api_key,omitempty" jsonschema:"API key for the remote server"`
+	Local     bool   `json:"local,omitempty" jsonschema:"force local-DB operation even when a --server default is configured"`
 }
 
 func (c *mcpConfig) toolTitle(ctx context.Context, req *mcp.CallToolRequest, in titleParams) (*mcp.CallToolResult, messageResult, error) {
-	return c.setSessionField(in.SessionID, "title", in.Title, in.Server, in.APIKey)
+	return c.setSessionField(in.SessionID, "title", in.Title, in.Server, in.APIKey, in.Local)
 }
 
 // setSessionField is the shared implementation of categorize/project/title:
 // the field name doubles as the remote API path segment and JSON body key.
-func (c *mcpConfig) setSessionField(sessionID, field, value, serverParam, apiKeyParam string) (*mcp.CallToolResult, messageResult, error) {
-	serverURL, apiKey, remote := c.resolveRemote(serverParam, apiKeyParam)
+func (c *mcpConfig) setSessionField(sessionID, field, value, serverParam, apiKeyParam string, local bool) (*mcp.CallToolResult, messageResult, error) {
+	serverURL, apiKey, remote := c.resolveRemote(serverParam, apiKeyParam, local)
 	if remote {
 		if _, err := doJSONRequest(http.MethodPut, serverURL, "/api/sessions/"+sessionID+"/"+field, apiKey, map[string]any{field: value}); err != nil {
 			return nil, messageResult{}, err
@@ -431,10 +457,11 @@ type shareParams struct {
 	Page      string `json:"page,omitempty" jsonschema:"restrict the grant to a single HTML page path within the session, e.g. report.html"`
 	Server    string `json:"server,omitempty" jsonschema:"operate against a remote sth server instead of the local DB"`
 	APIKey    string `json:"api_key,omitempty" jsonschema:"API key for the remote server"`
+	Local     bool   `json:"local,omitempty" jsonschema:"force local-DB operation even when a --server default is configured"`
 }
 
 func (c *mcpConfig) toolShare(ctx context.Context, req *mcp.CallToolRequest, in shareParams) (*mcp.CallToolResult, messageResult, error) {
-	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey)
+	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey, in.Local)
 	if remote {
 		result, err := doJSONRequest(http.MethodPut, serverURL, "/api/sessions/"+in.SessionID+"/shares", apiKey, map[string]any{"user": in.Username, "path": in.Page})
 		if err != nil {
@@ -473,7 +500,7 @@ func (c *mcpConfig) toolShare(ctx context.Context, req *mcp.CallToolRequest, in 
 }
 
 func (c *mcpConfig) toolUnshare(ctx context.Context, req *mcp.CallToolRequest, in shareParams) (*mcp.CallToolResult, messageResult, error) {
-	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey)
+	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey, in.Local)
 	if remote {
 		target := "/api/sessions/" + in.SessionID + "/shares/" + in.Username
 		if in.Page != "" {
@@ -534,6 +561,7 @@ type sharesParams struct {
 	SessionID string `json:"session_id" jsonschema:"id of the session"`
 	Server    string `json:"server,omitempty" jsonschema:"operate against a remote sth server instead of the local DB"`
 	APIKey    string `json:"api_key,omitempty" jsonschema:"API key for the remote server"`
+	Local     bool   `json:"local,omitempty" jsonschema:"force local-DB operation even when a --server default is configured"`
 }
 
 type shareListResult struct {
@@ -541,7 +569,7 @@ type shareListResult struct {
 }
 
 func (c *mcpConfig) toolShares(ctx context.Context, req *mcp.CallToolRequest, in sharesParams) (*mcp.CallToolResult, shareListResult, error) {
-	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey)
+	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey, in.Local)
 	if remote {
 		result, err := doJSONRequest(http.MethodGet, serverURL, "/api/sessions/"+in.SessionID+"/shares", apiKey, nil)
 		if err != nil {

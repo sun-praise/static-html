@@ -142,6 +142,12 @@ Exposed tools mirror the CLI one-to-one: `send`, `tag`, `categorize`, `project`,
 
 Tool arguments and results are JSON (input schemas are generated from the tool definitions), and expected failures — a missing session, a 401 from the server — are reported as tool errors the agent can self-correct from.
 
+### Security notes
+
+- The `send` tool reads files from this machine (the entry file plus sibling assets in its directory or `root`); only point it at content meant to be published.
+- Credentials are host-bound: the server-wide `--api-key` / `STH_API_KEY` is attached only to calls targeting the configured `--server`. A per-call `server` override runs without credentials unless the call passes its own `api_key`, so a prompt-injected call cannot leak the configured key to another host.
+- Run the MCP server with a key scoped to a dedicated low-privilege sth user (`sth user add` + `sth user issue-key`) rather than an admin key.
+
 ## Authentication
 
 By default `sth` runs **without authentication**, which is fine for local

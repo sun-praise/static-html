@@ -158,6 +158,12 @@ sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
 
 工具参数与返回值均为 JSON（input schema 由工具定义自动生成）；预期内的失败（会话不存在、服务端 401 等）按 MCP 规范以 tool error 返回，agent 可据此自行纠正。
 
+### 安全说明
+
+- `send` 工具会读取本机文件（入口文件及其目录或 `root` 下的同级资源）；只把它指向打算发布的内容。
+- 凭据与主机绑定：server 级 `--api-key` / `STH_API_KEY` 只会附加到指向配置的 `--server` 的调用上。per-call 的 `server` 覆盖默认不带凭据，除非该调用显式传入自己的 `api_key`，因此被 prompt 注入的调用无法把已配置的 key 泄露到其他主机。
+- 启动 MCP server 时建议使用权限受限的专用 sth 用户签发的 key（`sth user add` + `sth user issue-key`），不要用管理员 key。
+
 ## 审计日志
 
 服务端把安全相关事件写入 SQLite 的 `audit_events` 表：登录成功/失败、登出、

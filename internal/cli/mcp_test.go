@@ -638,3 +638,133 @@ func TestMCPDispatchRejectsBadFlags(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// TestMCPKeyNotForwardedToOverriddenServer pins the host-bound credential
+// rule: the server-wide API key follows the configured default server only.
+// A per-call server override runs without credentials unless the caller
+// passes an explicit per-call key.
+func TestMCPKeyNotForwardedToOverriddenServer(t *testing.T) {
+	t.Parallel()
+
+	defaultServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer defaultServer.Close()
+
+	var overrideAuth []byte
+	overrideServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		overrideAuth = []byte(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer overrideServer.Close()
+
+	cs := newMCPClient(t, &mcpConfig{serverURL: defaultServer.URL, apiKey: "secret"})
+
+	// Override to another host: no credentials are attached.
+	structured[messageResult](t, callTool(t, cs, "tag", map[string]any{
+		"session_id": "s1", "tags": []string{"a"}, "server": overrideServer.URL,
+	}))
+	if len(overrideAuth) != 0 {
+		t.Fatalf("server-wide key leaked to overridden server: %q", overrideAuth)
+	}
+
+	// Same host as the default: the key is attached.
+	structured[messageResult](t, callTool(t, cs, "tag", map[string]any{
+		"session_id": "s1", "tags": []string{"a"}, "server": defaultServer.URL,
+	}))
+
+	// Override with an explicit per-call key: that key is attached.
+	overrideAuth = nil
+	structured[messageResult](t, callTool(t, cs, "tag", map[string]any{
+		"session_id": "s1", "tags": []string{"a"}, "server": overrideServer.URL, "api_key": "k-percall",
+	}))
+	if string(overrideAuth) != "Bearer k-percall" {
+		t.Fatalf("unexpected per-call auth: %q", overrideAuth)
+	}
+}
+
+func TestMCPLocalForcesLocalDB(t *testing.T) {
+	t.Parallel()
+
+	var remoteHits int
+	remoteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		remoteHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer remoteServer.Close()
+
+	dbPath, store := newMCPTestDB(t)
+	s, err := store.Create("/tmp/local.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, serverURL: remoteServer.URL})
+	msg := structured[messageResult](t, callTool(t, cs, "tag", map[string]any{
+		"session_id": s.ID, "tags": []string{"local-tag"}, "local": true,
+	}))
+	if !strings.Contains(msg.Message, "Added tags to") {
+		t.Fatalf("unexpected message: %q", msg.Message)
+	}
+	if remoteHits != 0 {
+		t.Fatalf("local=true should not hit the remote server, got %d hits", remoteHits)
+	}
+
+	meta, err := store.GetMetadata(s.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(meta.Tags) != 1 || meta.Tags[0] != "local-tag" {
+		t.Fatalf("expected tag written to the local DB, got %+v", meta.Tags)
+	}
+}
+
+// TestMCPSendKeyNotForwarded checks the same host-bound rule for send, whose
+// default chain differs from the dual-mode tools.
+func TestMCPSendKeyNotForwarded(t *testing.T) {
+	t.Parallel()
+
+	newSendMux := func(hooks *[][]byte) *http.ServeMux {
+		mux := http.NewServeMux()
+		mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
+			*hooks = append(*hooks, []byte(r.Header.Get("Authorization")))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"url":"http://example.test/s/x"}`))
+		})
+		return mux
+	}
+
+	var defaultHooks [][]byte
+	defaultServer := httptest.NewServer(newSendMux(&defaultHooks))
+	defer defaultServer.Close()
+
+	var overrideHooks [][]byte
+	overrideServer := httptest.NewServer(newSendMux(&overrideHooks))
+	defer overrideServer.Close()
+
+	root := t.TempDir()
+	entry := filepath.Join(root, "index.html")
+	if err := os.WriteFile(entry, []byte("<!doctype html><title>ok</title>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cs := newMCPClient(t, &mcpConfig{serverURL: defaultServer.URL, apiKey: "secret"})
+	sendArgs := func(server string) map[string]any {
+		return map[string]any{
+			"file": entry, "title": "T", "tag": "t", "category": "c", "project": "p", "server": server,
+		}
+	}
+
+	structured[sendResult](t, callTool(t, cs, "send", sendArgs(overrideServer.URL)))
+	if len(overrideHooks) != 1 || len(overrideHooks[0]) != 0 {
+		t.Fatalf("send leaked credentials to overridden server: %+v", overrideHooks)
+	}
+
+	structured[sendResult](t, callTool(t, cs, "send", sendArgs("")))
+	if len(defaultHooks) != 1 || string(defaultHooks[0]) != "Bearer secret" {
+		t.Fatalf("default server should carry the configured key, got %+v", defaultHooks)
+	}
+}
