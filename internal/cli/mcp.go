@@ -30,13 +30,21 @@ type mcpConfig struct {
 	dbPath    string
 	serverURL string
 	apiKey    string
-	// allowAdminTools gates the admin-class tools: user_add /
+
+	// Admin tool gating follows identity: the configured --api-key must
+	// resolve to a user holding the admin role. user_add /
 	// user_issue_key / user_revoke_key mint credentials, and audit exposes
-	// every user's security events (and prune_days can erase them). They
-	// operate on the local SQLite store with full operator privileges, so
-	// they are only registered when the human starting the server
-	// explicitly opts in.
-	allowAdminTools bool
+	// every user's security events (and prune_days can erase them), so an
+	// ordinary member — or a caller with no key at all — never sees them.
+	// allowAdminTools is computed by resolveAdminTools; adminOverrideSet /
+	// adminOverrideValue carry the --allow-admin-tools flag, which forces
+	// the outcome on or off regardless of identity.
+	adminOverrideSet   bool
+	adminOverrideValue bool
+	allowAdminTools    bool
+
+	// identity is the username the API key resolved to, for startup notes.
+	identity string
 }
 
 // parseMCPConfig parses `sth mcp` arguments into the server configuration.
@@ -45,6 +53,8 @@ type mcpConfig struct {
 // are rejected: with a privilege gate on this command, a stray token (say,
 // `--allow-admin-tools false` in the space-separated form the boolean parser
 // does not understand) must fail loudly instead of being silently dropped.
+// The flag does not decide by itself — resolveAdminTools applies it as an
+// override on top of the caller's identity.
 func parseMCPConfig(args []string) (*mcpConfig, error) {
 	args, allowAdminSet, allowAdminFlag, err := popBoolFlagWithPresence(args, "allow-admin-tools")
 	if err != nil {
@@ -59,12 +69,95 @@ func parseMCPConfig(args []string) (*mcpConfig, error) {
 		return nil, fmt.Errorf("unexpected argument %q (sth mcp takes only --flags)", positionals[0])
 	}
 
-	return &mcpConfig{
-		dbPath:          flags["db"],
-		serverURL:       flags["server"],
-		apiKey:          resolveAPIKey(flags),
-		allowAdminTools: resolveBool(allowAdminSet, allowAdminFlag, "STH_ALLOW_ADMIN_TOOLS"),
-	}, nil
+	cfg := &mcpConfig{
+		dbPath:    flags["db"],
+		serverURL: flags["server"],
+		apiKey:    resolveAPIKey(flags),
+	}
+	// The flag is a forced override; absent a flag, the environment may set
+	// one (STH_ALLOW_ADMIN_TOOLS=true). Either way the value only takes
+	// effect through resolveAdminTools — identity decides by default.
+	if allowAdminSet {
+		cfg.adminOverrideSet, cfg.adminOverrideValue = true, allowAdminFlag
+	} else {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv("STH_ALLOW_ADMIN_TOOLS"))) {
+		case "true", "1":
+			cfg.adminOverrideSet, cfg.adminOverrideValue = true, true
+		}
+	}
+	return cfg, nil
+}
+
+// resolveAdminTools decides whether the admin-class tools are exposed, based
+// on the caller's identity: the configured API key must belong to a user
+// holding the admin role — verified locally against the store, or remotely
+// via GET /api/me when --server is set. No key means no identity, which is
+// not admin: the tools stay hidden (fail-closed). The --allow-admin-tools
+// flag, when present, forces the outcome regardless of identity.
+func (c *mcpConfig) resolveAdminTools(stderr io.Writer) error {
+	defer func() {
+		if c.allowAdminTools {
+			fmt.Fprintln(stderr, "note: admin tools (user_add/user_issue_key/user_revoke_key/audit) are exposed; the connected agent can create users, issue API keys, and read or prune the audit log")
+		}
+	}()
+
+	if c.adminOverrideSet {
+		if c.adminOverrideValue {
+			fmt.Fprintln(stderr, "note: --allow-admin-tools=true forces admin tools on without an identity check")
+		}
+		c.allowAdminTools = c.adminOverrideValue
+		return nil
+	}
+
+	if c.apiKey == "" {
+		fmt.Fprintln(stderr, "note: no --api-key: admin tools hidden (pass an admin user's key, or force with --allow-admin-tools=true)")
+		c.allowAdminTools = false
+		return nil
+	}
+
+	admin := false
+	if c.serverURL != "" {
+		result, err := doJSONRequest(http.MethodGet, c.serverURL, "/api/me", c.apiKey, nil)
+		if err != nil {
+			return fmt.Errorf("resolving identity from %s: %w", c.serverURL, err)
+		}
+		admin, _ = result["isAdmin"].(bool)
+		if name, ok := result["username"].(string); ok {
+			c.identity = name
+		}
+	} else {
+		store, err := c.openStore()
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+
+		userID, ok, err := store.VerifyAPIKey(c.apiKey)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Fprintln(stderr, "note: --api-key does not match any active key: admin tools hidden")
+			c.allowAdminTools = false
+			return nil
+		}
+		if admin, err = store.IsAdmin(userID); err != nil {
+			return err
+		}
+		if user, err := store.FindUserByID(userID); err == nil {
+			c.identity = user.Username
+		}
+	}
+
+	c.allowAdminTools = admin
+	if c.identity != "" {
+		state := "hidden (admin only)"
+		if admin {
+			state = "exposed"
+		}
+		fmt.Fprintf(stderr, "authenticated as %q (role=admin: %t): admin tools %s\n", c.identity, admin, state)
+	}
+	return nil
 }
 
 // runMCP runs the `sth mcp` subcommand: an MCP server over stdio that exposes
@@ -80,6 +173,10 @@ func runMCP(args []string, _ io.Writer, stderr io.Writer) error {
 	// default (http://127.0.0.1:3939); say so instead of failing silently.
 	if cfg.apiKey != "" && cfg.serverURL == "" {
 		fmt.Fprintf(stderr, "note: --api-key/STH_API_KEY is set without --server; it is only attached to calls targeting %s (pass --server to change the default)\n", server.DefaultServerURL)
+	}
+
+	if err := cfg.resolveAdminTools(stderr); err != nil {
+		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -152,19 +249,19 @@ func registerMCPTools(s *mcp.Server, cfg *mcpConfig) {
 	if cfg.allowAdminTools {
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "user_add",
-			Description: "Create a user in the local DB. Mirrors `sth user add`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
+			Description: "Create a user in the local DB; pass admin=true to create another admin. Mirrors `sth user add`. Admin capability: only exposed when the configured API key belongs to an admin user.",
 		}, cfg.toolUserAdd)
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "user_issue_key",
-			Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
+			Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`. Admin capability: only exposed when the configured API key belongs to an admin user.",
 		}, cfg.toolUserIssueKey)
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "user_revoke_key",
-			Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
+			Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`. Admin capability: only exposed when the configured API key belongs to an admin user.",
 		}, cfg.toolUserRevokeKey)
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "audit",
-			Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes — covers every user), or prune old events with prune_days. Mirrors `sth audit`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
+			Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes — covers every user), or prune old events with prune_days. Mirrors `sth audit`. Admin capability: only exposed when the configured API key belongs to an admin user.",
 		}, cfg.toolAudit)
 	}
 }
@@ -654,7 +751,8 @@ func nonNilShares(shares []session.ShareEntry) []session.ShareEntry {
 // --- user management ---
 
 type userAddParams struct {
-	Name string `json:"name" jsonschema:"username to create"`
+	Name  string `json:"name" jsonschema:"username to create"`
+	Admin bool   `json:"admin,omitempty" jsonschema:"grant the admin role to the new user (admins can mint further admins)"`
 }
 
 type userCreatedResult struct {
@@ -675,6 +773,11 @@ func (c *mcpConfig) toolUserAdd(ctx context.Context, req *mcp.CallToolRequest, i
 			return nil, userCreatedResult{}, fmt.Errorf("username %q already taken", in.Name)
 		}
 		return nil, userCreatedResult{}, err
+	}
+	if in.Admin {
+		if err := store.SetUserRole(in.Name, session.RoleAdmin); err != nil {
+			return nil, userCreatedResult{}, err
+		}
 	}
 	return nil, userCreatedResult{Username: user.Username, ID: user.ID}, nil
 }
@@ -740,6 +843,7 @@ type userEmptyParams struct{}
 type mcpUser struct {
 	Username   string `json:"username"`
 	ID         string `json:"id"`
+	Role       string `json:"role"`
 	ActiveKeys int    `json:"activeKeys"`
 	Created    string `json:"created"`
 }
@@ -769,6 +873,7 @@ func (c *mcpConfig) toolUserList(ctx context.Context, req *mcp.CallToolRequest, 
 		out = append(out, mcpUser{
 			Username:   u.Username,
 			ID:         u.ID,
+			Role:       u.Role,
 			ActiveKeys: keyCount,
 			Created:    u.CreatedAt.Format("2006-01-02"),
 		})

@@ -31,6 +31,15 @@ func zipNames(data []byte) ([]string, error) {
 	return names, nil
 }
 
+// meOK answers GET /api/me with a member identity — enough for
+// resolveAdminTools to succeed in tests that do not assert on it.
+func meOK() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"userId":"u1","username":"someone","role":"","isAdmin":false}`))
+	}
+}
+
 // authRecorder collects values written by httptest handler goroutines so the
 // test goroutine can read them safely under -race. Fatal may not be called
 // from a handler goroutine; handlers use t.Errorf + http.Error instead.
@@ -58,6 +67,11 @@ func (a *authRecorder) snapshot() [][]byte {
 // path (initialize, tools/list, tools/call) without stdio plumbing.
 func newMCPClient(t *testing.T, cfg *mcpConfig) *mcp.ClientSession {
 	t.Helper()
+
+	// Mirror runMCP: identity resolution happens before tools are registered.
+	if err := cfg.resolveAdminTools(io.Discard); err != nil {
+		t.Fatalf("resolveAdminTools: %v", err)
+	}
 
 	ctx := context.Background()
 	s := mcp.NewServer(&mcp.Implementation{Name: "sth-test", Version: "test"}, nil)
@@ -181,7 +195,7 @@ func TestMCPUserManagementExposedWhenAllowed(t *testing.T) {
 	t.Parallel()
 
 	dbPath, _ := newMCPTestDB(t)
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowAdminTools: true})
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, adminOverrideSet: true, adminOverrideValue: true})
 
 	resp, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
@@ -336,7 +350,7 @@ func TestMCPUserLifecycle(t *testing.T) {
 	t.Parallel()
 
 	dbPath, _ := newMCPTestDB(t)
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowAdminTools: true})
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, adminOverrideSet: true, adminOverrideValue: true})
 
 	created := structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{"name": "alice"}))
 	if created.Username != "alice" || created.ID == "" {
@@ -615,6 +629,7 @@ func TestMCPServerDefaultServer(t *testing.T) {
 	var gotTitle string
 	var gotPath string
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/me", meOK())
 	mux.HandleFunc("PUT /api/sessions/s1/title", func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		body, _ := io.ReadAll(r.Body)
@@ -681,7 +696,7 @@ func TestMCPAuditLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowAdminTools: true})
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, adminOverrideSet: true, adminOverrideValue: true})
 
 	out := structured[auditResult](t, callTool(t, cs, "audit", nil))
 	if len(out.Events) != 2 {
@@ -727,20 +742,23 @@ func TestMCPDispatchRejectsBadFlags(t *testing.T) {
 func TestMCPKeyNotForwardedToOverriddenServer(t *testing.T) {
 	t.Parallel()
 
+	recordingMux := func(auth *authRecorder) *http.ServeMux {
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /api/me", meOK())
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			auth.add([]byte(r.Header.Get("Authorization")))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		})
+		return mux
+	}
+
 	var defaultAuth authRecorder
-	defaultServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defaultAuth.add([]byte(r.Header.Get("Authorization")))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{}`))
-	}))
+	defaultServer := httptest.NewServer(recordingMux(&defaultAuth))
 	defer defaultServer.Close()
 
 	var overrideAuth authRecorder
-	overrideServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		overrideAuth.add([]byte(r.Header.Get("Authorization")))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{}`))
-	}))
+	overrideServer := httptest.NewServer(recordingMux(&overrideAuth))
 	defer overrideServer.Close()
 
 	cs := newMCPClient(t, &mcpConfig{serverURL: defaultServer.URL, apiKey: "secret"})
@@ -824,6 +842,7 @@ func TestMCPSendKeyNotForwarded(t *testing.T) {
 
 	newSendMux := func(hooks *authRecorder) *http.ServeMux {
 		mux := http.NewServeMux()
+		mux.HandleFunc("GET /api/me", meOK())
 		mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
 			hooks.add([]byte(r.Header.Get("Authorization")))
 			w.Header().Set("Content-Type", "application/json")
@@ -864,24 +883,26 @@ func TestMCPSendKeyNotForwarded(t *testing.T) {
 	}
 }
 
-// TestMCPParseMCPConfig exercises the real `sth mcp` argument parsing surface:
-// default posture, flag/env precedence, and loud rejection of stray tokens.
+// TestMCPParseMCPConfig exercises the real `sth mcp` argument parsing surface.
+// The flag does not decide by itself: parse yields an override that
+// resolveAdminTools applies on top of the caller's identity, so the assertions
+// here check the override fields, not the final exposure.
 func TestMCPParseMCPConfig(t *testing.T) {
 	// t.Setenv requires a serial test.
 	cfg, err := parseMCPConfig(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.allowAdminTools {
-		t.Fatal("admin tools must be disabled by default")
+	if cfg.adminOverrideSet {
+		t.Fatal("no flag and no env must leave the override unset")
 	}
 
 	cfg, err = parseMCPConfig([]string{"--allow-admin-tools"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.allowAdminTools {
-		t.Fatal("expected --allow-admin-tools to enable admin tools")
+	if !cfg.adminOverrideSet || !cfg.adminOverrideValue {
+		t.Fatal("expected --allow-admin-tools to set a true override")
 	}
 
 	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "true")
@@ -889,16 +910,16 @@ func TestMCPParseMCPConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.allowAdminTools {
-		t.Fatal("expected STH_ALLOW_ADMIN_TOOLS=true to enable admin tools")
+	if !cfg.adminOverrideSet || !cfg.adminOverrideValue {
+		t.Fatal("expected STH_ALLOW_ADMIN_TOOLS=true to set a true override")
 	}
 
 	cfg, err = parseMCPConfig([]string{"--allow-admin-tools=false"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.allowAdminTools {
-		t.Fatal("expected --allow-admin-tools=false to override the environment")
+	if !cfg.adminOverrideSet || cfg.adminOverrideValue {
+		t.Fatal("expected --allow-admin-tools=false to set a false override")
 	}
 	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "")
 
@@ -914,5 +935,136 @@ func TestMCPParseMCPConfig(t *testing.T) {
 	}
 	if cfg.dbPath != "/tmp/x.db" || cfg.serverURL != "http://127.0.0.1:3939" || cfg.apiKey != "k" {
 		t.Fatalf("unexpected config: %+v", cfg)
+	}
+}
+
+// newIdentityTestStore creates a store with an admin and a member user and
+// returns (adminKey, memberKey).
+func newIdentityTestStore(t *testing.T) (string, string, string, *session.Store) {
+	t.Helper()
+	dbPath, store := newMCPTestDB(t)
+
+	if _, err := store.CreateUser("root"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserRole("root", session.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateUser("member"); err != nil {
+		t.Fatal(err)
+	}
+
+	adminKey, _, err := store.IssueAPIKey(func() string { u, _ := store.FindUserByUsername("root"); return u.ID }())
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberKey, _, err := store.IssueAPIKey(func() string { u, _ := store.FindUserByUsername("member"); return u.ID }())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dbPath, adminKey, memberKey, store
+}
+
+func adminToolCount(t *testing.T, cs *mcp.ClientSession) (total int, hasUserAdd bool) {
+	t.Helper()
+	resp, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range resp.Tools {
+		total++
+		if tool.Name == "user_add" {
+			hasUserAdd = true
+		}
+	}
+	return total, hasUserAdd
+}
+
+// TestMCPAdminGatingFollowsLocalIdentity: an admin key exposes the admin
+// tools for good; a member key or no key leaves them hidden (fail-closed).
+func TestMCPAdminGatingFollowsLocalIdentity(t *testing.T) {
+	t.Parallel()
+
+	dbPath, adminKey, memberKey, store := newIdentityTestStore(t)
+	_ = store
+
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, apiKey: adminKey})
+	if total, hasUserAdd := adminToolCount(t, cs); !hasUserAdd {
+		t.Fatalf("admin key should expose user_add, tools=%d", total)
+	}
+
+	cs = newMCPClient(t, &mcpConfig{dbPath: dbPath, apiKey: memberKey})
+	if total, hasUserAdd := adminToolCount(t, cs); hasUserAdd {
+		t.Fatalf("member key must not expose user_add, tools=%d", total)
+	}
+
+	cs = newMCPClient(t, &mcpConfig{dbPath: dbPath})
+	if _, hasUserAdd := adminToolCount(t, cs); hasUserAdd {
+		t.Fatal("no key must not expose user_add")
+	}
+
+	// Invalid key: same fail-closed outcome.
+	cs = newMCPClient(t, &mcpConfig{dbPath: dbPath, apiKey: "sth_notarealkey"})
+	if _, hasUserAdd := adminToolCount(t, cs); hasUserAdd {
+		t.Fatal("invalid key must not expose user_add")
+	}
+
+	// Forced override wins over identity.
+	cs = newMCPClient(t, &mcpConfig{
+		dbPath: dbPath, apiKey: memberKey,
+		adminOverrideSet: true, adminOverrideValue: false,
+	})
+	if _, hasUserAdd := adminToolCount(t, cs); hasUserAdd {
+		t.Fatal("forced off must hide user_add even for an admin key")
+	}
+}
+
+// TestMCPAdminGatingRemoteIdentity resolves the identity via GET /api/me on
+// the configured server.
+func TestMCPAdminGatingRemoteIdentity(t *testing.T) {
+	t.Parallel()
+
+	me := func(admin bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			role := ""
+			if admin {
+				role = session.RoleAdmin
+			}
+			_, _ = w.Write([]byte(`{"userId":"u1","username":"root","role":"` + role + `","isAdmin":` + map[bool]string{true: "true", false: "false"}[admin] + `}`))
+		}
+	}
+
+	adminServer := httptest.NewServer(me(true))
+	defer adminServer.Close()
+	memberServer := httptest.NewServer(me(false))
+	defer memberServer.Close()
+
+	cs := newMCPClient(t, &mcpConfig{serverURL: adminServer.URL, apiKey: "k"})
+	if _, hasUserAdd := adminToolCount(t, cs); !hasUserAdd {
+		t.Fatal("remote admin identity should expose user_add")
+	}
+
+	cs = newMCPClient(t, &mcpConfig{serverURL: memberServer.URL, apiKey: "k"})
+	if _, hasUserAdd := adminToolCount(t, cs); hasUserAdd {
+		t.Fatal("remote member identity must not expose user_add")
+	}
+}
+
+// TestMCPAdminCanMintAdmins: user_add with admin=true creates a second admin,
+// and user_list reports roles.
+func TestMCPAdminCanMintAdmins(t *testing.T) {
+	t.Parallel()
+
+	dbPath, _ := newMCPTestDB(t)
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, adminOverrideSet: true, adminOverrideValue: true})
+
+	structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{
+		"name": "deputy", "admin": true,
+	}))
+
+	users := structured[userListResult](t, callTool(t, cs, "user_list", nil))
+	if len(users.Users) != 1 || users.Users[0].Role != session.RoleAdmin {
+		t.Fatalf("expected deputy to be admin, got %+v", users.Users)
 	}
 }

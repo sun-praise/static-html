@@ -1406,6 +1406,8 @@ func (s *Server) routes() http.Handler {
 			s.handleLogout(w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/":
 			s.handleHome(w, r)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/me":
+			s.handleMe(w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions":
 			s.handleCreateSession(w, r)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/s/"):
