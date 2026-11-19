@@ -20,9 +20,14 @@ var (
 )
 
 // User represents a row in the users table.
+// RoleAdmin marks a user allowed to manage other users and API keys. The
+// empty role is an ordinary member.
+const RoleAdmin = "admin"
+
 type User struct {
 	ID        string
 	Username  string
+	Role      string
 	CreatedAt time.Time
 }
 
@@ -55,6 +60,7 @@ func (s *Store) initAuth() error {
 		CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
 			username TEXT NOT NULL UNIQUE,
+			role TEXT NOT NULL DEFAULT '',
 			created_at INTEGER NOT NULL
 		);
 
@@ -105,7 +111,7 @@ func (s *Store) CreateUser(username string) (User, error) {
 
 // ListUsers returns all users ordered by username.
 func (s *Store) ListUsers() ([]User, error) {
-	rows, err := s.db.Query(`SELECT id, username, created_at FROM users ORDER BY username`)
+	rows, err := s.db.Query(`SELECT id, username, role, created_at FROM users ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +123,7 @@ func (s *Store) ListUsers() ([]User, error) {
 			u           User
 			createdUnix int64
 		)
-		if err := rows.Scan(&u.ID, &u.Username, &createdUnix); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &createdUnix); err != nil {
 			return nil, err
 		}
 		u.CreatedAt = time.Unix(0, createdUnix).UTC()
@@ -134,9 +140,9 @@ func (s *Store) FindUserByUsername(username string) (User, error) {
 		createdUnix int64
 	)
 	err := s.db.QueryRow(
-		`SELECT id, username, created_at FROM users WHERE username = ?`,
+		`SELECT id, username, role, created_at FROM users WHERE username = ?`,
 		username,
-	).Scan(&u.ID, &u.Username, &createdUnix)
+	).Scan(&u.ID, &u.Username, &u.Role, &createdUnix)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrUserNotFound
 	}
@@ -156,9 +162,9 @@ func (s *Store) FindUserByID(userID string) (User, error) {
 		createdUnix int64
 	)
 	err := s.db.QueryRow(
-		`SELECT id, username, created_at FROM users WHERE id = ?`,
+		`SELECT id, username, role, created_at FROM users WHERE id = ?`,
 		userID,
-	).Scan(&u.ID, &u.Username, &createdUnix)
+	).Scan(&u.ID, &u.Username, &u.Role, &createdUnix)
 	if errors.Is(err, sql.ErrNoRows) {
 		return User{}, ErrUserNotFound
 	}
@@ -419,4 +425,37 @@ func hashAPIKey(algo, salt, plaintext string) string {
 		// key is effectively unusable without erroring the whole query.
 		return fmt.Sprintf("unsupported:%s", algo)
 	}
+}
+
+// SetUserRole grants or withdraws the admin role, addressed by username. The
+// empty string is the ordinary member role; RoleAdmin is the only elevated
+// role. Returns ErrUserNotFound when the username does not exist.
+func (s *Store) SetUserRole(username, role string) error {
+	if role != "" && role != RoleAdmin {
+		return fmt.Errorf("unknown role %q (expected %q or empty)", role, RoleAdmin)
+	}
+
+	res, err := s.db.Exec(`UPDATE users SET role = ? WHERE username = ?`, role, username)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// IsAdmin reports whether the user holds the admin role. Unknown users are
+// reported as not admin (ok=false style: (false, nil)), with only store
+// failures surfaced as errors.
+func (s *Store) IsAdmin(userID string) (bool, error) {
+	var role string
+	err := s.db.QueryRow(`SELECT role FROM users WHERE id = ?`, userID).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return role == RoleAdmin, nil
 }

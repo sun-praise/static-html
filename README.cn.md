@@ -147,14 +147,23 @@ sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 `sth mcp` 以 stdio 方式运行 [Model Context Protocol](https://modelcontextprotocol.io) 服务器，让 AI agent（kimi-code、Claude Code 等任何 MCP 客户端）以结构化 tools 管理会话，不再依赖 shell 调用：
 
 ```bash
-sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>] [--allow-admin-tools]
+sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>] [--allow-admin-tools=true|false]
 ```
 
 - `--db` 指定本地 SQLite 数据库，供本地工具（`list`、`search`、`delete`、`user_*`、`audit`）使用。
 - `--server` / `--api-key`（或 `STH_API_KEY`）为双模式工具提供默认远端连接；每次工具调用也可以单独覆盖。不传 `server` 即操作本地数据库，与 CLI 语义一致。
 - MCP 协议占用 stdout，诊断信息走 stderr。在 MCP 客户端配置里把命令指向 `sth` 二进制并带上 `mcp` 子命令，例如 `{"command": "sth", "args": ["mcp", "--server", "https://sth.example.com", "--api-key", "..."]}`。
 
-暴露的 tools 与 CLI 对应（最多 16 个，其中 4 个为管理员门控，见下）：`send`、`tag`、`categorize`、`project`、`title`、`list`、`search`、`delete`、`share`、`unshare`、`shares`、`user_add`、`user_issue_key`、`user_revoke_key`、`user_list`、`audit`。`sth start` 与 `sth watch` 是长驻进程，仍为 CLI 专属。管理员类工具——`user_add`、`user_issue_key`、`user_revoke_key`（可铸造凭据）与 `audit`（读取全员安全事件，`prune_days` 还能抹掉记录）——只有以 `--allow-admin-tools`（或 `STH_ALLOW_ADMIN_TOOLS=true`）启动时才会注册——关闭时 agent 在 tools/list 里根本看不到；只读的 `user_list` 始终可用。
+暴露的 tools 与 CLI 对应（最多 16 个，管理员门控的四个见下）：`send`、`tag`、`categorize`、`project`、`title`、`list`、`search`、`delete`、`share`、`unshare`、`shares`、`user_add`、`user_issue_key`、`user_revoke_key`、`user_list`、`audit`。`sth start` 与 `sth watch` 是长驻进程，仍为 CLI 专属。
+
+管理员类工具——`user_add`（可用 `admin=true` 铸造更多管理员）、`user_issue_key`、`user_revoke_key`、`audit`（读取全员安全事件，`prune_days` 还能抹掉记录）——**默认开启**，按次调用校验身份：
+
+- 配置了 API key 时，每次调用都校验身份（本地校验 store，或经 `--server` 的 `GET /api/me`）：**admin** 用户的 key 通过；member 或无效 key 会得到 "admin role required" 错误。
+- 未配置 API key：没有身份，调用**拒绝**——传入 admin 用户的 key，或用 `--allow-admin-tools=true` 强制。
+- 该 flag 无视身份强制放行/拒绝。`STH_ALLOW_ADMIN_TOOLS` 只接受 `true|1|false|0`；无法解析的值会让 `sth mcp` 拒绝启动。
+- 管理员工具始终操作本地 `--db`；配置了 `--server` 时管理员判定使用该服务端的身份，即远端 admin 被信任可管理本地 store。
+
+`user_list` 对所有人开放。用 `sth user add <name> --admin` 引导首个管理员；之后用 `sth user promote <name>` / `sth user demote <name>` 调整角色。
 
 工具参数与返回值均为 JSON（input schema 由工具定义自动生成）；预期内的失败（会话不存在、服务端 401 等）按 MCP 规范以 tool error 返回，agent 可据此自行纠正。
 
@@ -163,7 +172,7 @@ sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>] [--a
 - `send` 工具会读取本机文件（入口文件及其目录或 `root` 下的同级资源）；只把它指向打算发布的内容。
 - 凭据与主机绑定：server 级 `--api-key` / `STH_API_KEY` 只会附加到指向配置的 `--server` 的调用上。per-call 的 `server` 覆盖默认不带凭据，除非该调用显式传入自己的 `api_key`，因此被 prompt 注入的调用无法把已配置的 key 泄露到其他主机。
 - 启动 MCP server 时建议使用权限受限的专用 sth 用户签发的 key（`sth user add` + `sth user issue-key`），不要用管理员 key。
-- 管理员工具（`user_add` / `user_issue_key` / `user_revoke_key` / `audit`）默认被 `--allow-admin-tools` 门控：除非确实要让接入的 agent 管理用户或读取审计日志，否则保持关闭。
+- 管理员工具（`user_add` / `user_issue_key` / `user_revoke_key` / `audit`）按次调用校验身份：给 agent 配 **member** key，它就无法铸造用户、签发 key 或读取审计日志；不配 key 时同样拒绝。确有需要时用 `--allow-admin-tools=true|false` 强制。
 
 ## 审计日志
 

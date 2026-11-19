@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -352,6 +353,55 @@ func (s *Store) ensureColumns() error {
 		}
 	}
 
+	return s.ensureUsersRoleColumn()
+}
+
+// ensureUsersRoleColumn adds the users.role column to databases created
+// before the admin role existed. Fresh databases get it from initAuth's
+// CREATE TABLE. An empty role means ordinary member; RoleAdmin elevates.
+// The users table itself may not exist yet at migration time (ensureColumns
+// runs before initAuth); skipping is fine then, since the fresh CREATE TABLE
+// already includes the column.
+func (s *Store) ensureUsersRoleColumn() error {
+	rows, err := s.db.Query(`PRAGMA table_info(users)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	hasRole := false
+	hasTable := false
+	for rows.Next() {
+		hasTable = true
+		var (
+			cid       int
+			name      string
+			dataType  string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &dataType, &notNull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if name == "role" {
+			hasRole = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasTable || hasRole {
+		return nil
+	}
+
+	if _, err := s.db.Exec(`ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT ''`); err != nil {
+		// A concurrently started writer may have added it first.
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 

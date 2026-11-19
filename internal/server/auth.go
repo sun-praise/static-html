@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -289,4 +291,37 @@ func (s *Server) requireOwner(w http.ResponseWriter, r *http.Request, sessionID 
 		return false
 	}
 	return true
+}
+
+// handleMe returns the authenticated identity (id, username, role). Both
+// credential kinds accepted by authMiddleware — Bearer API keys and login
+// cookies — resolve into the request context, so this is how an API client
+// (e.g. an MCP server) checks whether its key belongs to an admin. Auth
+// disabled means there is no identity to report: 401.
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	if !s.AuthEnabled() {
+		http.Error(w, "authentication is disabled on this server", http.StatusUnauthorized)
+		return
+	}
+	uid, ok := currentUser(r)
+	if !ok || uid == "" {
+		http.Error(w, "Unauthorized: a valid API key is required.", http.StatusUnauthorized)
+		return
+	}
+	user, err := s.store.FindUserByID(uid)
+	if err != nil {
+		if errors.Is(err, session.ErrUserNotFound) {
+			http.Error(w, "Unauthorized: unknown user.", http.StatusUnauthorized)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"userId":   user.ID,
+		"username": user.Username,
+		"role":     user.Role,
+		"isAdmin":  user.Role == session.RoleAdmin,
+	})
 }

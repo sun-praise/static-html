@@ -31,6 +31,16 @@ func zipNames(data []byte) ([]string, error) {
 	return names, nil
 }
 
+// meOK answers GET /api/me with a member identity — enough for
+// resolveAdmin-style startup probes to get a parseable response in tests
+// that do not assert on identity (call-time requireAdmin would still deny).
+func meOK() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"userId":"u1","username":"someone","role":"","isAdmin":false}`))
+	}
+}
+
 // authRecorder collects values written by httptest handler goroutines so the
 // test goroutine can read them safely under -race. Fatal may not be called
 // from a handler goroutine; handlers use t.Errorf + http.Error instead.
@@ -128,8 +138,10 @@ func newMCPTestDB(t *testing.T) (string, *session.Store) {
 func TestMCPToolsListed(t *testing.T) {
 	t.Parallel()
 
-	// Default posture: user-management mutation tools are not exposed.
-	cs := newMCPClient(t, &mcpConfig{})
+	// All tools are registered by default; admin tools enforce their
+	// identity requirement at call time instead.
+	dbPath, _ := newMCPTestDB(t)
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath})
 
 	resp, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
@@ -140,7 +152,8 @@ func TestMCPToolsListed(t *testing.T) {
 		"send": true, "tag": true, "categorize": true, "project": true,
 		"title": true, "list": true, "search": true, "delete": true,
 		"share": true, "unshare": true, "shares": true,
-		"user_list": true,
+		"user_add": true, "user_issue_key": true, "user_revoke_key": true,
+		"user_list": true, "audit": true,
 	}
 	got := map[string]bool{}
 	for _, tool := range resp.Tools {
@@ -153,53 +166,6 @@ func TestMCPToolsListed(t *testing.T) {
 		if !got[name] {
 			t.Errorf("missing tool %q", name)
 		}
-	}
-	for _, gated := range []string{"user_add", "user_issue_key", "user_revoke_key", "audit"} {
-		if got[gated] {
-			t.Errorf("tool %q must not be listed without --allow-admin-tools", gated)
-		}
-	}
-}
-
-func TestMCPUserManagementGatedByDefault(t *testing.T) {
-	t.Parallel()
-
-	cs := newMCPClient(t, &mcpConfig{})
-
-	// Calling an unregistered tool is a protocol-level error.
-	for _, name := range []string{"user_add", "audit"} {
-		if _, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
-			Name:      name,
-			Arguments: map[string]any{"name": "mallory"},
-		}); err == nil {
-			t.Fatalf("expected %s to be unavailable without --allow-admin-tools", name)
-		}
-	}
-}
-
-func TestMCPUserManagementExposedWhenAllowed(t *testing.T) {
-	t.Parallel()
-
-	dbPath, _ := newMCPTestDB(t)
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowAdminTools: true})
-
-	resp, err := cs.ListTools(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := map[string]bool{}
-	for _, tool := range resp.Tools {
-		got[tool.Name] = true
-	}
-	for _, name := range []string{"user_add", "user_issue_key", "user_revoke_key", "audit"} {
-		if !got[name] {
-			t.Errorf("tool %q missing despite --allow-admin-tools", name)
-		}
-	}
-
-	created := structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{"name": "alice"}))
-	if created.Username != "alice" || created.ID == "" {
-		t.Fatalf("unexpected user: %+v", created)
 	}
 }
 
@@ -254,6 +220,8 @@ func TestMCPTagCategorizeProjectTitleLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// No admin override: proves the non-admin tools work under the default
+	// (deny-by-default) admin posture.
 	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath})
 
 	msg := structured[messageResult](t, callTool(t, cs, "tag", map[string]any{
@@ -336,7 +304,7 @@ func TestMCPUserLifecycle(t *testing.T) {
 	t.Parallel()
 
 	dbPath, _ := newMCPTestDB(t)
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowAdminTools: true})
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, adminOverrideSet: true, adminOverrideValue: true})
 
 	created := structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{"name": "alice"}))
 	if created.Username != "alice" || created.ID == "" {
@@ -615,6 +583,7 @@ func TestMCPServerDefaultServer(t *testing.T) {
 	var gotTitle string
 	var gotPath string
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/me", meOK())
 	mux.HandleFunc("PUT /api/sessions/s1/title", func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		body, _ := io.ReadAll(r.Body)
@@ -681,7 +650,7 @@ func TestMCPAuditLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowAdminTools: true})
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, adminOverrideSet: true, adminOverrideValue: true})
 
 	out := structured[auditResult](t, callTool(t, cs, "audit", nil))
 	if len(out.Events) != 2 {
@@ -727,20 +696,23 @@ func TestMCPDispatchRejectsBadFlags(t *testing.T) {
 func TestMCPKeyNotForwardedToOverriddenServer(t *testing.T) {
 	t.Parallel()
 
+	recordingMux := func(auth *authRecorder) *http.ServeMux {
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /api/me", meOK())
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			auth.add([]byte(r.Header.Get("Authorization")))
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		})
+		return mux
+	}
+
 	var defaultAuth authRecorder
-	defaultServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defaultAuth.add([]byte(r.Header.Get("Authorization")))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{}`))
-	}))
+	defaultServer := httptest.NewServer(recordingMux(&defaultAuth))
 	defer defaultServer.Close()
 
 	var overrideAuth authRecorder
-	overrideServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		overrideAuth.add([]byte(r.Header.Get("Authorization")))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{}`))
-	}))
+	overrideServer := httptest.NewServer(recordingMux(&overrideAuth))
 	defer overrideServer.Close()
 
 	cs := newMCPClient(t, &mcpConfig{serverURL: defaultServer.URL, apiKey: "secret"})
@@ -824,6 +796,7 @@ func TestMCPSendKeyNotForwarded(t *testing.T) {
 
 	newSendMux := func(hooks *authRecorder) *http.ServeMux {
 		mux := http.NewServeMux()
+		mux.HandleFunc("GET /api/me", meOK())
 		mux.HandleFunc("POST /api/sessions", func(w http.ResponseWriter, r *http.Request) {
 			hooks.add([]byte(r.Header.Get("Authorization")))
 			w.Header().Set("Content-Type", "application/json")
@@ -864,24 +837,26 @@ func TestMCPSendKeyNotForwarded(t *testing.T) {
 	}
 }
 
-// TestMCPParseMCPConfig exercises the real `sth mcp` argument parsing surface:
-// default posture, flag/env precedence, and loud rejection of stray tokens.
+// TestMCPParseMCPConfig exercises the real `sth mcp` argument parsing surface.
+// The flag does not decide by itself: parse yields an override that
+// requireAdmin applies on top of the caller's identity, so the assertions
+// here check the override fields, not the final exposure.
 func TestMCPParseMCPConfig(t *testing.T) {
 	// t.Setenv requires a serial test.
 	cfg, err := parseMCPConfig(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.allowAdminTools {
-		t.Fatal("admin tools must be disabled by default")
+	if cfg.adminOverrideSet {
+		t.Fatal("no flag and no env must leave the override unset")
 	}
 
 	cfg, err = parseMCPConfig([]string{"--allow-admin-tools"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.allowAdminTools {
-		t.Fatal("expected --allow-admin-tools to enable admin tools")
+	if !cfg.adminOverrideSet || !cfg.adminOverrideValue {
+		t.Fatal("expected --allow-admin-tools to set a true override")
 	}
 
 	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "true")
@@ -889,16 +864,43 @@ func TestMCPParseMCPConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.allowAdminTools {
-		t.Fatal("expected STH_ALLOW_ADMIN_TOOLS=true to enable admin tools")
+	if !cfg.adminOverrideSet || !cfg.adminOverrideValue {
+		t.Fatal("expected STH_ALLOW_ADMIN_TOOLS=true to set a true override")
 	}
 
 	cfg, err = parseMCPConfig([]string{"--allow-admin-tools=false"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.allowAdminTools {
-		t.Fatal("expected --allow-admin-tools=false to override the environment")
+	if !cfg.adminOverrideSet || cfg.adminOverrideValue {
+		t.Fatal("expected --allow-admin-tools=false to set a false override")
+	}
+	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "")
+
+	// The environment may also force a denial: false|0 is an explicit
+	// override, not an unset (fail-open would re-expose admin tools).
+	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "false")
+	cfg, err = parseMCPConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.adminOverrideSet || cfg.adminOverrideValue {
+		t.Fatal("expected STH_ALLOW_ADMIN_TOOLS=false to set a false override")
+	}
+	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "0")
+	cfg, err = parseMCPConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.adminOverrideSet || cfg.adminOverrideValue {
+		t.Fatal("expected STH_ALLOW_ADMIN_TOOLS=0 to set a false override")
+	}
+	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "")
+
+	// Unparseable values must fail loudly rather than fall open.
+	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "banana")
+	if _, err = parseMCPConfig(nil); err == nil || !strings.Contains(err.Error(), "invalid STH_ALLOW_ADMIN_TOOLS") {
+		t.Fatalf("expected invalid-env error, got: %v", err)
 	}
 	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "")
 
@@ -914,5 +916,222 @@ func TestMCPParseMCPConfig(t *testing.T) {
 	}
 	if cfg.dbPath != "/tmp/x.db" || cfg.serverURL != "http://127.0.0.1:3939" || cfg.apiKey != "k" {
 		t.Fatalf("unexpected config: %+v", cfg)
+	}
+}
+
+// newIdentityTestStore creates a store with an admin and a member user and
+// returns (adminKey, memberKey).
+func newIdentityTestStore(t *testing.T) (string, string, string, *session.Store) {
+	t.Helper()
+	dbPath, store := newMCPTestDB(t)
+
+	if _, err := store.CreateUser("root"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserRole("root", session.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateUser("member"); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := store.FindUserByUsername("root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := store.FindUserByUsername("member")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminKey, _, err := store.IssueAPIKey(root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberKey, _, err := store.IssueAPIKey(member.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dbPath, adminKey, memberKey, store
+}
+
+func adminToolCount(t *testing.T, cs *mcp.ClientSession) (total int, hasUserAdd bool) {
+	t.Helper()
+	resp, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range resp.Tools {
+		total++
+		if tool.Name == "user_add" {
+			hasUserAdd = true
+		}
+	}
+	return total, hasUserAdd
+}
+
+// TestMCPAdminToolsCallTimeEnforcement covers the identity semantics of the
+// admin-class tools: they are registered for everyone, but each call checks
+// the caller's key — admin keys pass, member/invalid keys are denied, no key
+// runs in local-operator mode and is allowed.
+func TestMCPAdminToolsCallTimeEnforcement(t *testing.T) {
+	t.Parallel()
+
+	dbPath, adminKey, memberKey, _ := newIdentityTestStore(t)
+
+	// No key: no identity, no admin — denied (fail-closed).
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath})
+	noKey := callTool(t, cs, "user_add", map[string]any{"name": "nope"})
+	if text := toolErrorText(t, noKey); !strings.Contains(text, "no API key configured") {
+		t.Fatalf("unexpected no-key denial: %q", text)
+	}
+
+	// Override=true without a key: forced on, calls allowed.
+	cs = newMCPClient(t, &mcpConfig{dbPath: dbPath, adminOverrideSet: true, adminOverrideValue: true})
+	structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{"name": "operator-made"}))
+
+	// Member key: denied with an actionable error.
+	cs = newMCPClient(t, &mcpConfig{dbPath: dbPath, apiKey: memberKey})
+	denied := callTool(t, cs, "user_add", map[string]any{"name": "nope"})
+	if text := toolErrorText(t, denied); !strings.Contains(text, "admin role required") {
+		t.Fatalf("unexpected denial: %q", text)
+	}
+	auditDenied := callTool(t, cs, "audit", nil)
+	if text := toolErrorText(t, auditDenied); !strings.Contains(text, "admin role required") {
+		t.Fatalf("unexpected audit denial: %q", text)
+	}
+
+	// Invalid key: denied too, with a hint about remote servers.
+	cs = newMCPClient(t, &mcpConfig{dbPath: dbPath, apiKey: "sth_notarealkey"})
+	invalid := callTool(t, cs, "user_add", map[string]any{"name": "nope"})
+	if text := toolErrorText(t, invalid); !strings.Contains(text, "does not match any active key") {
+		t.Fatalf("unexpected invalid-key denial: %q", text)
+	}
+
+	// Admin key: allowed.
+	cs = newMCPClient(t, &mcpConfig{dbPath: dbPath, apiKey: adminKey})
+	structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{"name": "by-admin"}))
+
+	// Forced override=false denies even with an admin key.
+	cs = newMCPClient(t, &mcpConfig{
+		dbPath: dbPath, apiKey: adminKey,
+		adminOverrideSet: true, adminOverrideValue: false,
+	})
+	forced := callTool(t, cs, "user_add", map[string]any{"name": "nope"})
+	if text := toolErrorText(t, forced); !strings.Contains(text, "disabled on this MCP server") {
+		t.Fatalf("unexpected forced-off denial: %q", text)
+	}
+}
+
+// TestMCPAdminGatingRemoteIdentity resolves the identity via GET /api/me on
+// the configured server. A broken /api/me fails only the admin call — the
+// server still starts and non-admin tools keep working.
+func TestMCPAdminGatingRemoteIdentity(t *testing.T) {
+	t.Parallel()
+
+	dbPath, adminKey, memberKey, _ := newIdentityTestStore(t)
+
+	me := func(admin bool) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			role := ""
+			if admin {
+				role = session.RoleAdmin
+			}
+			_, _ = w.Write([]byte(`{"userId":"u1","username":"root","role":"` + role + `","isAdmin":` + map[bool]string{true: "true", false: "false"}[admin] + `}`))
+		}
+	}
+
+	adminServer := httptest.NewServer(me(true))
+	defer adminServer.Close()
+	memberServer := httptest.NewServer(me(false))
+	defer memberServer.Close()
+	brokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r) // pre-/api/me servers answer 404
+	}))
+	defer brokenServer.Close()
+
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, serverURL: adminServer.URL, apiKey: adminKey})
+	structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{"name": "remote-admin-made"}))
+
+	cs = newMCPClient(t, &mcpConfig{dbPath: dbPath, serverURL: memberServer.URL, apiKey: memberKey})
+	denied := callTool(t, cs, "user_add", map[string]any{"name": "nope"})
+	if text := toolErrorText(t, denied); !strings.Contains(text, "admin role required") {
+		t.Fatalf("unexpected remote denial: %q", text)
+	}
+
+	// Broken /api/me: the admin call fails, non-admin tools still work.
+	cs = newMCPClient(t, &mcpConfig{dbPath: dbPath, serverURL: brokenServer.URL, apiKey: adminKey})
+	broken := callTool(t, cs, "user_add", map[string]any{"name": "nope"})
+	if text := toolErrorText(t, broken); !strings.Contains(text, "resolving identity") {
+		t.Fatalf("unexpected broken-identity error: %q", text)
+	}
+	kept := structured[documentListResult](t, callTool(t, cs, "list", nil))
+	if kept.Documents == nil {
+		t.Fatal("non-admin tools should keep working when /api/me is unavailable")
+	}
+}
+
+// TestMCPAdminCanMintAdmins: user_add with admin=true creates a second admin,
+// and user_list reports roles.
+func TestMCPAdminCanMintAdmins(t *testing.T) {
+	t.Parallel()
+
+	dbPath, _ := newMCPTestDB(t)
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, adminOverrideSet: true, adminOverrideValue: true})
+
+	structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{
+		"name": "deputy", "admin": true,
+	}))
+
+	users := structured[userListResult](t, callTool(t, cs, "user_list", nil))
+	if len(users.Users) != 1 || users.Users[0].Role != session.RoleAdmin {
+		t.Fatalf("expected deputy to be admin, got %+v", users.Users)
+	}
+}
+
+// TestUserPromoteDemote covers `sth user promote|demote` through Run: the
+// role round-trips, unknown users are reported, and list shows the role.
+func TestUserPromoteDemote(t *testing.T) {
+	t.Parallel()
+
+	dbPath, store := newMCPTestDB(t)
+	if _, err := store.CreateUser("alice"); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(args ...string) (string, error) {
+		var stdout, stderr strings.Builder
+		err := Run(append([]string{"user"}, append(args, "--db", dbPath)...), &stdout, &stderr)
+		return stdout.String(), err
+	}
+
+	if out, err := run("promote", "alice"); err != nil || !strings.Contains(out, "Promoted") {
+		t.Fatalf("promote: out=%q err=%v", out, err)
+	}
+	isAdmin, err := store.IsAdmin(func() string { u, _ := store.FindUserByUsername("alice"); return u.ID }())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isAdmin {
+		t.Fatal("alice should be admin after promote")
+	}
+
+	if out, err := run("demote", "alice"); err != nil || !strings.Contains(out, "Demoted") {
+		t.Fatalf("demote: out=%q err=%v", out, err)
+	}
+	isAdmin, err = store.IsAdmin(func() string { u, _ := store.FindUserByUsername("alice"); return u.ID }())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isAdmin {
+		t.Fatal("alice should not be admin after demote")
+	}
+
+	if _, err := run("promote", "ghost"); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not-found error, got: %v", err)
+	}
+
+	if out, err := run("list"); err != nil || !strings.Contains(out, "role: member") {
+		t.Fatalf("list: out=%q err=%v", out, err)
 	}
 }

@@ -14,13 +14,15 @@ import (
 //
 // Usage:
 //
-//	sth user add <name>
+//	sth user add <name> [--admin]
 //	sth user issue-key <name>
 //	sth user revoke-key <id|prefix>
+//	sth user promote <name>   (grant the admin role)
+//	sth user demote <name>    (withdraw the admin role)
 //	sth user list
 func runUser(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: sth user <add|issue-key|revoke-key|list> [--db /path/to/sessions.db]")
+		return errors.New("usage: sth user <add|issue-key|revoke-key|promote|demote|list> [--db /path/to/sessions.db]")
 	}
 
 	sub := args[0]
@@ -33,20 +35,31 @@ func runUser(args []string, stdout io.Writer) error {
 		return userIssueKey(rest, stdout)
 	case "revoke-key":
 		return userRevokeKey(rest, stdout)
+	case "promote":
+		return userSetRole(rest, session.RoleAdmin, stdout)
+	case "demote":
+		return userSetRole(rest, "", stdout)
 	case "list":
 		return userList(rest, stdout)
 	default:
-		return fmt.Errorf("unknown user subcommand: %s (expected add|issue-key|revoke-key|list)", sub)
+		return fmt.Errorf("unknown user subcommand: %s (expected add|issue-key|revoke-key|promote|demote|list)", sub)
 	}
 }
 
 func userAdd(args []string, stdout io.Writer) error {
+	args, adminFlag, err := popBoolFlag(args, "admin")
+	if err != nil {
+		return err
+	}
 	flags, positionals, err := parseArgs(args)
 	if err != nil {
 		return err
 	}
 	if len(positionals) < 1 {
-		return errors.New("usage: sth user add <name> [--db /path/to/sessions.db]")
+		return errors.New("usage: sth user add <name> [--admin] [--db /path/to/sessions.db]")
+	}
+	if len(positionals) > 1 {
+		return fmt.Errorf("unexpected argument %q (sth user add takes one name; pass --admin as a flag)", positionals[1])
 	}
 	name := positionals[0]
 
@@ -63,8 +76,53 @@ func userAdd(args []string, stdout io.Writer) error {
 		}
 		return err
 	}
-	fmt.Fprintf(stdout, "Created user %q (id: %s)\n", user.Username, user.ID)
+	if adminFlag {
+		if err := store.SetUserRole(name, session.RoleAdmin); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(stdout, "Created user %q (id: %s, role: %s)\n", user.Username, user.ID, roleLabel(adminFlag))
 	return nil
+}
+
+// userSetRole implements `sth user promote|demote <name>`: grant or withdraw
+// the admin role.
+func userSetRole(args []string, role string, stdout io.Writer) error {
+	flags, positionals, err := parseArgs(args)
+	if err != nil {
+		return err
+	}
+	if len(positionals) < 1 {
+		return errors.New("usage: sth user promote|demote <name> [--db /path/to/sessions.db]")
+	}
+	name := positionals[0]
+
+	store, err := openStore(flags)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	if err := store.SetUserRole(name, role); err != nil {
+		if errors.Is(err, session.ErrUserNotFound) {
+			return fmt.Errorf("user %q not found", name)
+		}
+		return err
+	}
+	verb := "Promoted"
+	if role == "" {
+		verb = "Demoted"
+	}
+	fmt.Fprintf(stdout, "%s %s (role: %s)\n", verb, name, roleLabel(role != ""))
+	return nil
+}
+
+// roleLabel renders a boolean admin flag as the stored role name.
+func roleLabel(admin bool) string {
+	if admin {
+		return session.RoleAdmin
+	}
+	return "member"
 }
 
 func userIssueKey(args []string, stdout io.Writer) error {
@@ -158,8 +216,8 @@ func userList(args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(stdout, "  - %s (id: %s, active keys: %d, created: %s)\n",
-			u.Username, u.ID, keyCount, u.CreatedAt.Format("2006-01-02"))
+		fmt.Fprintf(stdout, "  - %s (id: %s, role: %s, active keys: %d, created: %s)\n",
+			u.Username, u.ID, roleLabel(u.Role == session.RoleAdmin), keyCount, u.CreatedAt.Format("2006-01-02"))
 	}
 	return nil
 }

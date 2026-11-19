@@ -79,13 +79,16 @@ func printUsage(w io.Writer) {
   sth delete <session-id> [--db /path/to/sessions.db]
   sth watch <path> --session <id> [--server http://127.0.0.1:3939] [--api-key <key>]
   sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
-                         [--allow-admin-tools]
+                         [--allow-admin-tools=true|false]
                          Run a Model Context Protocol (MCP) server over stdio that
                          exposes the CLI functionality as tools; protocol on stdout.
                          Admin tools (user_add/user_issue_key/user_revoke_key/
-                         audit) are only exposed with --allow-admin-tools
-                         (or STH_ALLOW_ADMIN_TOOLS=true).
-  sth user <add <name> | issue-key <name> | revoke-key <id|prefix> | list> [--db /path/to/sessions.db]
+                         audit) are enabled by default and enforced per call:
+                         with an API key configured, calls require the admin
+                         role; without a key, calls are denied. The flag
+                         forces the outcome regardless of identity.
+  sth user <add <name> [--admin] | issue-key <name> | revoke-key <id|prefix>
+         | promote <name> | demote <name> | list> [--db /path/to/sessions.db]
   sth share <session-id> <username> [--page <path>] [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
   sth unshare <session-id> <username> [--page <path>] [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]
   sth shares <session-id> [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]

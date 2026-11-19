@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -30,13 +31,45 @@ type mcpConfig struct {
 	dbPath    string
 	serverURL string
 	apiKey    string
-	// allowAdminTools gates the admin-class tools: user_add /
-	// user_issue_key / user_revoke_key mint credentials, and audit exposes
-	// every user's security events (and prune_days can erase them). They
-	// operate on the local SQLite store with full operator privileges, so
-	// they are only registered when the human starting the server
-	// explicitly opts in.
-	allowAdminTools bool
+
+	// Admin-class tools (user_add / user_issue_key / user_revoke_key /
+	// audit) are registered by default; every call to them is enforced by
+	// requireAdmin against the caller's identity: with an API key
+	// configured, it must belong to a user holding the admin role; with no
+	// key at all there is no identity and calls fail closed.
+	// adminOverrideSet / adminOverrideValue carry the --allow-admin-tools
+	// flag, which forces calls allowed or denied regardless of identity.
+	adminOverrideSet   bool
+	adminOverrideValue bool
+
+	// store caches the opened SQLite store for the process lifetime: admin
+	// calls would otherwise open the database twice (identity check + the
+	// operation itself), re-running schema DDL each time.
+	store   *session.Store
+	storeMu sync.Mutex
+}
+
+// openStore returns the process-lifetime store, opening it on first use.
+// The caller must not close it: mcpServe closes it when the server stops.
+func (c *mcpConfig) openStore() (*session.Store, error) {
+	c.storeMu.Lock()
+	defer c.storeMu.Unlock()
+	if c.store != nil {
+		return c.store, nil
+	}
+
+	var store *session.Store
+	var err error
+	if c.dbPath != "" {
+		store, err = session.NewSQLiteStore(c.dbPath)
+	} else {
+		store, err = session.NewStore()
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.store = store
+	return store, nil
 }
 
 // parseMCPConfig parses `sth mcp` arguments into the server configuration.
@@ -45,6 +78,8 @@ type mcpConfig struct {
 // are rejected: with a privilege gate on this command, a stray token (say,
 // `--allow-admin-tools false` in the space-separated form the boolean parser
 // does not understand) must fail loudly instead of being silently dropped.
+// The flag does not decide by itself — resolveAdminTools applies it as an
+// override on top of the caller's identity.
 func parseMCPConfig(args []string) (*mcpConfig, error) {
 	args, allowAdminSet, allowAdminFlag, err := popBoolFlagWithPresence(args, "allow-admin-tools")
 	if err != nil {
@@ -59,12 +94,108 @@ func parseMCPConfig(args []string) (*mcpConfig, error) {
 		return nil, fmt.Errorf("unexpected argument %q (sth mcp takes only --flags)", positionals[0])
 	}
 
-	return &mcpConfig{
-		dbPath:          flags["db"],
-		serverURL:       flags["server"],
-		apiKey:          resolveAPIKey(flags),
-		allowAdminTools: resolveBool(allowAdminSet, allowAdminFlag, "STH_ALLOW_ADMIN_TOOLS"),
-	}, nil
+	cfg := &mcpConfig{
+		dbPath:    flags["db"],
+		serverURL: flags["server"],
+		apiKey:    resolveAPIKey(flags),
+	}
+	// The flag is a forced override; absent a flag, the environment may set
+	// one. Both true|1 and false|0 are honored — a plain "false" must deny,
+	// not fall through to identity — so an unparseable value is an error
+	// rather than a silent fail-open. The value only takes effect through
+	// requireAdmin; without an override, the caller's identity decides per
+	// call, and no key means denied. (requireAdmin replaced the earlier
+	// resolveAdminTools draft; docs elsewhere may still use either name.)
+	if allowAdminSet {
+		cfg.adminOverrideSet, cfg.adminOverrideValue = true, allowAdminFlag
+	} else if raw := strings.TrimSpace(os.Getenv("STH_ALLOW_ADMIN_TOOLS")); raw != "" {
+		switch strings.ToLower(raw) {
+		case "true", "1":
+			cfg.adminOverrideSet, cfg.adminOverrideValue = true, true
+		case "false", "0":
+			cfg.adminOverrideSet, cfg.adminOverrideValue = true, false
+		default:
+			return nil, fmt.Errorf("invalid STH_ALLOW_ADMIN_TOOLS value %q (expected true|1|false|0)", raw)
+		}
+	}
+	return cfg, nil
+}
+
+// requireAdmin enforces the caller identity on every admin-class tool call.
+// An explicit --allow-admin-tools=false denies unconditionally, =true allows
+// unconditionally. Without an override the configured API key must resolve to
+// a user holding the admin role — verified locally against the store, or
+// remotely via GET /api/me when --server is set. No key means no identity,
+// and no identity is not admin: calls fail closed until an admin key is
+// configured.
+func (c *mcpConfig) requireAdmin() error {
+	if c.adminOverrideSet {
+		if !c.adminOverrideValue {
+			return errors.New("admin tools are disabled on this MCP server (--allow-admin-tools=false)")
+		}
+		return nil
+	}
+	if c.apiKey == "" {
+		return errors.New("no API key configured: admin tools need the key of an admin user (--api-key), or force with --allow-admin-tools=true")
+	}
+
+	admin, username, err := c.callerIsAdmin()
+	if err != nil {
+		return err
+	}
+	if !admin {
+		if username == "" {
+			return errors.New("admin role required: the configured API key belongs to an ordinary member")
+		}
+		return fmt.Errorf("admin role required: %q is not an admin", username)
+	}
+	return nil
+}
+
+// callerIsAdmin resolves the configured API key to a user and reports whether
+// that user holds the admin role. An unknown or revoked key is denied with an
+// error rather than silently downgraded.
+func (c *mcpConfig) callerIsAdmin() (admin bool, username string, err error) {
+	if c.serverURL != "" {
+		result, err := doJSONRequest(http.MethodGet, c.serverURL, "/api/me", c.apiKey, nil)
+		if err != nil {
+			return false, "", fmt.Errorf("resolving identity from %s: %w", c.serverURL, err)
+		}
+		admin, _ = result["isAdmin"].(bool)
+		if name, ok := result["username"].(string); ok {
+			username = name
+		}
+		return admin, username, nil
+	}
+
+	store, err := c.openStore()
+	if err != nil {
+		return false, "", err
+	}
+	userID, ok, err := store.VerifyAPIKey(c.apiKey)
+	if err != nil {
+		return false, "", err
+	}
+	if !ok {
+		return false, "", errors.New("the configured API key does not match any active key in the local store (if this key belongs to a remote server, pass --server)")
+	}
+	if admin, err = store.IsAdmin(userID); err != nil {
+		return false, "", err
+	}
+	if user, err := store.FindUserByID(userID); err == nil {
+		username = user.Username
+	}
+	return admin, username, nil
+}
+
+// closeStore closes the cached process-lifetime store, if one was opened.
+func (c *mcpConfig) closeStore() {
+	c.storeMu.Lock()
+	defer c.storeMu.Unlock()
+	if c.store != nil {
+		_ = c.store.Close()
+		c.store = nil
+	}
 }
 
 // runMCP runs the `sth mcp` subcommand: an MCP server over stdio that exposes
@@ -82,6 +213,17 @@ func runMCP(args []string, _ io.Writer, stderr io.Writer) error {
 		fmt.Fprintf(stderr, "note: --api-key/STH_API_KEY is set without --server; it is only attached to calls targeting %s (pass --server to change the default)\n", server.DefaultServerURL)
 	}
 
+	switch {
+	case cfg.adminOverrideSet && cfg.adminOverrideValue:
+		fmt.Fprintln(stderr, "note: admin tools forced on (--allow-admin-tools=true); identity checks skipped")
+	case cfg.adminOverrideSet:
+		fmt.Fprintln(stderr, "note: admin tools forced off (--allow-admin-tools=false); calls will be denied")
+	case cfg.apiKey == "":
+		fmt.Fprintln(stderr, "note: no --api-key: admin tools denied (configure the key of an admin user, or force with --allow-admin-tools=true)")
+	default:
+		fmt.Fprintln(stderr, "note: admin tools enforce identity: calls require the API key to belong to an admin user")
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -89,13 +231,12 @@ func runMCP(args []string, _ io.Writer, stderr io.Writer) error {
 }
 
 func mcpServe(ctx context.Context, cfg *mcpConfig, stderr io.Writer) error {
+	defer cfg.closeStore()
+
 	s := mcp.NewServer(&mcp.Implementation{Name: "sth", Version: mcpVersion}, nil)
 	registerMCPTools(s, cfg)
 
 	fmt.Fprintf(stderr, "sth mcp: serving MCP over stdio (db=%q, server=%q); protocol on stdout, diagnostics here\n", cfg.dbPath, cfg.serverURL)
-	if cfg.allowAdminTools {
-		fmt.Fprintln(stderr, "note: admin tools (user_add/user_issue_key/user_revoke_key/audit) are exposed; the connected agent can create users, issue API keys, and read or prune the audit log")
-	}
 
 	return s.Run(ctx, &mcp.StdioTransport{})
 }
@@ -149,31 +290,22 @@ func registerMCPTools(s *mcp.Server, cfg *mcpConfig) {
 		Name:        "user_list",
 		Description: "List users in the local DB with their active key counts. Mirrors `sth user list`.",
 	}, cfg.toolUserList)
-	if cfg.allowAdminTools {
-		mcp.AddTool(s, &mcp.Tool{
-			Name:        "user_add",
-			Description: "Create a user in the local DB. Mirrors `sth user add`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
-		}, cfg.toolUserAdd)
-		mcp.AddTool(s, &mcp.Tool{
-			Name:        "user_issue_key",
-			Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
-		}, cfg.toolUserIssueKey)
-		mcp.AddTool(s, &mcp.Tool{
-			Name:        "user_revoke_key",
-			Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
-		}, cfg.toolUserRevokeKey)
-		mcp.AddTool(s, &mcp.Tool{
-			Name:        "audit",
-			Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes — covers every user), or prune old events with prune_days. Mirrors `sth audit`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
-		}, cfg.toolAudit)
-	}
-}
-
-func (c *mcpConfig) openStore() (*session.Store, error) {
-	if c.dbPath != "" {
-		return session.NewSQLiteStore(c.dbPath)
-	}
-	return session.NewStore()
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "user_add",
+		Description: "Create a user in the local DB; pass admin=true to create another admin. Mirrors `sth user add`. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
+	}, cfg.toolUserAdd)
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "user_issue_key",
+		Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
+	}, cfg.toolUserIssueKey)
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "user_revoke_key",
+		Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
+	}, cfg.toolUserRevokeKey)
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "audit",
+		Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes — covers every user), or prune old events with prune_days. Mirrors `sth audit`. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
+	}, cfg.toolAudit)
 }
 
 // resolveRemote decides between remote-server and local-DB mode for the dual
@@ -301,8 +433,6 @@ func (c *mcpConfig) toolTag(ctx context.Context, req *mcp.CallToolRequest, in ta
 		if err != nil {
 			return nil, messageResult{}, err
 		}
-		defer store.Close()
-
 		if in.Remove {
 			err = store.RemoveTags(in.SessionID, in.Tags...)
 		} else {
@@ -372,8 +502,6 @@ func (c *mcpConfig) setSessionField(sessionID, field, value, serverParam, apiKey
 	if err != nil {
 		return nil, messageResult{}, err
 	}
-	defer store.Close()
-
 	switch field {
 	case "category":
 		err = store.SetCategory(sessionID, value)
@@ -414,8 +542,6 @@ func (c *mcpConfig) toolList(ctx context.Context, req *mcp.CallToolRequest, in l
 	if err != nil {
 		return nil, documentListResult{}, err
 	}
-	defer store.Close()
-
 	docs, err := store.ListDocuments(filter)
 	if err != nil {
 		return nil, documentListResult{}, err
@@ -442,8 +568,6 @@ func (c *mcpConfig) toolSearch(ctx context.Context, req *mcp.CallToolRequest, in
 	if err != nil {
 		return nil, documentListResult{}, err
 	}
-	defer store.Close()
-
 	docs, err := store.SearchDocuments(in.Query, filter)
 	if err != nil {
 		return nil, documentListResult{}, err
@@ -491,8 +615,6 @@ func (c *mcpConfig) toolDelete(ctx context.Context, req *mcp.CallToolRequest, in
 	if err != nil {
 		return nil, messageResult{}, err
 	}
-	defer store.Close()
-
 	if err := store.SoftDelete(in.SessionID); err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
 			return nil, messageResult{}, fmt.Errorf("session %q not found", in.SessionID)
@@ -527,8 +649,6 @@ func (c *mcpConfig) toolShare(ctx context.Context, req *mcp.CallToolRequest, in 
 	if err != nil {
 		return nil, messageResult{}, err
 	}
-	defer store.Close()
-
 	page, err := normalizeSharePage(in.Page)
 	if err != nil {
 		return nil, messageResult{}, err
@@ -570,8 +690,6 @@ func (c *mcpConfig) toolUnshare(ctx context.Context, req *mcp.CallToolRequest, i
 	if err != nil {
 		return nil, messageResult{}, err
 	}
-	defer store.Close()
-
 	page, err := normalizeSharePage(in.Page)
 	if err != nil {
 		return nil, messageResult{}, err
@@ -635,8 +753,6 @@ func (c *mcpConfig) toolShares(ctx context.Context, req *mcp.CallToolRequest, in
 	if err != nil {
 		return nil, shareListResult{}, err
 	}
-	defer store.Close()
-
 	shares, err := store.ListSessionShares(in.SessionID)
 	if err != nil {
 		return nil, shareListResult{}, err
@@ -654,7 +770,8 @@ func nonNilShares(shares []session.ShareEntry) []session.ShareEntry {
 // --- user management ---
 
 type userAddParams struct {
-	Name string `json:"name" jsonschema:"username to create"`
+	Name  string `json:"name" jsonschema:"username to create"`
+	Admin bool   `json:"admin,omitempty" jsonschema:"grant the admin role to the new user (admins can mint further admins)"`
 }
 
 type userCreatedResult struct {
@@ -663,18 +780,25 @@ type userCreatedResult struct {
 }
 
 func (c *mcpConfig) toolUserAdd(ctx context.Context, req *mcp.CallToolRequest, in userAddParams) (*mcp.CallToolResult, userCreatedResult, error) {
+	if err := c.requireAdmin(); err != nil {
+		return nil, userCreatedResult{}, err
+	}
+
 	store, err := c.openStore()
 	if err != nil {
 		return nil, userCreatedResult{}, err
 	}
-	defer store.Close()
-
 	user, err := store.CreateUser(in.Name)
 	if err != nil {
 		if errors.Is(err, session.ErrUsernameTaken) {
 			return nil, userCreatedResult{}, fmt.Errorf("username %q already taken", in.Name)
 		}
 		return nil, userCreatedResult{}, err
+	}
+	if in.Admin {
+		if err := store.SetUserRole(in.Name, session.RoleAdmin); err != nil {
+			return nil, userCreatedResult{}, err
+		}
 	}
 	return nil, userCreatedResult{Username: user.Username, ID: user.ID}, nil
 }
@@ -690,12 +814,14 @@ type issuedKeyResult struct {
 }
 
 func (c *mcpConfig) toolUserIssueKey(ctx context.Context, req *mcp.CallToolRequest, in userIssueKeyParams) (*mcp.CallToolResult, issuedKeyResult, error) {
+	if err := c.requireAdmin(); err != nil {
+		return nil, issuedKeyResult{}, err
+	}
+
 	store, err := c.openStore()
 	if err != nil {
 		return nil, issuedKeyResult{}, err
 	}
-	defer store.Close()
-
 	user, err := store.FindUserByUsername(in.Name)
 	if err != nil {
 		if errors.Is(err, session.ErrUserNotFound) {
@@ -716,12 +842,14 @@ type userRevokeKeyParams struct {
 }
 
 func (c *mcpConfig) toolUserRevokeKey(ctx context.Context, req *mcp.CallToolRequest, in userRevokeKeyParams) (*mcp.CallToolResult, messageResult, error) {
+	if err := c.requireAdmin(); err != nil {
+		return nil, messageResult{}, err
+	}
+
 	store, err := c.openStore()
 	if err != nil {
 		return nil, messageResult{}, err
 	}
-	defer store.Close()
-
 	if err := store.RevokeAPIKey(in.IDOrPrefix); err != nil {
 		switch {
 		case errors.Is(err, session.ErrAPIKeyAmbiguous):
@@ -740,6 +868,7 @@ type userEmptyParams struct{}
 type mcpUser struct {
 	Username   string `json:"username"`
 	ID         string `json:"id"`
+	Role       string `json:"role"`
 	ActiveKeys int    `json:"activeKeys"`
 	Created    string `json:"created"`
 }
@@ -753,8 +882,6 @@ func (c *mcpConfig) toolUserList(ctx context.Context, req *mcp.CallToolRequest, 
 	if err != nil {
 		return nil, userListResult{}, err
 	}
-	defer store.Close()
-
 	users, err := store.ListUsers()
 	if err != nil {
 		return nil, userListResult{}, err
@@ -769,6 +896,7 @@ func (c *mcpConfig) toolUserList(ctx context.Context, req *mcp.CallToolRequest, 
 		out = append(out, mcpUser{
 			Username:   u.Username,
 			ID:         u.ID,
+			Role:       u.Role,
 			ActiveKeys: keyCount,
 			Created:    u.CreatedAt.Format("2006-01-02"),
 		})
@@ -807,12 +935,14 @@ type auditResult struct {
 }
 
 func (c *mcpConfig) toolAudit(ctx context.Context, req *mcp.CallToolRequest, in auditParams) (*mcp.CallToolResult, auditResult, error) {
+	if err := c.requireAdmin(); err != nil {
+		return nil, auditResult{}, err
+	}
+
 	store, err := c.openStore()
 	if err != nil {
 		return nil, auditResult{}, err
 	}
-	defer store.Close()
-
 	if in.PruneDays > 0 {
 		cutoff := time.Now().UTC().Add(-time.Duration(in.PruneDays) * 24 * time.Hour)
 		removed, err := store.PruneAuditEvents(cutoff)
