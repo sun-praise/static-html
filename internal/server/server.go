@@ -1452,6 +1452,12 @@ func (s *Server) routes() http.Handler {
 			s.handleGetPeers(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/chain"):
 			s.handleGetChain(w, r)
+		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/annotations"):
+			s.handleListAnnotations(w, r)
+		case r.Method == http.MethodPost && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/annotations"):
+			s.handleCreateAnnotation(w, r)
+		case r.Method == http.MethodDelete && isAnnotationTargetPath(r.URL.Path):
+			s.handleDeleteAnnotation(w, r)
 		case r.Method == http.MethodGet && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/shares"):
 			s.handleListShares(w, r)
 		case r.Method == http.MethodPut && hasPrefixSuffix(r.URL.Path, "/api/sessions/", "/shares"):
