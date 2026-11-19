@@ -24,7 +24,8 @@ var mcpVersion = "0.1.0"
 
 // mcpConfig holds the server-wide defaults for MCP tool calls: the local --db
 // target, the default remote connection (--server / --api-key), and whether
-// user-management tools are exposed to the connected agent.
+// admin-class tools (user management + audit) are exposed to the connected
+// agent.
 type mcpConfig struct {
 	dbPath    string
 	serverURL string
@@ -38,25 +39,41 @@ type mcpConfig struct {
 	allowAdminTools bool
 }
 
-// runMCP runs the `sth mcp` subcommand: an MCP server over stdio that exposes
-// the CLI functionality as tools. The MCP protocol occupies stdout, so this
-// command must not write anything there; diagnostics go to stderr.
-func runMCP(args []string, _ io.Writer, stderr io.Writer) error {
+// parseMCPConfig parses `sth mcp` arguments into the server configuration.
+// Flag precedence mirrors the rest of the CLI: an explicit flag beats the
+// STH_ALLOW_ADMIN_TOOLS environment variable. Leftover positional arguments
+// are rejected: with a privilege gate on this command, a stray token (say,
+// `--allow-admin-tools false` in the space-separated form the boolean parser
+// does not understand) must fail loudly instead of being silently dropped.
+func parseMCPConfig(args []string) (*mcpConfig, error) {
 	args, allowAdminSet, allowAdminFlag, err := popBoolFlagWithPresence(args, "allow-admin-tools")
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	flags, _, err := parseArgs(args)
+	flags, positionals, err := parseArgs(args)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	if len(positionals) > 0 {
+		return nil, fmt.Errorf("unexpected argument %q (sth mcp takes only --flags)", positionals[0])
 	}
 
-	cfg := &mcpConfig{
+	return &mcpConfig{
 		dbPath:          flags["db"],
 		serverURL:       flags["server"],
 		apiKey:          resolveAPIKey(flags),
 		allowAdminTools: resolveBool(allowAdminSet, allowAdminFlag, "STH_ALLOW_ADMIN_TOOLS"),
+	}, nil
+}
+
+// runMCP runs the `sth mcp` subcommand: an MCP server over stdio that exposes
+// the CLI functionality as tools. The MCP protocol occupies stdout, so this
+// command must not write anything there; diagnostics go to stderr.
+func runMCP(args []string, _ io.Writer, stderr io.Writer) error {
+	cfg, err := parseMCPConfig(args)
+	if err != nil {
+		return err
 	}
 
 	// Without --server the configured key only ever reaches the implicit

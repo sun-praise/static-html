@@ -863,3 +863,56 @@ func TestMCPSendKeyNotForwarded(t *testing.T) {
 		t.Fatalf("default server should carry the configured key, got %+v", calls)
 	}
 }
+
+// TestMCPParseMCPConfig exercises the real `sth mcp` argument parsing surface:
+// default posture, flag/env precedence, and loud rejection of stray tokens.
+func TestMCPParseMCPConfig(t *testing.T) {
+	// t.Setenv requires a serial test.
+	cfg, err := parseMCPConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.allowAdminTools {
+		t.Fatal("admin tools must be disabled by default")
+	}
+
+	cfg, err = parseMCPConfig([]string{"--allow-admin-tools"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.allowAdminTools {
+		t.Fatal("expected --allow-admin-tools to enable admin tools")
+	}
+
+	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "true")
+	cfg, err = parseMCPConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.allowAdminTools {
+		t.Fatal("expected STH_ALLOW_ADMIN_TOOLS=true to enable admin tools")
+	}
+
+	cfg, err = parseMCPConfig([]string{"--allow-admin-tools=false"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.allowAdminTools {
+		t.Fatal("expected --allow-admin-tools=false to override the environment")
+	}
+	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "")
+
+	// The space-separated form the boolean parser does not understand must
+	// fail loudly instead of silently leaving admin tools enabled.
+	if _, err := parseMCPConfig([]string{"--allow-admin-tools", "false"}); err == nil || !strings.Contains(err.Error(), "unexpected argument") {
+		t.Fatalf("expected error for stray positional, got: %v", err)
+	}
+
+	cfg, err = parseMCPConfig([]string{"--db", "/tmp/x.db", "--server", "http://127.0.0.1:3939", "--api-key", "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.dbPath != "/tmp/x.db" || cfg.serverURL != "http://127.0.0.1:3939" || cfg.apiKey != "k" {
+		t.Fatalf("unexpected config: %+v", cfg)
+	}
+}
