@@ -147,7 +147,7 @@ Tool arguments and results are JSON (input schemas are generated from the tool d
 - The `send` tool reads files from this machine (the entry file plus sibling assets in its directory or `root`); only point it at content meant to be published.
 - Credentials are host-bound: the server-wide `--api-key` / `STH_API_KEY` is attached only to calls targeting the configured `--server`. A per-call `server` override runs without credentials unless the call passes its own `api_key`, so a prompt-injected call cannot leak the configured key to another host.
 - Run the MCP server with a key scoped to a dedicated low-privilege sth user (`sth user add` + `sth user issue-key`) rather than an admin key.
-- Admin tools (`user_add` / `user_issue_key` / `user_revoke_key` / `audit`) follow identity: only a key belonging to an admin user exposes them. Give the agent a member key (or no key) and it cannot mint users or read the audit log; force the outcome with `--allow-admin-tools=true|false` if you really mean to.
+- Admin tools (`user_add` / `user_issue_key` / `user_revoke_key` / `audit`) enforce identity per call: give the agent a **member** key and it cannot mint users, issue keys, or read the audit log; a key-less local-operator setup allows them by default. Force with `--allow-admin-tools=true|false` if you really mean to.
 
 ## Authentication
 

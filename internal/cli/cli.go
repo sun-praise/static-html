@@ -83,9 +83,10 @@ func printUsage(w io.Writer) {
                          Run a Model Context Protocol (MCP) server over stdio that
                          exposes the CLI functionality as tools; protocol on stdout.
                          Admin tools (user_add/user_issue_key/user_revoke_key/
-                         audit) follow identity: the configured API key must
-                         belong to a user with the admin role. The flag forces
-                         the outcome on/off regardless of identity.
+                         audit) are enabled by default and enforced per call:
+                         with an API key configured, calls require the admin
+                         role; without one, local-operator mode allows them.
+                         The flag forces the outcome regardless of identity.
   sth user <add <name> [--admin] | issue-key <name> | revoke-key <id|prefix>
          | promote <name> | demote <name> | list> [--db /path/to/sessions.db]
   sth share <session-id> <username> [--page <path>] [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]

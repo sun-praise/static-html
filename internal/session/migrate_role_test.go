@@ -23,7 +23,8 @@ func TestUsersRoleMigration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := store.IssueAPIKey(user.ID); err != nil {
+	plaintext, _, err := store.IssueAPIKey(user.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
 	store.Close()
@@ -48,6 +49,10 @@ func TestUsersRoleMigration(t *testing.T) {
 	if err := reopened.SetUserRole("alice", RoleAdmin); err != nil {
 		t.Fatal(err)
 	}
+	if uid, ok, err := reopened.VerifyAPIKey(plaintext); err != nil || !ok || uid != user.ID {
+		t.Fatalf("key must survive the migration (ok=%v uid=%q err=%v)", ok, uid, err)
+	}
+
 	got, err := reopened.FindUserByUsername("alice")
 	if err != nil {
 		t.Fatal(err)
