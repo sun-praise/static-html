@@ -128,6 +128,7 @@ func newMCPTestDB(t *testing.T) (string, *session.Store) {
 func TestMCPToolsListed(t *testing.T) {
 	t.Parallel()
 
+	// Default posture: user-management mutation tools are not exposed.
 	cs := newMCPClient(t, &mcpConfig{})
 
 	resp, err := cs.ListTools(context.Background(), nil)
@@ -139,8 +140,7 @@ func TestMCPToolsListed(t *testing.T) {
 		"send": true, "tag": true, "categorize": true, "project": true,
 		"title": true, "list": true, "search": true, "delete": true,
 		"share": true, "unshare": true, "shares": true,
-		"user_add": true, "user_issue_key": true, "user_revoke_key": true, "user_list": true,
-		"audit": true,
+		"user_list": true,
 	}
 	got := map[string]bool{}
 	for _, tool := range resp.Tools {
@@ -153,6 +153,53 @@ func TestMCPToolsListed(t *testing.T) {
 		if !got[name] {
 			t.Errorf("missing tool %q", name)
 		}
+	}
+	for _, gated := range []string{"user_add", "user_issue_key", "user_revoke_key", "audit"} {
+		if got[gated] {
+			t.Errorf("tool %q must not be listed without --allow-admin-tools", gated)
+		}
+	}
+}
+
+func TestMCPUserManagementGatedByDefault(t *testing.T) {
+	t.Parallel()
+
+	cs := newMCPClient(t, &mcpConfig{})
+
+	// Calling an unregistered tool is a protocol-level error.
+	for _, name := range []string{"user_add", "audit"} {
+		if _, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      name,
+			Arguments: map[string]any{"name": "mallory"},
+		}); err == nil {
+			t.Fatalf("expected %s to be unavailable without --allow-admin-tools", name)
+		}
+	}
+}
+
+func TestMCPUserManagementExposedWhenAllowed(t *testing.T) {
+	t.Parallel()
+
+	dbPath, _ := newMCPTestDB(t)
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowAdminTools: true})
+
+	resp, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, tool := range resp.Tools {
+		got[tool.Name] = true
+	}
+	for _, name := range []string{"user_add", "user_issue_key", "user_revoke_key", "audit"} {
+		if !got[name] {
+			t.Errorf("tool %q missing despite --allow-admin-tools", name)
+		}
+	}
+
+	created := structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{"name": "alice"}))
+	if created.Username != "alice" || created.ID == "" {
+		t.Fatalf("unexpected user: %+v", created)
 	}
 }
 
@@ -289,7 +336,7 @@ func TestMCPUserLifecycle(t *testing.T) {
 	t.Parallel()
 
 	dbPath, _ := newMCPTestDB(t)
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath})
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowAdminTools: true})
 
 	created := structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{"name": "alice"}))
 	if created.Username != "alice" || created.ID == "" {
@@ -634,7 +681,7 @@ func TestMCPAuditLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath})
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, allowAdminTools: true})
 
 	out := structured[auditResult](t, callTool(t, cs, "audit", nil))
 	if len(out.Events) != 2 {
@@ -814,5 +861,58 @@ func TestMCPSendKeyNotForwarded(t *testing.T) {
 	structured[sendResult](t, callTool(t, cs, "send", sendArgs("")))
 	if calls := defaultHooks.snapshot(); len(calls) != 1 || string(calls[0]) != "Bearer secret" {
 		t.Fatalf("default server should carry the configured key, got %+v", calls)
+	}
+}
+
+// TestMCPParseMCPConfig exercises the real `sth mcp` argument parsing surface:
+// default posture, flag/env precedence, and loud rejection of stray tokens.
+func TestMCPParseMCPConfig(t *testing.T) {
+	// t.Setenv requires a serial test.
+	cfg, err := parseMCPConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.allowAdminTools {
+		t.Fatal("admin tools must be disabled by default")
+	}
+
+	cfg, err = parseMCPConfig([]string{"--allow-admin-tools"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.allowAdminTools {
+		t.Fatal("expected --allow-admin-tools to enable admin tools")
+	}
+
+	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "true")
+	cfg, err = parseMCPConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.allowAdminTools {
+		t.Fatal("expected STH_ALLOW_ADMIN_TOOLS=true to enable admin tools")
+	}
+
+	cfg, err = parseMCPConfig([]string{"--allow-admin-tools=false"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.allowAdminTools {
+		t.Fatal("expected --allow-admin-tools=false to override the environment")
+	}
+	t.Setenv("STH_ALLOW_ADMIN_TOOLS", "")
+
+	// The space-separated form the boolean parser does not understand must
+	// fail loudly instead of silently leaving admin tools enabled.
+	if _, err := parseMCPConfig([]string{"--allow-admin-tools", "false"}); err == nil || !strings.Contains(err.Error(), "unexpected argument") {
+		t.Fatalf("expected error for stray positional, got: %v", err)
+	}
+
+	cfg, err = parseMCPConfig([]string{"--db", "/tmp/x.db", "--server", "http://127.0.0.1:3939", "--api-key", "k"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.dbPath != "/tmp/x.db" || cfg.serverURL != "http://127.0.0.1:3939" || cfg.apiKey != "k" {
+		t.Fatalf("unexpected config: %+v", cfg)
 	}
 }

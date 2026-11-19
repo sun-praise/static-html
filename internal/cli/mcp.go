@@ -23,27 +23,57 @@ import (
 var mcpVersion = "0.1.0"
 
 // mcpConfig holds the server-wide defaults for MCP tool calls: the local --db
-// target and the default remote connection (--server / --api-key). Individual
-// tool calls may override the remote connection per call.
+// target, the default remote connection (--server / --api-key), and whether
+// admin-class tools (user management + audit) are exposed to the connected
+// agent.
 type mcpConfig struct {
 	dbPath    string
 	serverURL string
 	apiKey    string
+	// allowAdminTools gates the admin-class tools: user_add /
+	// user_issue_key / user_revoke_key mint credentials, and audit exposes
+	// every user's security events (and prune_days can erase them). They
+	// operate on the local SQLite store with full operator privileges, so
+	// they are only registered when the human starting the server
+	// explicitly opts in.
+	allowAdminTools bool
+}
+
+// parseMCPConfig parses `sth mcp` arguments into the server configuration.
+// Flag precedence mirrors the rest of the CLI: an explicit flag beats the
+// STH_ALLOW_ADMIN_TOOLS environment variable. Leftover positional arguments
+// are rejected: with a privilege gate on this command, a stray token (say,
+// `--allow-admin-tools false` in the space-separated form the boolean parser
+// does not understand) must fail loudly instead of being silently dropped.
+func parseMCPConfig(args []string) (*mcpConfig, error) {
+	args, allowAdminSet, allowAdminFlag, err := popBoolFlagWithPresence(args, "allow-admin-tools")
+	if err != nil {
+		return nil, err
+	}
+
+	flags, positionals, err := parseArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	if len(positionals) > 0 {
+		return nil, fmt.Errorf("unexpected argument %q (sth mcp takes only --flags)", positionals[0])
+	}
+
+	return &mcpConfig{
+		dbPath:          flags["db"],
+		serverURL:       flags["server"],
+		apiKey:          resolveAPIKey(flags),
+		allowAdminTools: resolveBool(allowAdminSet, allowAdminFlag, "STH_ALLOW_ADMIN_TOOLS"),
+	}, nil
 }
 
 // runMCP runs the `sth mcp` subcommand: an MCP server over stdio that exposes
 // the CLI functionality as tools. The MCP protocol occupies stdout, so this
 // command must not write anything there; diagnostics go to stderr.
 func runMCP(args []string, _ io.Writer, stderr io.Writer) error {
-	flags, _, err := parseArgs(args)
+	cfg, err := parseMCPConfig(args)
 	if err != nil {
 		return err
-	}
-
-	cfg := &mcpConfig{
-		dbPath:    flags["db"],
-		serverURL: flags["server"],
-		apiKey:    resolveAPIKey(flags),
 	}
 
 	// Without --server the configured key only ever reaches the implicit
@@ -63,6 +93,9 @@ func mcpServe(ctx context.Context, cfg *mcpConfig, stderr io.Writer) error {
 	registerMCPTools(s, cfg)
 
 	fmt.Fprintf(stderr, "sth mcp: serving MCP over stdio (db=%q, server=%q); protocol on stdout, diagnostics here\n", cfg.dbPath, cfg.serverURL)
+	if cfg.allowAdminTools {
+		fmt.Fprintln(stderr, "note: admin tools (user_add/user_issue_key/user_revoke_key/audit) are exposed; the connected agent can create users, issue API keys, and read or prune the audit log")
+	}
 
 	return s.Run(ctx, &mcp.StdioTransport{})
 }
@@ -113,25 +146,27 @@ func registerMCPTools(s *mcp.Server, cfg *mcpConfig) {
 		Description: "List the share grants of a session. Mirrors `sth shares`. Operates on the local DB, or on a remote server when server is set; pass local=true to force the local DB.",
 	}, cfg.toolShares)
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "user_add",
-		Description: "Create a user in the local DB. Mirrors `sth user add`.",
-	}, cfg.toolUserAdd)
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "user_issue_key",
-		Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`.",
-	}, cfg.toolUserIssueKey)
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "user_revoke_key",
-		Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`.",
-	}, cfg.toolUserRevokeKey)
-	mcp.AddTool(s, &mcp.Tool{
 		Name:        "user_list",
 		Description: "List users in the local DB with their active key counts. Mirrors `sth user list`.",
 	}, cfg.toolUserList)
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "audit",
-		Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes), or prune old events with prune_days. Mirrors `sth audit`.",
-	}, cfg.toolAudit)
+	if cfg.allowAdminTools {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "user_add",
+			Description: "Create a user in the local DB. Mirrors `sth user add`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
+		}, cfg.toolUserAdd)
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "user_issue_key",
+			Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
+		}, cfg.toolUserIssueKey)
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "user_revoke_key",
+			Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
+		}, cfg.toolUserRevokeKey)
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "audit",
+			Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes — covers every user), or prune old events with prune_days. Mirrors `sth audit`. Admin capability: only exposed when the MCP server runs with --allow-admin-tools.",
+		}, cfg.toolAudit)
+	}
 }
 
 func (c *mcpConfig) openStore() (*session.Store, error) {
