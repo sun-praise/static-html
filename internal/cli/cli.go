@@ -85,8 +85,8 @@ func printUsage(w io.Writer) {
                          Admin tools (user_add/user_issue_key/user_revoke_key/
                          audit) are enabled by default and enforced per call:
                          with an API key configured, calls require the admin
-                         role; without one, local-operator mode allows them.
-                         The flag forces the outcome regardless of identity.
+                         role; without a key, calls are denied. The flag
+                         forces the outcome regardless of identity.
   sth user <add <name> [--admin] | issue-key <name> | revoke-key <id|prefix>
          | promote <name> | demote <name> | list> [--db /path/to/sessions.db]
   sth share <session-id> <username> [--page <path>] [--db /path/to/sessions.db] [--server http://...] [--api-key <key>]

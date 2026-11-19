@@ -58,6 +58,9 @@ func userAdd(args []string, stdout io.Writer) error {
 	if len(positionals) < 1 {
 		return errors.New("usage: sth user add <name> [--admin] [--db /path/to/sessions.db]")
 	}
+	if len(positionals) > 1 {
+		return fmt.Errorf("unexpected argument %q (sth user add takes one name; pass --admin as a flag)", positionals[1])
+	}
 	name := positionals[0]
 
 	store, err := openStore(flags)
@@ -119,7 +122,7 @@ func roleLabel(admin bool) string {
 	if admin {
 		return session.RoleAdmin
 	}
-	return "(member)"
+	return "member"
 }
 
 func userIssueKey(args []string, stdout io.Writer) error {

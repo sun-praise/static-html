@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -35,16 +36,39 @@ type mcpConfig struct {
 	// audit) are registered by default; every call to them is enforced by
 	// requireAdmin against the caller's identity: with an API key
 	// configured, it must belong to a user holding the admin role; with no
-	// key at all the process runs in local-operator mode and calls are
-	// allowed. adminOverrideSet / adminOverrideValue carry the
-	// --allow-admin-tools flag, which forces calls allowed or denied
-	// regardless of identity.
+	// key at all there is no identity and calls fail closed.
+	// adminOverrideSet / adminOverrideValue carry the --allow-admin-tools
+	// flag, which forces calls allowed or denied regardless of identity.
 	adminOverrideSet   bool
 	adminOverrideValue bool
 
-	// identity caches the username the API key resolved to, for error
-	// messages.
-	identity string
+	// store caches the opened SQLite store for the process lifetime: admin
+	// calls would otherwise open the database twice (identity check + the
+	// operation itself), re-running schema DDL each time.
+	store   *session.Store
+	storeMu sync.Mutex
+}
+
+// openStore returns the process-lifetime store, opening it on first use.
+func (c *mcpConfig) openStore() (*session.Store, error) {
+	c.storeMu.Lock()
+	defer c.storeMu.Unlock()
+	if c.store != nil {
+		return c.store, nil
+	}
+
+	var store *session.Store
+	var err error
+	if c.dbPath != "" {
+		store, err = session.NewSQLiteStore(c.dbPath)
+	} else {
+		store, err = session.NewStore()
+	}
+	if err != nil {
+		return nil, err
+	}
+	c.store = store
+	return store, nil
 }
 
 // parseMCPConfig parses `sth mcp` arguments into the server configuration.
@@ -78,7 +102,8 @@ func parseMCPConfig(args []string) (*mcpConfig, error) {
 	// one. Both true|1 and false|0 are honored — a plain "false" must deny,
 	// not fall through to identity — so an unparseable value is an error
 	// rather than a silent fail-open. The value only takes effect through
-	// requireAdmin; without an override, identity decides per call.
+	// requireAdmin; without an override, the caller's identity decides per
+	// call, and no key means denied.
 	if allowAdminSet {
 		cfg.adminOverrideSet, cfg.adminOverrideValue = true, allowAdminFlag
 	} else if raw := strings.TrimSpace(os.Getenv("STH_ALLOW_ADMIN_TOOLS")); raw != "" {
@@ -96,11 +121,11 @@ func parseMCPConfig(args []string) (*mcpConfig, error) {
 
 // requireAdmin enforces the caller identity on every admin-class tool call.
 // An explicit --allow-admin-tools=false denies unconditionally, =true allows
-// unconditionally. With no API key configured the process runs in
-// local-operator mode (the process can write the store directly anyway), so
-// calls are allowed by default. With a key, it must resolve to a user holding
-// the admin role — verified locally against the store, or remotely via
-// GET /api/me when --server is set — otherwise the call fails.
+// unconditionally. Without an override the configured API key must resolve to
+// a user holding the admin role — verified locally against the store, or
+// remotely via GET /api/me when --server is set. No key means no identity,
+// and no identity is not admin: calls fail closed until an admin key is
+// configured.
 func (c *mcpConfig) requireAdmin() error {
 	if c.adminOverrideSet {
 		if !c.adminOverrideValue {
@@ -109,7 +134,7 @@ func (c *mcpConfig) requireAdmin() error {
 		return nil
 	}
 	if c.apiKey == "" {
-		return nil
+		return errors.New("no API key configured: admin tools need the key of an admin user (--api-key), or force with --allow-admin-tools=true")
 	}
 
 	admin, username, err := c.callerIsAdmin()
@@ -117,7 +142,10 @@ func (c *mcpConfig) requireAdmin() error {
 		return err
 	}
 	if !admin {
-		return fmt.Errorf("admin role required: the configured API key%s belongs to an ordinary member", c.identitySuffix(username))
+		if username == "" {
+			return errors.New("admin role required: the configured API key belongs to an ordinary member")
+		}
+		return fmt.Errorf("admin role required: %q is not an admin", username)
 	}
 	return nil
 }
@@ -133,7 +161,6 @@ func (c *mcpConfig) callerIsAdmin() (admin bool, username string, err error) {
 		}
 		admin, _ = result["isAdmin"].(bool)
 		if name, ok := result["username"].(string); ok {
-			c.identity = name
 			username = name
 		}
 		return admin, username, nil
@@ -143,8 +170,6 @@ func (c *mcpConfig) callerIsAdmin() (admin bool, username string, err error) {
 	if err != nil {
 		return false, "", err
 	}
-	defer store.Close()
-
 	userID, ok, err := store.VerifyAPIKey(c.apiKey)
 	if err != nil {
 		return false, "", err
@@ -156,22 +181,9 @@ func (c *mcpConfig) callerIsAdmin() (admin bool, username string, err error) {
 		return false, "", err
 	}
 	if user, err := store.FindUserByID(userID); err == nil {
-		c.identity = user.Username
 		username = user.Username
 	}
 	return admin, username, nil
-}
-
-// identitySuffix renders ", as <name>" when the identity is known.
-func (c *mcpConfig) identitySuffix(username string) string {
-	name := username
-	if name == "" {
-		name = c.identity
-	}
-	if name == "" {
-		return ""
-	}
-	return fmt.Sprintf(" (%s)", name)
 }
 
 // runMCP runs the `sth mcp` subcommand: an MCP server over stdio that exposes
@@ -195,7 +207,7 @@ func runMCP(args []string, _ io.Writer, stderr io.Writer) error {
 	case cfg.adminOverrideSet:
 		fmt.Fprintln(stderr, "note: admin tools forced off (--allow-admin-tools=false); calls will be denied")
 	case cfg.apiKey == "":
-		fmt.Fprintln(stderr, "note: no --api-key: admin tools open in local-operator mode (configure --api-key to enforce the admin role)")
+		fmt.Fprintln(stderr, "note: no --api-key: admin tools denied (configure the key of an admin user, or force with --allow-admin-tools=true)")
 	default:
 		fmt.Fprintln(stderr, "note: admin tools enforce identity: calls require the API key to belong to an admin user")
 	}
@@ -280,13 +292,6 @@ func registerMCPTools(s *mcp.Server, cfg *mcpConfig) {
 		Name:        "audit",
 		Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes — covers every user), or prune old events with prune_days. Mirrors `sth audit`. Admin capability: calls require the configured API key to belong to an admin user (allowed without a key in local-operator mode).",
 	}, cfg.toolAudit)
-}
-
-func (c *mcpConfig) openStore() (*session.Store, error) {
-	if c.dbPath != "" {
-		return session.NewSQLiteStore(c.dbPath)
-	}
-	return session.NewStore()
 }
 
 // resolveRemote decides between remote-server and local-DB mode for the dual
@@ -414,8 +419,6 @@ func (c *mcpConfig) toolTag(ctx context.Context, req *mcp.CallToolRequest, in ta
 		if err != nil {
 			return nil, messageResult{}, err
 		}
-		defer store.Close()
-
 		if in.Remove {
 			err = store.RemoveTags(in.SessionID, in.Tags...)
 		} else {
@@ -485,8 +488,6 @@ func (c *mcpConfig) setSessionField(sessionID, field, value, serverParam, apiKey
 	if err != nil {
 		return nil, messageResult{}, err
 	}
-	defer store.Close()
-
 	switch field {
 	case "category":
 		err = store.SetCategory(sessionID, value)
@@ -527,8 +528,6 @@ func (c *mcpConfig) toolList(ctx context.Context, req *mcp.CallToolRequest, in l
 	if err != nil {
 		return nil, documentListResult{}, err
 	}
-	defer store.Close()
-
 	docs, err := store.ListDocuments(filter)
 	if err != nil {
 		return nil, documentListResult{}, err
@@ -555,8 +554,6 @@ func (c *mcpConfig) toolSearch(ctx context.Context, req *mcp.CallToolRequest, in
 	if err != nil {
 		return nil, documentListResult{}, err
 	}
-	defer store.Close()
-
 	docs, err := store.SearchDocuments(in.Query, filter)
 	if err != nil {
 		return nil, documentListResult{}, err
@@ -604,8 +601,6 @@ func (c *mcpConfig) toolDelete(ctx context.Context, req *mcp.CallToolRequest, in
 	if err != nil {
 		return nil, messageResult{}, err
 	}
-	defer store.Close()
-
 	if err := store.SoftDelete(in.SessionID); err != nil {
 		if errors.Is(err, session.ErrSessionNotFound) {
 			return nil, messageResult{}, fmt.Errorf("session %q not found", in.SessionID)
@@ -640,8 +635,6 @@ func (c *mcpConfig) toolShare(ctx context.Context, req *mcp.CallToolRequest, in 
 	if err != nil {
 		return nil, messageResult{}, err
 	}
-	defer store.Close()
-
 	page, err := normalizeSharePage(in.Page)
 	if err != nil {
 		return nil, messageResult{}, err
@@ -683,8 +676,6 @@ func (c *mcpConfig) toolUnshare(ctx context.Context, req *mcp.CallToolRequest, i
 	if err != nil {
 		return nil, messageResult{}, err
 	}
-	defer store.Close()
-
 	page, err := normalizeSharePage(in.Page)
 	if err != nil {
 		return nil, messageResult{}, err
@@ -748,8 +739,6 @@ func (c *mcpConfig) toolShares(ctx context.Context, req *mcp.CallToolRequest, in
 	if err != nil {
 		return nil, shareListResult{}, err
 	}
-	defer store.Close()
-
 	shares, err := store.ListSessionShares(in.SessionID)
 	if err != nil {
 		return nil, shareListResult{}, err
@@ -785,8 +774,6 @@ func (c *mcpConfig) toolUserAdd(ctx context.Context, req *mcp.CallToolRequest, i
 	if err != nil {
 		return nil, userCreatedResult{}, err
 	}
-	defer store.Close()
-
 	user, err := store.CreateUser(in.Name)
 	if err != nil {
 		if errors.Is(err, session.ErrUsernameTaken) {
@@ -821,8 +808,6 @@ func (c *mcpConfig) toolUserIssueKey(ctx context.Context, req *mcp.CallToolReque
 	if err != nil {
 		return nil, issuedKeyResult{}, err
 	}
-	defer store.Close()
-
 	user, err := store.FindUserByUsername(in.Name)
 	if err != nil {
 		if errors.Is(err, session.ErrUserNotFound) {
@@ -851,8 +836,6 @@ func (c *mcpConfig) toolUserRevokeKey(ctx context.Context, req *mcp.CallToolRequ
 	if err != nil {
 		return nil, messageResult{}, err
 	}
-	defer store.Close()
-
 	if err := store.RevokeAPIKey(in.IDOrPrefix); err != nil {
 		switch {
 		case errors.Is(err, session.ErrAPIKeyAmbiguous):
@@ -885,8 +868,6 @@ func (c *mcpConfig) toolUserList(ctx context.Context, req *mcp.CallToolRequest, 
 	if err != nil {
 		return nil, userListResult{}, err
 	}
-	defer store.Close()
-
 	users, err := store.ListUsers()
 	if err != nil {
 		return nil, userListResult{}, err
@@ -948,8 +929,6 @@ func (c *mcpConfig) toolAudit(ctx context.Context, req *mcp.CallToolRequest, in 
 	if err != nil {
 		return nil, auditResult{}, err
 	}
-	defer store.Close()
-
 	if in.PruneDays > 0 {
 		cutoff := time.Now().UTC().Add(-time.Duration(in.PruneDays) * 24 * time.Hour)
 		removed, err := store.PruneAuditEvents(cutoff)
