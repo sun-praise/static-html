@@ -50,6 +50,7 @@ type mcpConfig struct {
 }
 
 // openStore returns the process-lifetime store, opening it on first use.
+// The caller must not close it: mcpServe closes it when the server stops.
 func (c *mcpConfig) openStore() (*session.Store, error) {
 	c.storeMu.Lock()
 	defer c.storeMu.Unlock()
@@ -103,7 +104,8 @@ func parseMCPConfig(args []string) (*mcpConfig, error) {
 	// not fall through to identity — so an unparseable value is an error
 	// rather than a silent fail-open. The value only takes effect through
 	// requireAdmin; without an override, the caller's identity decides per
-	// call, and no key means denied.
+	// call, and no key means denied. (requireAdmin replaced the earlier
+	// resolveAdminTools draft; docs elsewhere may still use either name.)
 	if allowAdminSet {
 		cfg.adminOverrideSet, cfg.adminOverrideValue = true, allowAdminFlag
 	} else if raw := strings.TrimSpace(os.Getenv("STH_ALLOW_ADMIN_TOOLS")); raw != "" {
@@ -186,6 +188,16 @@ func (c *mcpConfig) callerIsAdmin() (admin bool, username string, err error) {
 	return admin, username, nil
 }
 
+// closeStore closes the cached process-lifetime store, if one was opened.
+func (c *mcpConfig) closeStore() {
+	c.storeMu.Lock()
+	defer c.storeMu.Unlock()
+	if c.store != nil {
+		_ = c.store.Close()
+		c.store = nil
+	}
+}
+
 // runMCP runs the `sth mcp` subcommand: an MCP server over stdio that exposes
 // the CLI functionality as tools. The MCP protocol occupies stdout, so this
 // command must not write anything there; diagnostics go to stderr.
@@ -219,6 +231,8 @@ func runMCP(args []string, _ io.Writer, stderr io.Writer) error {
 }
 
 func mcpServe(ctx context.Context, cfg *mcpConfig, stderr io.Writer) error {
+	defer cfg.closeStore()
+
 	s := mcp.NewServer(&mcp.Implementation{Name: "sth", Version: mcpVersion}, nil)
 	registerMCPTools(s, cfg)
 
@@ -278,19 +292,19 @@ func registerMCPTools(s *mcp.Server, cfg *mcpConfig) {
 	}, cfg.toolUserList)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "user_add",
-		Description: "Create a user in the local DB; pass admin=true to create another admin. Mirrors `sth user add`. Admin capability: calls require the configured API key to belong to an admin user (allowed without a key in local-operator mode).",
+		Description: "Create a user in the local DB; pass admin=true to create another admin. Mirrors `sth user add`. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
 	}, cfg.toolUserAdd)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "user_issue_key",
-		Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`. Admin capability: calls require the configured API key to belong to an admin user (allowed without a key in local-operator mode).",
+		Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
 	}, cfg.toolUserIssueKey)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "user_revoke_key",
-		Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`. Admin capability: calls require the configured API key to belong to an admin user (allowed without a key in local-operator mode).",
+		Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
 	}, cfg.toolUserRevokeKey)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "audit",
-		Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes — covers every user), or prune old events with prune_days. Mirrors `sth audit`. Admin capability: calls require the configured API key to belong to an admin user (allowed without a key in local-operator mode).",
+		Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes — covers every user), or prune old events with prune_days. Mirrors `sth audit`. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
 	}, cfg.toolAudit)
 }
 

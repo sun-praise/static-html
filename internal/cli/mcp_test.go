@@ -32,7 +32,8 @@ func zipNames(data []byte) ([]string, error) {
 }
 
 // meOK answers GET /api/me with a member identity — enough for
-// requireAdmin to succeed in tests that do not assert on it.
+// resolveAdmin-style startup probes to get a parseable response in tests
+// that do not assert on identity (call-time requireAdmin would still deny).
 func meOK() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -219,7 +220,9 @@ func TestMCPTagCategorizeProjectTitleLocal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, adminOverrideSet: true, adminOverrideValue: true})
+	// No admin override: proves the non-admin tools work under the default
+	// (deny-by-default) admin posture.
+	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath})
 
 	msg := structured[messageResult](t, callTool(t, cs, "tag", map[string]any{
 		"session_id": s.ID, "tags": []string{"go", "demo"},
