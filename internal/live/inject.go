@@ -436,7 +436,7 @@ func InjectMiddleware(h http.Handler) http.Handler {
 			return
 		}
 
-		snippets := [][]byte{scriptBytes, drawerBytes}
+		snippets := [][]byte{scriptBytes, drawerBytes, annotationBytes}
 		if analytics.EnabledForHost(r.Host) {
 			snippets = append(snippets, analyticsBytes)
 		}

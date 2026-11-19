@@ -252,6 +252,10 @@ func (s *Store) init() error {
 		return err
 	}
 
+	if err := s.initAnnotations(); err != nil {
+		return err
+	}
+
 	if err := s.initAuth(); err != nil {
 		return err
 	}
