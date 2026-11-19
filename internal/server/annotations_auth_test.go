@@ -11,9 +11,11 @@ import (
 	"github.com/sun-praise/static-html/internal/session"
 )
 
-// doAnnotationJSON issues a JSON request through handler with an optional
-// Bearer key and returns the recorder.
-func doAnnotationJSON(t *testing.T, handler http.Handler, method, path, bearer string, body any) *httptest.ResponseRecorder {
+// doAnnotationJSON issues a JSON request through handler with optional
+// credentials — either a Bearer API key, or a login cookie pair (the
+// "sth_session=..." string returned by registerAndLogin) — and returns the
+// recorder.
+func doAnnotationJSON(t *testing.T, handler http.Handler, method, path, creds string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader io.Reader
 	if body != nil {
@@ -24,8 +26,12 @@ func doAnnotationJSON(t *testing.T, handler http.Handler, method, path, bearer s
 		reader = strings.NewReader(string(raw))
 	}
 	req := httptest.NewRequest(method, path, reader)
-	if bearer != "" {
-		req.Header.Set("Authorization", "Bearer "+bearer)
+	if creds != "" {
+		if strings.HasPrefix(creds, sessionCookieName+"=") {
+			req.Header.Set("Cookie", creds)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+creds)
+		}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -40,7 +46,11 @@ func TestAnnotationsAuthOn(t *testing.T) {
 	t.Parallel()
 
 	srv, store := newAuthServer(t, true, true)
-	alice, err := store.CreateUser("alice")
+	srv.SetAllowRegistration(true)
+	// One user owns the session and holds both credentials, matching a real
+	// deployment: the uploader's API key and the same user's browser login.
+	aliceCookie := registerAndLogin(t, srv, "alice", "pw-webpass")
+	alice, err := store.FindUserByUsername("alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +108,26 @@ func TestAnnotationsAuthOn(t *testing.T) {
 	rec = doAnnotationJSON(t, handler, http.MethodDelete, base+"/"+created.ID, aliceKey, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("bearer delete: expected 200, got %d", rec.Code)
+	}
+
+	// The cookie path (requireBearerOrCookie) works for the browser UI too:
+	// the session owner, logged in via web, creates via session cookie —
+	// no Bearer involved.
+	rec = doAnnotationJSON(t, handler, http.MethodPost, base, aliceCookie, map[string]string{
+		"kind": "note", "quote": "浏览器端批注", "comment": "cookie 授权链路",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("cookie post: expected 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = doAnnotationJSON(t, handler, http.MethodDelete, base+"/"+func() string {
+		var saved session.Annotation
+		if err := json.NewDecoder(rec.Body).Decode(&saved); err != nil {
+			t.Fatal(err)
+		}
+		return saved.ID
+	}(), aliceCookie, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cookie delete: expected 200, got %d", rec.Code)
 	}
 }
 

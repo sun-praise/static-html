@@ -156,9 +156,9 @@ const annotationJS = `<script>
     return {node: m.node, offset: m.off};
   }
   // Locate the best match for a quote, preferring occurrences whose
-  // surrounding text matches the stored prefix/suffix anchors.
-  function locateQuote(a){
-    var idx = buildIndex();
+  // surrounding text matches the stored prefix/suffix anchors. idx comes from
+  // buildIndex and can be reused across annotations.
+  function locateQuote(a, idx){
     var q = a.quote.replace(/\s+/g,' ').trim();
     var candidates = [], pos = -1;
     while ((pos = idx.norm.indexOf(q, pos + 1)) !== -1) candidates.push(pos);
@@ -526,7 +526,9 @@ const annotationJS = `<script>
       .then(function(data){
         if (data === null) return;
         anns = data.annotations || [];
-        anns.forEach(function(a){ a._range = locateQuote(a); });
+        // One text index serves every annotation's re-anchoring pass.
+        var idx = buildIndex();
+        anns.forEach(function(a){ a._range = locateQuote(a, idx); });
         renderAll();
       })
       .catch(function(){
