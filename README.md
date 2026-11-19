@@ -134,8 +134,9 @@ Performs full-text matching across session metadata (title, tags, category, proj
 sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>] [--allow-admin-tools=true|false]
 ```
 
-- `--db` points at the local SQLite store for the local-only tools (`list`, `search`, `delete`, `user_*`, `audit`).
+- `--db` points at the local SQLite store for the local-only tools (`list`, `search`, `delete`).
 - `--server` / `--api-key` (or `STH_API_KEY`) provide defaults for the dual-mode tools; each tool call may override them per call. Omitting `server` operates on the local DB, exactly like the CLI.
+- Admin-class tools (`user_*`, `audit`) are dual-mode too: with `--server` they call the connected instance's admin HTTP API (see [Managing users and API keys](#managing-users-and-api-keys)) so they act on that instance's database; without `--server` they operate on the local `--db` store, exactly like `sth user` / `sth audit`.
 - The MCP protocol occupies stdout; diagnostics go to stderr. Point your MCP client's command at the `sth` binary with the `mcp` subcommand, e.g. `{"command": "sth", "args": ["mcp", "--server", "https://sth.example.com", "--api-key", "..."]}`.
 
 The exposed tools mirror the CLI (up to 16; 4 are admin-gated, see below): `send`, `tag`, `categorize`, `project`, `title`, `list`, `search`, `delete`, `share`, `unshare`, `shares`, `user_add`, `user_issue_key`, `user_revoke_key`, `user_list`, `audit`. `sth start` and `sth watch` are long-running processes and stay CLI-only. Admin-class tools — `user_add`, `user_issue_key`, `user_revoke_key` (mint credentials) and `audit` (reads every user's security events, and its `prune_days` can erase them) — are only registered, and therefore invisible to the agent, unless the server is started with `--allow-admin-tools` (or `STH_ALLOW_ADMIN_TOOLS=true`); read-only `user_list` is always available.
@@ -147,7 +148,7 @@ Tool arguments and results are JSON (input schemas are generated from the tool d
 - The `send` tool reads files from this machine (the entry file plus sibling assets in its directory or `root`); only point it at content meant to be published.
 - Credentials are host-bound: the server-wide `--api-key` / `STH_API_KEY` is attached only to calls targeting the configured `--server`. A per-call `server` override runs without credentials unless the call passes its own `api_key`, so a prompt-injected call cannot leak the configured key to another host.
 - Run the MCP server with a key scoped to a dedicated low-privilege sth user (`sth user add` + `sth user issue-key`) rather than an admin key.
-- Admin tools (`user_add` / `user_issue_key` / `user_revoke_key` / `audit`) enforce identity per call: give the agent a **member** key and it cannot mint users, issue keys, or read the audit log; without a key they are denied too. Force with `--allow-admin-tools=true|false` if you really mean to.
+- Admin tools (`user_add` / `user_issue_key` / `user_revoke_key` / `audit`) enforce identity per call: give the agent a **member** key and it cannot mint users, issue keys, or read the audit log; without a key they are denied too. Force with `--allow-admin-tools=true|false` if you really mean to. With `--server` they act on the remote instance's database via its admin API; locally they act on the `--db` store.
 
 ## Authentication
 
@@ -227,6 +228,22 @@ sth user revoke-key <id|prefix>    # revoke a key (fails closed on ambiguous pre
 The plaintext key is printed only at issue time. Only a salted SHA-256 hash is
 stored; there is no way to recover a key after it is issued.
 
+The same operations are available over HTTP for remote management, restricted
+to Bearer keys whose user holds the admin role (members get `403 admin role
+required`, missing/invalid keys `401`); every mutation is recorded in the
+audit log. These endpoints back the MCP admin tools when they point at a
+remote instance:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/admin/users` | list users with role and active-key count |
+| `POST` | `/api/admin/users` | create a user (`{"username", "admin"}`) |
+| `PUT` | `/api/admin/users/{name}/role` | grant/withdraw the admin role (`{"role": "admin"}` or `{"role": ""}`) |
+| `POST` | `/api/admin/users/{name}/keys` | issue an API key (plaintext shown once) |
+| `DELETE` | `/api/admin/keys/{idOrPrefix}` | revoke a key (409 on ambiguous prefix) |
+| `GET` | `/api/admin/audit` | query the audit log (`action`/`actor`/`outcome`/`since`/`limit`/`offset`) |
+| `POST` | `/api/admin/audit/prune` | delete audit events older than N days (`{"days"}`) |
+
 ### Sending with a key
 
 `sth send` and `sth watch` accept `--api-key` or the `STH_API_KEY` environment
@@ -256,10 +273,13 @@ revocations, preview allow/deny, and session create/delete. Each row stores a
 UTC timestamp, the actor (username + id snapshot), action, target, outcome,
 client IP, User-Agent and a short detail.
 
-The log is **local-only** and the query never changes business data. There is
-deliberately no HTTP endpoint: the server has no admin role, so exposing the
-log over the API would let any logged-in user read everyone else's activity.
-`sth audit` still opens the SQLite DB read-write (it runs schema init and sets
+The log is local-only at the CLI level: `sth audit` queries the SQLite DB on
+the host and never changes business data (`sth audit --prune-days N` is the
+one erasing operation). Over HTTP, reads and pruning are admin-scoped:
+`GET /api/admin/audit` and `POST /api/admin/audit/prune` answer to admin API
+keys only — an ordinary member key gets `403 admin role required`, so a
+logged-in member can neither read nor erase anyone else's activity. `sth
+audit` still opens the SQLite DB read-write (it runs schema init and sets
 WAL mode), so a read-only mount needs a writable copy. Query on the host:
 
 ```bash

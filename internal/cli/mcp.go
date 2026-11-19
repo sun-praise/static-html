@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -121,58 +122,56 @@ func parseMCPConfig(args []string) (*mcpConfig, error) {
 	return cfg, nil
 }
 
-// requireAdmin enforces the caller identity on every admin-class tool call.
-// An explicit --allow-admin-tools=false denies unconditionally, =true allows
-// unconditionally. Without an override the configured API key must resolve to
-// a user holding the admin role — verified locally against the store, or
-// remotely via GET /api/me when --server is set. No key means no identity,
-// and no identity is not admin: calls fail closed until an admin key is
-// configured.
-func (c *mcpConfig) requireAdmin() error {
+// requireAdminFor enforces the caller identity on every admin-class tool
+// call, against the database the call targets: a remote server is checked
+// via GET /api/me, the local store via VerifyAPIKey + IsAdmin. An explicit
+// --allow-admin-tools=false denies unconditionally, =true allows
+// unconditionally. Without an override the configured API key must resolve
+// to a user holding the admin role — a member or invalid key, or no key at
+// all, fails the call.
+func (c *mcpConfig) requireAdminFor(serverURL, apiKey string, remote bool) error {
 	if c.adminOverrideSet {
 		if !c.adminOverrideValue {
 			return errors.New("admin tools are disabled on this MCP server (--allow-admin-tools=false)")
 		}
 		return nil
 	}
-	if c.apiKey == "" {
-		return errors.New("no API key configured: admin tools need the key of an admin user (--api-key), or force with --allow-admin-tools=true")
-	}
 
-	admin, username, err := c.callerIsAdmin()
+	var admin bool
+	var username string
+	var err error
+	if remote {
+		admin, username, err = c.remoteIsAdmin(serverURL, apiKey)
+	} else {
+		if apiKey == "" {
+			apiKey = c.apiKey
+		}
+		if apiKey == "" {
+			return errors.New("no API key configured: admin tools need the key of an admin user (--api-key), or force with --allow-admin-tools=true")
+		}
+		admin, username, err = c.localIsAdmin(apiKey)
+	}
 	if err != nil {
 		return err
 	}
 	if !admin {
 		if username == "" {
-			return errors.New("admin role required: the configured API key belongs to an ordinary member")
+			return errors.New("admin role required: the API key belongs to an ordinary member")
 		}
 		return fmt.Errorf("admin role required: %q is not an admin", username)
 	}
 	return nil
 }
 
-// callerIsAdmin resolves the configured API key to a user and reports whether
-// that user holds the admin role. An unknown or revoked key is denied with an
-// error rather than silently downgraded.
-func (c *mcpConfig) callerIsAdmin() (admin bool, username string, err error) {
-	if c.serverURL != "" {
-		result, err := doJSONRequest(http.MethodGet, c.serverURL, "/api/me", c.apiKey, nil)
-		if err != nil {
-			return false, "", fmt.Errorf("resolving identity from %s: %w", c.serverURL, err)
-		}
-		admin, _ = result["isAdmin"].(bool)
-		if name, ok := result["username"].(string); ok {
-			username = name
-		}
-		return admin, username, nil
-	}
-
+// localIsAdmin verifies the key against the local store and reports whether
+// its user holds the admin role. An unknown or revoked key is an error
+// rather than a silent downgrade.
+func (c *mcpConfig) localIsAdmin(apiKey string) (admin bool, username string, err error) {
 	store, err := c.openStore()
 	if err != nil {
 		return false, "", err
 	}
-	userID, ok, err := store.VerifyAPIKey(c.apiKey)
+	userID, ok, err := store.VerifyAPIKey(apiKey)
 	if err != nil {
 		return false, "", err
 	}
@@ -185,6 +184,17 @@ func (c *mcpConfig) callerIsAdmin() (admin bool, username string, err error) {
 	if user, err := store.FindUserByID(userID); err == nil {
 		username = user.Username
 	}
+	return admin, username, nil
+}
+
+// remoteIsAdmin resolves the key's identity via GET /api/me on the server.
+func (c *mcpConfig) remoteIsAdmin(serverURL, apiKey string) (admin bool, username string, err error) {
+	result, err := doJSONRequest(http.MethodGet, serverURL, "/api/me", apiKey, nil)
+	if err != nil {
+		return false, "", fmt.Errorf("resolving identity from %s: %w", serverURL, err)
+	}
+	admin, _ = result["isAdmin"].(bool)
+	username, _ = result["username"].(string)
 	return admin, username, nil
 }
 
@@ -768,10 +778,17 @@ func nonNilShares(shares []session.ShareEntry) []session.ShareEntry {
 }
 
 // --- user management ---
+//
+// All five tools operate on the database they are connected to: with
+// --server (or the server default) they drive that server's admin API
+// using the configured key; otherwise they act on the local --db store.
 
 type userAddParams struct {
-	Name  string `json:"name" jsonschema:"username to create"`
-	Admin bool   `json:"admin,omitempty" jsonschema:"grant the admin role to the new user (admins can mint further admins)"`
+	Name   string `json:"name" jsonschema:"username to create"`
+	Admin  bool   `json:"admin,omitempty" jsonschema:"grant the admin role to the new user (admins can mint further admins)"`
+	Server string `json:"server,omitempty" jsonschema:"operate against a remote sth server instead of the local DB"`
+	APIKey string `json:"api_key,omitempty" jsonschema:"API key for the remote server (must belong to an admin)"`
+	Local  bool   `json:"local,omitempty" jsonschema:"force local-DB operation even when a --server default is configured"`
 }
 
 type userCreatedResult struct {
@@ -780,8 +797,18 @@ type userCreatedResult struct {
 }
 
 func (c *mcpConfig) toolUserAdd(ctx context.Context, req *mcp.CallToolRequest, in userAddParams) (*mcp.CallToolResult, userCreatedResult, error) {
-	if err := c.requireAdmin(); err != nil {
+	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey, in.Local)
+	if err := c.requireAdminFor(serverURL, apiKey, remote); err != nil {
 		return nil, userCreatedResult{}, err
+	}
+
+	if remote {
+		result, err := doJSONRequest(http.MethodPost, serverURL, "/api/admin/users", apiKey, map[string]any{"username": in.Name, "admin": in.Admin})
+		if err != nil {
+			return nil, userCreatedResult{}, err
+		}
+		id, _ := result["userId"].(string)
+		return nil, userCreatedResult{Username: in.Name, ID: id}, nil
 	}
 
 	store, err := c.openStore()
@@ -804,7 +831,10 @@ func (c *mcpConfig) toolUserAdd(ctx context.Context, req *mcp.CallToolRequest, i
 }
 
 type userIssueKeyParams struct {
-	Name string `json:"name" jsonschema:"username to issue an API key for"`
+	Name   string `json:"name" jsonschema:"username to issue an API key for"`
+	Server string `json:"server,omitempty" jsonschema:"operate against a remote sth server instead of the local DB"`
+	APIKey string `json:"api_key,omitempty" jsonschema:"API key for the remote server (must belong to an admin)"`
+	Local  bool   `json:"local,omitempty" jsonschema:"force local-DB operation even when a --server default is configured"`
 }
 
 type issuedKeyResult struct {
@@ -814,8 +844,19 @@ type issuedKeyResult struct {
 }
 
 func (c *mcpConfig) toolUserIssueKey(ctx context.Context, req *mcp.CallToolRequest, in userIssueKeyParams) (*mcp.CallToolResult, issuedKeyResult, error) {
-	if err := c.requireAdmin(); err != nil {
+	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey, in.Local)
+	if err := c.requireAdminFor(serverURL, apiKey, remote); err != nil {
 		return nil, issuedKeyResult{}, err
+	}
+
+	if remote {
+		result, err := doJSONRequest(http.MethodPost, serverURL, "/api/admin/users/"+in.Name+"/keys", apiKey, nil)
+		if err != nil {
+			return nil, issuedKeyResult{}, err
+		}
+		keyID, _ := result["keyId"].(string)
+		plaintext, _ := result["apiKey"].(string)
+		return nil, issuedKeyResult{Username: in.Name, KeyID: keyID, APIKey: plaintext}, nil
 	}
 
 	store, err := c.openStore()
@@ -839,11 +880,22 @@ func (c *mcpConfig) toolUserIssueKey(ctx context.Context, req *mcp.CallToolReque
 
 type userRevokeKeyParams struct {
 	IDOrPrefix string `json:"id_or_prefix" jsonschema:"API key id, or a unique prefix of one"`
+	Server     string `json:"server,omitempty" jsonschema:"operate against a remote sth server instead of the local DB"`
+	APIKey     string `json:"api_key,omitempty" jsonschema:"API key for the remote server (must belong to an admin)"`
+	Local      bool   `json:"local,omitempty" jsonschema:"force local-DB operation even when a --server default is configured"`
 }
 
 func (c *mcpConfig) toolUserRevokeKey(ctx context.Context, req *mcp.CallToolRequest, in userRevokeKeyParams) (*mcp.CallToolResult, messageResult, error) {
-	if err := c.requireAdmin(); err != nil {
+	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey, in.Local)
+	if err := c.requireAdminFor(serverURL, apiKey, remote); err != nil {
 		return nil, messageResult{}, err
+	}
+
+	if remote {
+		if _, err := doJSONRequest(http.MethodDelete, serverURL, "/api/admin/keys/"+in.IDOrPrefix, apiKey, nil); err != nil {
+			return nil, messageResult{}, err
+		}
+		return nil, messageResult{Message: fmt.Sprintf("Revoked key matching %q", in.IDOrPrefix)}, nil
 	}
 
 	store, err := c.openStore()
@@ -863,7 +915,11 @@ func (c *mcpConfig) toolUserRevokeKey(ctx context.Context, req *mcp.CallToolRequ
 	return nil, messageResult{Message: fmt.Sprintf("Revoked key matching %q", in.IDOrPrefix)}, nil
 }
 
-type userEmptyParams struct{}
+type userListParams struct {
+	Server string `json:"server,omitempty" jsonschema:"operate against a remote sth server instead of the local DB"`
+	APIKey string `json:"api_key,omitempty" jsonschema:"API key for the remote server (must belong to an admin; the remote user list is admin-only)"`
+	Local  bool   `json:"local,omitempty" jsonschema:"force local-DB operation even when a --server default is configured"`
+}
 
 type mcpUser struct {
 	Username   string `json:"username"`
@@ -877,7 +933,33 @@ type userListResult struct {
 	Users []mcpUser `json:"users"`
 }
 
-func (c *mcpConfig) toolUserList(ctx context.Context, req *mcp.CallToolRequest, in userEmptyParams) (*mcp.CallToolResult, userListResult, error) {
+func (c *mcpConfig) toolUserList(ctx context.Context, req *mcp.CallToolRequest, in userListParams) (*mcp.CallToolResult, userListResult, error) {
+	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey, in.Local)
+
+	if remote {
+		// The remote user list rides the admin API: a member key gets the
+		// server's 403 surfaced as an error.
+		result, err := doJSONRequest(http.MethodGet, serverURL, "/api/admin/users", apiKey, nil)
+		if err != nil {
+			return nil, userListResult{}, err
+		}
+		raw, _ := result["users"].([]any)
+		out := make([]mcpUser, 0, len(raw))
+		for _, item := range raw {
+			m, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			user := mcpUser{Username: stringField(m, "username"), ID: stringField(m, "userId"), Role: stringField(m, "role")}
+			if n, ok := m["activeKeys"].(float64); ok {
+				user.ActiveKeys = int(n)
+			}
+			user.Created = stringField(m, "created")
+			out = append(out, user)
+		}
+		return nil, userListResult{Users: out}, nil
+	}
+
 	store, err := c.openStore()
 	if err != nil {
 		return nil, userListResult{}, err
@@ -914,6 +996,9 @@ type auditParams struct {
 	Limit     int    `json:"limit,omitempty" jsonschema:"max number of events to return"`
 	Offset    int    `json:"offset,omitempty" jsonschema:"number of events to skip"`
 	PruneDays int    `json:"prune_days,omitempty" jsonschema:"instead of listing, delete events older than this many days"`
+	Server    string `json:"server,omitempty" jsonschema:"operate against a remote sth server instead of the local DB"`
+	APIKey    string `json:"api_key,omitempty" jsonschema:"API key for the remote server (must belong to an admin)"`
+	Local     bool   `json:"local,omitempty" jsonschema:"force local-DB operation even when a --server default is configured"`
 }
 
 type mcpAuditEvent struct {
@@ -935,8 +1020,13 @@ type auditResult struct {
 }
 
 func (c *mcpConfig) toolAudit(ctx context.Context, req *mcp.CallToolRequest, in auditParams) (*mcp.CallToolResult, auditResult, error) {
-	if err := c.requireAdmin(); err != nil {
+	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey, in.Local)
+	if err := c.requireAdminFor(serverURL, apiKey, remote); err != nil {
 		return nil, auditResult{}, err
+	}
+
+	if remote {
+		return c.remoteAudit(serverURL, apiKey, in)
 	}
 
 	store, err := c.openStore()
@@ -955,26 +1045,9 @@ func (c *mcpConfig) toolAudit(ctx context.Context, req *mcp.CallToolRequest, in 
 		return nil, auditResult{}, errors.New("prune-days must be a positive integer")
 	}
 
-	filter := session.AuditFilter{
-		Action:  in.Action,
-		Actor:   in.Actor,
-		Outcome: in.Outcome,
-	}
-	if in.Limit > 0 {
-		filter.Limit = in.Limit
-	} else if in.Limit < 0 {
-		return nil, auditResult{}, errors.New("limit must be a positive integer")
-	}
-	if in.Offset < 0 {
-		return nil, auditResult{}, errors.New("offset must be a non-negative integer")
-	}
-	filter.Offset = in.Offset
-	if in.Since != "" {
-		t, err := time.Parse("2006-01-02", in.Since)
-		if err != nil {
-			return nil, auditResult{}, errors.New("since must be YYYY-MM-DD")
-		}
-		filter.Since = t.UTC()
+	filter, err := auditFilterFromParams(in)
+	if err != nil {
+		return nil, auditResult{}, err
 	}
 
 	events, err := store.ListAuditEvents(filter)
@@ -998,4 +1071,102 @@ func (c *mcpConfig) toolAudit(ctx context.Context, req *mcp.CallToolRequest, in 
 		})
 	}
 	return nil, auditResult{Events: out}, nil
+}
+
+// remoteAudit reads (GET /api/admin/audit) or prunes (POST
+// /api/admin/audit/prune) the remote server's audit log.
+func (c *mcpConfig) remoteAudit(serverURL, apiKey string, in auditParams) (*mcp.CallToolResult, auditResult, error) {
+	if in.PruneDays > 0 {
+		result, err := doJSONRequest(http.MethodPost, serverURL, "/api/admin/audit/prune", apiKey, map[string]any{"days": in.PruneDays})
+		if err != nil {
+			return nil, auditResult{}, err
+		}
+		pruned, _ := result["pruned"].(float64)
+		return nil, auditResult{Pruned: int64(pruned)}, nil
+	}
+	if in.PruneDays < 0 {
+		return nil, auditResult{}, errors.New("prune-days must be a positive integer")
+	}
+
+	q := url.Values{}
+	if in.Action != "" {
+		q.Set("action", in.Action)
+	}
+	if in.Actor != "" {
+		q.Set("actor", in.Actor)
+	}
+	if in.Outcome != "" {
+		q.Set("outcome", in.Outcome)
+	}
+	if in.Since != "" {
+		if _, err := time.Parse("2006-01-02", in.Since); err != nil {
+			return nil, auditResult{}, errors.New("since must be YYYY-MM-DD")
+		}
+		q.Set("since", in.Since)
+	}
+	if in.Limit > 0 {
+		q.Set("limit", strconv.Itoa(in.Limit))
+	} else if in.Limit < 0 {
+		return nil, auditResult{}, errors.New("limit must be a positive integer")
+	}
+	if in.Offset != 0 {
+		if in.Offset < 0 {
+			return nil, auditResult{}, errors.New("offset must be a non-negative integer")
+		}
+		q.Set("offset", strconv.Itoa(in.Offset))
+	}
+
+	result, err := doJSONRequest(http.MethodGet, serverURL, "/api/admin/audit?"+q.Encode(), apiKey, nil)
+	if err != nil {
+		return nil, auditResult{}, err
+	}
+
+	raw, _ := result["events"].([]any)
+	out := make([]mcpAuditEvent, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		e := mcpAuditEvent{
+			ID:      int64(m["id"].(float64)),
+			Time:    stringField(m, "time"),
+			Actor:   stringField(m, "actor"),
+			ActorID: stringField(m, "actorId"),
+			Action:  stringField(m, "action"),
+			Target:  stringField(m, "target"),
+			Outcome: stringField(m, "outcome"),
+			IP:      stringField(m, "ip"),
+			Detail:  stringField(m, "detail"),
+		}
+		out = append(out, e)
+	}
+	return nil, auditResult{Events: out}, nil
+}
+
+// auditFilterFromParams validates the local audit filters (same rules the
+// CLI applies).
+func auditFilterFromParams(in auditParams) (session.AuditFilter, error) {
+	filter := session.AuditFilter{
+		Action:  in.Action,
+		Actor:   in.Actor,
+		Outcome: in.Outcome,
+	}
+	if in.Limit > 0 {
+		filter.Limit = in.Limit
+	} else if in.Limit < 0 {
+		return session.AuditFilter{}, errors.New("limit must be a positive integer")
+	}
+	if in.Offset < 0 {
+		return session.AuditFilter{}, errors.New("offset must be a non-negative integer")
+	}
+	filter.Offset = in.Offset
+	if in.Since != "" {
+		ts, err := time.Parse("2006-01-02", in.Since)
+		if err != nil {
+			return session.AuditFilter{}, errors.New("since must be YYYY-MM-DD")
+		}
+		filter.Since = ts.UTC()
+	}
+	return filter, nil
 }

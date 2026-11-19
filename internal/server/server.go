@@ -1295,6 +1295,15 @@ func (s *Server) Start() error {
 	return nil
 }
 
+func (s *Server) ListenAddr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listener == nil {
+		return ""
+	}
+	return s.listener.Addr().String()
+}
+
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	if s.listener == nil {
@@ -1408,6 +1417,20 @@ func (s *Server) routes() http.Handler {
 			s.handleHome(w, r)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/me":
 			s.handleMe(w, r)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/admin/users":
+			s.handleAdminListUsers(w, r)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/admin/users":
+			s.handleAdminCreateUser(w, r)
+		case r.Method == http.MethodPut && hasPrefixSuffix(r.URL.Path, "/api/admin/users/", "/role"):
+			s.handleAdminSetRole(w, r)
+		case r.Method == http.MethodPost && hasPrefixSuffix(r.URL.Path, "/api/admin/users/", "/keys"):
+			s.handleAdminIssueKey(w, r)
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/admin/keys/"):
+			s.handleAdminRevokeKey(w, r)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/admin/audit":
+			s.handleAdminAudit(w, r)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/admin/audit/prune":
+			s.handleAdminPruneAudit(w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/sessions":
 			s.handleCreateSession(w, r)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/s/"):

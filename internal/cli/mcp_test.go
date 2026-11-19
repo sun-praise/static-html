@@ -13,8 +13,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sun-praise/static-html/internal/server"
 	"github.com/sun-praise/static-html/internal/session"
 )
 
@@ -1022,53 +1024,150 @@ func TestMCPAdminToolsCallTimeEnforcement(t *testing.T) {
 	}
 }
 
-// TestMCPAdminGatingRemoteIdentity resolves the identity via GET /api/me on
-// the configured server. A broken /api/me fails only the admin call — the
-// server still starts and non-admin tools keep working.
-func TestMCPAdminGatingRemoteIdentity(t *testing.T) {
+// newRemoteSTHServer spins a real sth server on a random loopback port with
+// auth enabled, an admin user (root) and a member user (member), returning
+// the server URL and both plaintext API keys. MCP admin tools pointed at
+// this server exercise the full remote path: identity via GET /api/me plus
+// the admin API.
+func newRemoteSTHServer(t *testing.T) (string, *session.Store, string, string) {
+	t.Helper()
+	store, err := session.NewInMemoryStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := server.New("127.0.0.1", 0, store, "", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.SetAuthEnabled(true)
+
+	if _, err := store.CreateUser("root"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetUserRole("root", session.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateUser("member"); err != nil {
+		t.Fatal(err)
+	}
+
+	root, err := store.FindUserByUsername("root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member, err := store.FindUserByUsername("member")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminKey, _, err := store.IssueAPIKey(root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberKey, _, err := store.IssueAPIKey(member.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = srv.Stop(ctx)
+		store.Close()
+	})
+	return "http://" + srv.ListenAddr(), store, adminKey, memberKey
+}
+
+// TestMCPAdminToolsRemoteEndToEnd drives the admin tools against a real sth
+// server over HTTP: an admin key creates users, issues and revokes keys, and
+// reads the audit log on the REMOTE store; a member key is denied everywhere.
+func TestMCPAdminToolsRemoteEndToEnd(t *testing.T) {
 	t.Parallel()
 
-	dbPath, adminKey, memberKey, _ := newIdentityTestStore(t)
+	serverURL, remoteStore, adminKey, memberKey := newRemoteSTHServer(t)
 
-	me := func(admin bool) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			role := ""
-			if admin {
-				role = session.RoleAdmin
-			}
-			_, _ = w.Write([]byte(`{"userId":"u1","username":"root","role":"` + role + `","isAdmin":` + map[bool]string{true: "true", false: "false"}[admin] + `}`))
+	// Admin key: user_add lands on the REMOTE store.
+	cs := newMCPClient(t, &mcpConfig{serverURL: serverURL, apiKey: adminKey})
+	created := structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{
+		"name": "bob", "admin": true,
+	}))
+	if created.Username != "bob" || created.ID == "" {
+		t.Fatalf("unexpected creation result: %+v", created)
+	}
+	if _, err := remoteStore.FindUserByUsername("bob"); err != nil {
+		t.Fatalf("bob must exist on the remote store: %v", err)
+	}
+
+	// user_list reflects the remote users (root admin + member + bob).
+	users := structured[userListResult](t, callTool(t, cs, "user_list", nil))
+	if len(users.Users) != 3 {
+		t.Fatalf("expected 3 remote users, got %+v", users.Users)
+	}
+	roles := map[string]string{}
+	for _, u := range users.Users {
+		roles[u.Username] = u.Role
+	}
+	if roles["root"] != session.RoleAdmin || roles["bob"] != session.RoleAdmin || roles["member"] != "" {
+		t.Fatalf("unexpected remote roles: %v", roles)
+	}
+
+	// user_issue_key remote: the plaintext key verifies against the remote
+	// store, and the local store is untouched.
+	key := structured[issuedKeyResult](t, callTool(t, cs, "user_issue_key", map[string]any{"name": "bob"}))
+	if key.APIKey == "" {
+		t.Fatalf("no plaintext key returned: %+v", key)
+	}
+	if _, ok, err := remoteStore.VerifyAPIKey(key.APIKey); err != nil || !ok {
+		t.Fatalf("remote-issued key must verify on the remote store (ok=%v err=%v)", ok, err)
+	}
+	if _, ok, _ := mustLocalStore(t).VerifyAPIKey(key.APIKey); ok {
+		t.Fatal("remote key must not verify against the local store")
+	}
+
+	// audit remote: the admin API mutations are on the remote log.
+	audit := structured[auditResult](t, callTool(t, cs, "audit", map[string]any{"action": "user.add"}))
+	found := false
+	for _, e := range audit.Events {
+		if e.Action == "user.add" && e.Target == "bob" {
+			found = true
 		}
 	}
+	if !found {
+		t.Fatalf("expected a user.add event for bob, got %+v", audit.Events)
+	}
 
-	adminServer := httptest.NewServer(me(true))
-	defer adminServer.Close()
-	memberServer := httptest.NewServer(me(false))
-	defer memberServer.Close()
-	brokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r) // pre-/api/me servers answer 404
-	}))
-	defer brokenServer.Close()
+	// user_revoke_key remote: the remote key stops working.
+	structured[messageResult](t, callTool(t, cs, "user_revoke_key", map[string]any{"id_or_prefix": key.KeyID}))
+	if _, ok, _ := remoteStore.VerifyAPIKey(key.APIKey); ok {
+		t.Fatal("revoked remote key must not verify")
+	}
 
-	cs := newMCPClient(t, &mcpConfig{dbPath: dbPath, serverURL: adminServer.URL, apiKey: adminKey})
-	structured[userCreatedResult](t, callTool(t, cs, "user_add", map[string]any{"name": "remote-admin-made"}))
-
-	cs = newMCPClient(t, &mcpConfig{dbPath: dbPath, serverURL: memberServer.URL, apiKey: memberKey})
-	denied := callTool(t, cs, "user_add", map[string]any{"name": "nope"})
+	// Member key: denied everywhere, remote store untouched.
+	cs = newMCPClient(t, &mcpConfig{serverURL: serverURL, apiKey: memberKey})
+	denied := callTool(t, cs, "user_add", map[string]any{"name": "intruder"})
 	if text := toolErrorText(t, denied); !strings.Contains(text, "admin role required") {
-		t.Fatalf("unexpected remote denial: %q", text)
+		t.Fatalf("unexpected member denial: %q", text)
 	}
+	if _, err := remoteStore.FindUserByUsername("intruder"); err == nil {
+		t.Fatal("intruder must not have been created on the remote store")
+	}
+	auditDenied := callTool(t, cs, "audit", nil)
+	if text := toolErrorText(t, auditDenied); !strings.Contains(text, "admin role required") {
+		t.Fatalf("unexpected audit denial: %q", text)
+	}
+}
 
-	// Broken /api/me: the admin call fails, non-admin tools still work.
-	cs = newMCPClient(t, &mcpConfig{dbPath: dbPath, serverURL: brokenServer.URL, apiKey: adminKey})
-	broken := callTool(t, cs, "user_add", map[string]any{"name": "nope"})
-	if text := toolErrorText(t, broken); !strings.Contains(text, "resolving identity") {
-		t.Fatalf("unexpected broken-identity error: %q", text)
+// mustLocalStore opens the local default store for cross-store assertions.
+func mustLocalStore(t *testing.T) *session.Store {
+	t.Helper()
+	store, err := session.NewStore()
+	if err != nil {
+		t.Fatal(err)
 	}
-	kept := structured[documentListResult](t, callTool(t, cs, "list", nil))
-	if kept.Documents == nil {
-		t.Fatal("non-admin tools should keep working when /api/me is unavailable")
-	}
+	t.Cleanup(func() { store.Close() })
+	return store
 }
 
 // TestMCPAdminCanMintAdmins: user_add with admin=true creates a second admin,

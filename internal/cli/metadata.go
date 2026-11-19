@@ -24,6 +24,11 @@ func doJSONRequest(method, serverURL, path, apiKey string, body any) (map[string
 		return nil, fmt.Errorf("invalid server URL: %w", err)
 	}
 
+	ref, err := url.Parse(path)
+	if err != nil {
+		return nil, fmt.Errorf("invalid request path: %w", err)
+	}
+
 	var reqBody io.Reader
 	if body != nil {
 		jsonData, err := json.Marshal(body)
@@ -33,7 +38,7 @@ func doJSONRequest(method, serverURL, path, apiKey string, body any) (map[string
 		reqBody = bytes.NewReader(jsonData)
 	}
 
-	req, err := http.NewRequest(method, parsedURL.ResolveReference(&url.URL{Path: path}).String(), reqBody)
+	req, err := http.NewRequest(method, parsedURL.ResolveReference(ref).String(), reqBody)
 	if err != nil {
 		return nil, err
 	}

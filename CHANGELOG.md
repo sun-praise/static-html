@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.8.0] - 2026-11-19
+
+### Added
+- Admin HTTP API: `GET/POST /api/admin/users`, `PUT /api/admin/users/{name}/role`, `POST /api/admin/users/{name}/keys`, `DELETE /api/admin/keys/{idOrPrefix}`, `GET /api/admin/audit`, `POST /api/admin/audit/prune` — Bearer key must belong to an admin-role user (member → 403 "admin role required", missing/invalid key → 401); every mutation is recorded in the audit log with the acting admin as actor
+
+### Changed
+- **Behavior change**: MCP admin tools (`user_add` / `user_issue_key` / `user_revoke_key` / `user_list` / `audit`) now operate on the database of the **connected instance** — with `--server` they call that instance's admin HTTP API (mutations land in the remote store and remote audit log); without `--server` they keep operating on the local `--db` store. The 2.7.0 semantics (remote admin identity trusted for the local store) is gone: pointing admin tools at a server can no longer touch the MCP process's local database
+
 ## [2.7.0] - 2026-11-19
 
 ### Added
