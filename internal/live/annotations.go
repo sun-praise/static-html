@@ -268,7 +268,7 @@ const annotationJS = `<script>
   var drawer = document.getElementById('sth-ann-drawer');
   var fab = document.getElementById('sth-ann-fab');
   function openDrawer(){
-    fab.style.display = 'none';
+    fab.style.setProperty('display', 'none', 'important');
     drawer.classList.add('sth-ann-open');
     drawer.setAttribute('aria-hidden', 'false');
     try { document.body.style.paddingRight = '344px'; } catch (e) {}
@@ -276,7 +276,7 @@ const annotationJS = `<script>
   function closeDrawer(){
     drawer.classList.remove('sth-ann-open');
     drawer.setAttribute('aria-hidden', 'true');
-    fab.style.display = 'flex';
+    fab.style.setProperty('display', 'flex', 'important');
     try { document.body.style.paddingRight = ''; } catch (e) {}
   }
   fab.addEventListener('click', openDrawer);

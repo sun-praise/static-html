@@ -84,7 +84,7 @@ const drawerJS = `<script>
   var loaded=false;
 
   function openDrawer(){
-    btn.style.display='none';
+    btn.style.setProperty('display', 'none', 'important');
     panel.classList.add('sth-drawer-open');
     panel.setAttribute('aria-hidden','false');
     if(!loaded){loadPeers();}
@@ -92,7 +92,7 @@ const drawerJS = `<script>
   function closeDrawer(){
     panel.classList.remove('sth-drawer-open');
     panel.setAttribute('aria-hidden','true');
-    btn.style.display='flex';
+    btn.style.setProperty('display', 'flex', 'important');
   }
   function loadPeers(){
     loaded=true;
@@ -185,7 +185,7 @@ const versionDrawerCSS = `<style>
 .sth-version-htmldiff .hunk.skip{color:#bbb!important;font-style:italic!important;background:#f5f5f5!important}
 </style>`
 
-const versionDrawerHTML = `<div id="sth-version-btn" title="Version timeline" style="display:none">v?</div>
+const versionDrawerHTML = `<div id="sth-version-btn" title="Version timeline" style="display:none!important">v?</div>
 <aside id="sth-version-panel" aria-hidden="true">
   <div class="sth-version-header">
     <span class="sth-version-title">Version Timeline</span>
@@ -209,16 +209,19 @@ const versionDrawerJS = `<script>
   fetch('/api/sessions/'+encodeURIComponent(sid)+'/chain',{credentials:'same-origin'})
     .then(function(r){if(!r.ok){throw new Error('HTTP '+r.status);}return r.json();})
     .then(function(data){
-      if(!data.versions||data.versions.length<=1){return;}
+      if(!data.versions||data.versions.length<=1){
+        btn.style.setProperty('display', 'none', 'important');
+        return;
+      }
       btn.textContent='v'+data.current.versionNo;
-      btn.style.display='flex';
+      btn.style.setProperty('display', 'flex', 'important');
       cache=data;
     })
     .catch(function(){/* swallow; badge just stays hidden */});
 
   var cache=null;
   function openPanel(){
-    btn.style.display='none';
+    btn.style.setProperty('display', 'none', 'important');
     panel.classList.add('sth-version-open');
     panel.setAttribute('aria-hidden','false');
     if(!loaded){loaded=true;load();}
@@ -226,7 +229,7 @@ const versionDrawerJS = `<script>
   function closePanel(){
     panel.classList.remove('sth-version-open');
     panel.setAttribute('aria-hidden','true');
-    if(cache){btn.style.display='flex';}
+    if(cache){btn.style.setProperty('display', 'flex', 'important');}
   }
   function load(){
     if(cache){render(cache);return;}
