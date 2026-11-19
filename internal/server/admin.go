@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -129,19 +130,14 @@ func (s *Server) handleAdminCreateUser(w http.ResponseWriter, r *http.Request) {
 	role := ""
 	if body.Admin {
 		if err := s.store.SetUserRole(user.Username, session.RoleAdmin); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("user %q was created but assigning the admin role failed: %v", user.Username, err))
 			return
 		}
 		role = session.RoleAdmin
 	}
 
 	actor := s.adminActor(actorUID)
-	_ = s.store.RecordAudit(session.AuditEvent{
-		Actor:  actor,
-		Action: session.AuditUserAdd,
-		Target: user.Username,
-		Detail: "role=" + role,
-	})
+	s.recordAuditAs(r, session.AuditUserAdd, user.Username, session.AuditOutcomeOK, "role="+role, actor, actorUID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"userId":   user.ID,
@@ -180,12 +176,7 @@ func (s *Server) handleAdminSetRole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actor := s.adminActor(actorUID)
-	_ = s.store.RecordAudit(session.AuditEvent{
-		Actor:  actor,
-		Action: session.AuditUserRole,
-		Target: username,
-		Detail: "role=" + body.Role,
-	})
+	s.recordAuditAs(r, session.AuditUserRole, username, session.AuditOutcomeOK, "role="+body.Role, actor, actorUID)
 
 	writeJSON(w, http.StatusOK, map[string]any{"username": username, "role": body.Role})
 }
@@ -214,12 +205,7 @@ func (s *Server) handleAdminIssueKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actor := s.adminActor(actorUID)
-	_ = s.store.RecordAudit(session.AuditEvent{
-		Actor:  actor,
-		Action: session.AuditKeyIssue,
-		Target: record.ID,
-		Detail: "user=" + user.Username,
-	})
+	s.recordAuditAs(r, session.AuditKeyIssue, record.ID, session.AuditOutcomeOK, "user="+user.Username, actor, actorUID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"keyId":  record.ID,
@@ -247,11 +233,7 @@ func (s *Server) handleAdminRevokeKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actor := s.adminActor(actorUID)
-	_ = s.store.RecordAudit(session.AuditEvent{
-		Actor:  actor,
-		Action: session.AuditKeyRevoke,
-		Target: idOrPrefix,
-	})
+	s.recordAuditAs(r, session.AuditKeyRevoke, idOrPrefix, session.AuditOutcomeOK, "", actor, actorUID)
 
 	writeJSON(w, http.StatusOK, map[string]any{"revoked": idOrPrefix})
 }
@@ -354,11 +336,7 @@ func (s *Server) handleAdminPruneAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actor := s.adminActor(actorUID)
-	_ = s.store.RecordAudit(session.AuditEvent{
-		Actor:  actor,
-		Action: session.AuditAuditPrune,
-		Detail: "days=" + strconv.Itoa(body.Days),
-	})
+	s.recordAuditAs(r, session.AuditAuditPrune, "", session.AuditOutcomeOK, "days="+strconv.Itoa(body.Days), actor, actorUID)
 
 	writeJSON(w, http.StatusOK, map[string]any{"pruned": removed})
 }

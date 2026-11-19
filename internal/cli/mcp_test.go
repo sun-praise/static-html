@@ -1077,7 +1077,7 @@ func newRemoteSTHServer(t *testing.T) (string, *session.Store, string, string) {
 		_ = srv.Stop(ctx)
 		store.Close()
 	})
-	return "http://" + srv.ListenAddr(), store, adminKey, memberKey
+	return srv.Origin(), store, adminKey, memberKey
 }
 
 // TestMCPAdminToolsRemoteEndToEnd drives the admin tools against a real sth
@@ -1168,6 +1168,32 @@ func mustLocalStore(t *testing.T) *session.Store {
 	}
 	t.Cleanup(func() { store.Close() })
 	return store
+}
+
+// TestMCPAdminToolsRemoteIdentityDown: a dead remote makes admin-class calls
+// fail loudly (identity cannot be resolved) while local-only tools keep
+// working — a broken remote must not take the whole MCP server down.
+func TestMCPAdminToolsRemoteIdentityDown(t *testing.T) {
+	t.Parallel()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	deadURL := ts.URL
+	ts.Close()
+
+	dbPath, _ := newMCPTestDB(t)
+	cs := newMCPClient(t, &mcpConfig{serverURL: deadURL, apiKey: "sth_anykey", dbPath: dbPath})
+
+	denied := callTool(t, cs, "user_add", map[string]any{"name": "nope"})
+	if text := toolErrorText(t, denied); !strings.Contains(text, "resolving identity") {
+		t.Fatalf("expected identity resolution failure, got %q", text)
+	}
+
+	listed := structured[documentListResult](t, callTool(t, cs, "list", nil))
+	if len(listed.Documents) != 0 {
+		t.Fatalf("local list must keep working on an empty store, got %+v", listed.Documents)
+	}
 }
 
 // TestMCPAdminCanMintAdmins: user_add with admin=true creates a second admin,

@@ -1295,15 +1295,6 @@ func (s *Server) Start() error {
 	return nil
 }
 
-func (s *Server) ListenAddr() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.listener == nil {
-		return ""
-	}
-	return s.listener.Addr().String()
-}
-
 func (s *Server) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	if s.listener == nil {

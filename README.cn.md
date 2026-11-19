@@ -164,7 +164,7 @@ sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>] [--a
 - 该 flag 无视身份强制放行/拒绝。`STH_ALLOW_ADMIN_TOOLS` 只接受 `true|1|false|0`；无法解析的值会让 `sth mcp` 拒绝启动。
 - 操作目标跟随连接：配置 `--server` 时走该实例的 admin HTTP API，改动落在**远端数据库**；不配置时操作本地 `--db` store。
 
-`user_list` 对所有人开放。用 `sth user add <name> --admin` 引导首个管理员；之后用 `sth user promote <name>` / `sth user demote <name>` 调整角色。
+`user_list` 本地始终可用；远端走 admin API（`GET /api/admin/users`），同样需要 admin key。用 `sth user add <name> --admin` 引导首个管理员；之后用 `sth user promote <name>` / `sth user demote <name>` 调整角色。
 
 同样的用户/key/审计管理也提供 HTTP 接口，仅供 Bearer key 属主为 admin 角色的调用使用（member key 得 `403 admin role required`，缺 key/无效 key 得 `401`），每次变更写入审计日志。这组端点是 MCP 管理员工具的远端通道：
 

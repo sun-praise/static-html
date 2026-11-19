@@ -137,18 +137,19 @@ func (c *mcpConfig) requireAdminFor(serverURL, apiKey string, remote bool) error
 		return nil
 	}
 
+	if apiKey == "" {
+		apiKey = c.apiKey
+	}
+	if apiKey == "" {
+		return errors.New("no API key configured: admin tools need the key of an admin user (--api-key), or force with --allow-admin-tools=true")
+	}
+
 	var admin bool
 	var username string
 	var err error
 	if remote {
 		admin, username, err = c.remoteIsAdmin(serverURL, apiKey)
 	} else {
-		if apiKey == "" {
-			apiKey = c.apiKey
-		}
-		if apiKey == "" {
-			return errors.New("no API key configured: admin tools need the key of an admin user (--api-key), or force with --allow-admin-tools=true")
-		}
 		admin, username, err = c.localIsAdmin(apiKey)
 	}
 	if err != nil {
@@ -298,23 +299,23 @@ func registerMCPTools(s *mcp.Server, cfg *mcpConfig) {
 	}, cfg.toolShares)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "user_list",
-		Description: "List users in the local DB with their active key counts. Mirrors `sth user list`.",
+		Description: "List users with their active key counts. Mirrors `sth user list`. Operates on the local DB, or on the connected server when server is set — the remote admin API requires an admin key.",
 	}, cfg.toolUserList)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "user_add",
-		Description: "Create a user in the local DB; pass admin=true to create another admin. Mirrors `sth user add`. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
+		Description: "Create a user; pass admin=true to create another admin. Mirrors `sth user add`. Operates on the connected database: the local DB by default, the remote instance's database when server is set. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
 	}, cfg.toolUserAdd)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "user_issue_key",
-		Description: "Issue a new API key for a user in the local DB. The plaintext key is shown only once. Mirrors `sth user issue-key`. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
+		Description: "Issue a new API key for a user. The plaintext key is shown only once. Mirrors `sth user issue-key`. Operates on the connected database: the local DB by default, the remote instance's database when server is set. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
 	}, cfg.toolUserIssueKey)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "user_revoke_key",
-		Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
+		Description: "Revoke an active API key by id or unique id prefix. Mirrors `sth user revoke-key`. Operates on the connected database: the local DB by default, the remote instance's database when server is set. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
 	}, cfg.toolUserRevokeKey)
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "audit",
-		Description: "Query the local audit log (logins, auth denials, share changes, uploads/deletes — covers every user), or prune old events with prune_days. Mirrors `sth audit`. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
+		Description: "Query the audit log (logins, auth denials, share changes, uploads/deletes — covers every user), or prune old events with prune_days. Mirrors `sth audit`. Operates on the connected database: the local DB by default, the remote instance's database when server is set. Admin capability: calls are denied without an API key; pass an admin user's key or force with --allow-admin-tools=true.",
 	}, cfg.toolAudit)
 }
 
@@ -435,7 +436,11 @@ func (c *mcpConfig) toolTag(ctx context.Context, req *mcp.CallToolRequest, in ta
 		if in.Remove {
 			method = http.MethodDelete
 		}
-		if _, err := doJSONRequest(method, serverURL, "/api/sessions/"+in.SessionID+"/tags", apiKey, map[string]any{"tags": in.Tags}); err != nil {
+		sid, err := pathSeg(in.SessionID)
+		if err != nil {
+			return nil, messageResult{}, err
+		}
+		if _, err := doJSONRequest(method, serverURL, "/api/sessions/"+sid+"/tags", apiKey, map[string]any{"tags": in.Tags}); err != nil {
 			return nil, messageResult{}, err
 		}
 	} else {
@@ -502,7 +507,11 @@ func (c *mcpConfig) toolTitle(ctx context.Context, req *mcp.CallToolRequest, in 
 func (c *mcpConfig) setSessionField(sessionID, field, value, serverParam, apiKeyParam string, local bool) (*mcp.CallToolResult, messageResult, error) {
 	serverURL, apiKey, remote := c.resolveRemote(serverParam, apiKeyParam, local)
 	if remote {
-		if _, err := doJSONRequest(http.MethodPut, serverURL, "/api/sessions/"+sessionID+"/"+field, apiKey, map[string]any{field: value}); err != nil {
+		sid, err := pathSeg(sessionID)
+		if err != nil {
+			return nil, messageResult{}, err
+		}
+		if _, err := doJSONRequest(http.MethodPut, serverURL, "/api/sessions/"+sid+"/"+field, apiKey, map[string]any{field: value}); err != nil {
 			return nil, messageResult{}, err
 		}
 		return nil, messageResult{Message: fmt.Sprintf("Set %s of %s to %s", field, sessionID, value)}, nil
@@ -648,7 +657,11 @@ type shareParams struct {
 func (c *mcpConfig) toolShare(ctx context.Context, req *mcp.CallToolRequest, in shareParams) (*mcp.CallToolResult, messageResult, error) {
 	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey, in.Local)
 	if remote {
-		result, err := doJSONRequest(http.MethodPut, serverURL, "/api/sessions/"+in.SessionID+"/shares", apiKey, map[string]any{"user": in.Username, "path": in.Page})
+		sid, err := pathSeg(in.SessionID)
+		if err != nil {
+			return nil, messageResult{}, err
+		}
+		result, err := doJSONRequest(http.MethodPut, serverURL, "/api/sessions/"+sid+"/shares", apiKey, map[string]any{"user": in.Username, "path": in.Page})
 		if err != nil {
 			return nil, messageResult{}, err
 		}
@@ -685,11 +698,19 @@ func (c *mcpConfig) toolShare(ctx context.Context, req *mcp.CallToolRequest, in 
 func (c *mcpConfig) toolUnshare(ctx context.Context, req *mcp.CallToolRequest, in shareParams) (*mcp.CallToolResult, messageResult, error) {
 	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey, in.Local)
 	if remote {
-		target := "/api/sessions/" + in.SessionID + "/shares/" + in.Username
-		if in.Page != "" {
-			target += "?path=" + url.QueryEscape(in.Page)
+		sid, err := pathSeg(in.SessionID)
+		if err != nil {
+			return nil, messageResult{}, err
 		}
-		result, err := doJSONRequest(http.MethodDelete, serverURL, target, apiKey, nil)
+		user, err := pathSeg(in.Username)
+		if err != nil {
+			return nil, messageResult{}, err
+		}
+		q := url.Values{}
+		if in.Page != "" {
+			q.Set("path", in.Page)
+		}
+		result, err := doJSONRequestQuery(http.MethodDelete, serverURL, "/api/sessions/"+sid+"/shares/"+user, q, apiKey, nil)
 		if err != nil {
 			return nil, messageResult{}, err
 		}
@@ -752,7 +773,11 @@ type shareListResult struct {
 func (c *mcpConfig) toolShares(ctx context.Context, req *mcp.CallToolRequest, in sharesParams) (*mcp.CallToolResult, shareListResult, error) {
 	serverURL, apiKey, remote := c.resolveRemote(in.Server, in.APIKey, in.Local)
 	if remote {
-		result, err := doJSONRequest(http.MethodGet, serverURL, "/api/sessions/"+in.SessionID+"/shares", apiKey, nil)
+		sid, err := pathSeg(in.SessionID)
+		if err != nil {
+			return nil, shareListResult{}, err
+		}
+		result, err := doJSONRequest(http.MethodGet, serverURL, "/api/sessions/"+sid+"/shares", apiKey, nil)
 		if err != nil {
 			return nil, shareListResult{}, err
 		}
@@ -850,7 +875,11 @@ func (c *mcpConfig) toolUserIssueKey(ctx context.Context, req *mcp.CallToolReque
 	}
 
 	if remote {
-		result, err := doJSONRequest(http.MethodPost, serverURL, "/api/admin/users/"+in.Name+"/keys", apiKey, nil)
+		name, err := pathSeg(in.Name)
+		if err != nil {
+			return nil, issuedKeyResult{}, err
+		}
+		result, err := doJSONRequest(http.MethodPost, serverURL, "/api/admin/users/"+name+"/keys", apiKey, nil)
 		if err != nil {
 			return nil, issuedKeyResult{}, err
 		}
@@ -892,7 +921,11 @@ func (c *mcpConfig) toolUserRevokeKey(ctx context.Context, req *mcp.CallToolRequ
 	}
 
 	if remote {
-		if _, err := doJSONRequest(http.MethodDelete, serverURL, "/api/admin/keys/"+in.IDOrPrefix, apiKey, nil); err != nil {
+		keyRef, err := pathSeg(in.IDOrPrefix)
+		if err != nil {
+			return nil, messageResult{}, err
+		}
+		if _, err := doJSONRequest(http.MethodDelete, serverURL, "/api/admin/keys/"+keyRef, apiKey, nil); err != nil {
 			return nil, messageResult{}, err
 		}
 		return nil, messageResult{Message: fmt.Sprintf("Revoked key matching %q", in.IDOrPrefix)}, nil
@@ -1116,7 +1149,7 @@ func (c *mcpConfig) remoteAudit(serverURL, apiKey string, in auditParams) (*mcp.
 		q.Set("offset", strconv.Itoa(in.Offset))
 	}
 
-	result, err := doJSONRequest(http.MethodGet, serverURL, "/api/admin/audit?"+q.Encode(), apiKey, nil)
+	result, err := doJSONRequestQuery(http.MethodGet, serverURL, "/api/admin/audit", q, apiKey, nil)
 	if err != nil {
 		return nil, auditResult{}, err
 	}
@@ -1128,8 +1161,12 @@ func (c *mcpConfig) remoteAudit(serverURL, apiKey string, in auditParams) (*mcp.
 		if !ok {
 			continue
 		}
+		var id float64
+		if v, ok := m["id"].(float64); ok {
+			id = v
+		}
 		e := mcpAuditEvent{
-			ID:      int64(m["id"].(float64)),
+			ID: int64(id),
 			Time:    stringField(m, "time"),
 			Actor:   stringField(m, "actor"),
 			ActorID: stringField(m, "actorId"),
