@@ -150,8 +150,9 @@ sth search <query> [--tag <tag>] [--category <cat>] [--project <proj>]
 sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>] [--allow-admin-tools=true|false]
 ```
 
-- `--db` 指定本地 SQLite 数据库，供本地工具（`list`、`search`、`delete`、`user_*`、`audit`）使用。
+- `--db` 指定本地 SQLite 数据库，供本地工具（`list`、`search`、`delete`）使用。
 - `--server` / `--api-key`（或 `STH_API_KEY`）为双模式工具提供默认远端连接；每次工具调用也可以单独覆盖。不传 `server` 即操作本地数据库，与 CLI 语义一致。
+- 管理员类工具（`user_*`、`audit`）同样是双模式：配置 `--server` 时通过所连实例的 admin HTTP API 操作**该实例的数据库**（见下文 admin API 表格）；不配置 `--server` 时操作本地 `--db`，与 `sth user` / `sth audit` 语义一致。
 - MCP 协议占用 stdout，诊断信息走 stderr。在 MCP 客户端配置里把命令指向 `sth` 二进制并带上 `mcp` 子命令，例如 `{"command": "sth", "args": ["mcp", "--server", "https://sth.example.com", "--api-key", "..."]}`。
 
 暴露的 tools 与 CLI 对应（最多 16 个，管理员门控的四个见下）：`send`、`tag`、`categorize`、`project`、`title`、`list`、`search`、`delete`、`share`、`unshare`、`shares`、`user_add`、`user_issue_key`、`user_revoke_key`、`user_list`、`audit`。`sth start` 与 `sth watch` 是长驻进程，仍为 CLI 专属。
@@ -161,9 +162,21 @@ sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>] [--a
 - 配置了 API key 时，每次调用都校验身份（本地校验 store，或经 `--server` 的 `GET /api/me`）：**admin** 用户的 key 通过；member 或无效 key 会得到 "admin role required" 错误。
 - 未配置 API key：没有身份，调用**拒绝**——传入 admin 用户的 key，或用 `--allow-admin-tools=true` 强制。
 - 该 flag 无视身份强制放行/拒绝。`STH_ALLOW_ADMIN_TOOLS` 只接受 `true|1|false|0`；无法解析的值会让 `sth mcp` 拒绝启动。
-- 管理员工具始终操作本地 `--db`；配置了 `--server` 时管理员判定使用该服务端的身份，即远端 admin 被信任可管理本地 store。
+- 操作目标跟随连接：配置 `--server` 时走该实例的 admin HTTP API，改动落在**远端数据库**；不配置时操作本地 `--db` store。
 
-`user_list` 对所有人开放。用 `sth user add <name> --admin` 引导首个管理员；之后用 `sth user promote <name>` / `sth user demote <name>` 调整角色。
+`user_list` 本地始终可用；远端走 admin API（`GET /api/admin/users`），同样需要 admin key。用 `sth user add <name> --admin` 引导首个管理员；之后用 `sth user promote <name>` / `sth user demote <name>` 调整角色。
+
+同样的用户/key/审计管理也提供 HTTP 接口，仅供 Bearer key 属主为 admin 角色的调用使用（member key 得 `403 admin role required`，缺 key/无效 key 得 `401`），每次变更写入审计日志。这组端点是 MCP 管理员工具的远端通道：
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/api/admin/users` | 列出用户（含角色与活跃 key 数） |
+| `POST` | `/api/admin/users` | 创建用户（`{"username", "admin"}`） |
+| `PUT` | `/api/admin/users/{name}/role` | 授予/撤销 admin 角色（`{"role": "admin"}` 或 `{"role": ""}`） |
+| `POST` | `/api/admin/users/{name}/keys` | 签发 API key（明文仅显示一次） |
+| `DELETE` | `/api/admin/keys/{idOrPrefix}` | 撤销 key（前缀歧义返回 409） |
+| `GET` | `/api/admin/audit` | 查询审计日志（`action`/`actor`/`outcome`/`since`/`limit`/`offset`） |
+| `POST` | `/api/admin/audit/prune` | 删除 N 天前的审计事件（`{"days"}`） |
 
 工具参数与返回值均为 JSON（input schema 由工具定义自动生成）；预期内的失败（会话不存在、服务端 401 等）按 MCP 规范以 tool error 返回，agent 可据此自行纠正。
 
@@ -172,7 +185,7 @@ sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>] [--a
 - `send` 工具会读取本机文件（入口文件及其目录或 `root` 下的同级资源）；只把它指向打算发布的内容。
 - 凭据与主机绑定：server 级 `--api-key` / `STH_API_KEY` 只会附加到指向配置的 `--server` 的调用上。per-call 的 `server` 覆盖默认不带凭据，除非该调用显式传入自己的 `api_key`，因此被 prompt 注入的调用无法把已配置的 key 泄露到其他主机。
 - 启动 MCP server 时建议使用权限受限的专用 sth 用户签发的 key（`sth user add` + `sth user issue-key`），不要用管理员 key。
-- 管理员工具（`user_add` / `user_issue_key` / `user_revoke_key` / `audit`）按次调用校验身份：给 agent 配 **member** key，它就无法铸造用户、签发 key 或读取审计日志；不配 key 时同样拒绝。确有需要时用 `--allow-admin-tools=true|false` 强制。
+- 管理员工具（`user_add` / `user_issue_key` / `user_revoke_key` / `audit`）按次调用校验身份：给 agent 配 **member** key，它就无法铸造用户、签发 key 或读取审计日志；不配 key 时同样拒绝。确有需要时用 `--allow-admin-tools=true|false` 强制。配置 `--server` 时操作远端实例的数据库（经其 admin API），不配置时操作本地 `--db`。
 
 ## 审计日志
 
@@ -180,8 +193,11 @@ sth mcp [--db /path/to/sessions.db] [--server http://...] [--api-key <key>] [--a
 凭据被拒、分享授权/撤销、预览放行/拒绝、会话创建/删除。每行记录 UTC 时间、
 操作者（用户名 + ID 快照）、事件、目标、结果、客户端 IP、UA 与简短详情。
 
-日志**只在本地查询、不改动业务数据**，刻意不提供 HTTP 接口：系统没有管理员角色，
-开放 API 会让任意登录用户读到所有人的活动记录。`sth audit` 仍以读写方式打开
+CLI 侧日志**只在本地查询、不改动业务数据**（`sth audit --prune-days N` 是唯一的
+清除操作）。HTTP 侧读写均按 admin 门控：`GET /api/admin/audit` 与
+`POST /api/admin/audit/prune` 只响应 admin 角色的 API key——普通 member key 得
+`403 admin role required`，登录的普通用户既读不到也删不掉他人的活动记录。
+`sth audit` 仍以读写方式打开
 SQLite（会执行建表与 WAL 设置），只读挂载需指向可写副本。在宿主机上查：
 
 ```bash

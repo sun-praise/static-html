@@ -15,10 +15,33 @@ import (
 	"github.com/sun-praise/static-html/internal/session"
 )
 
-// doJSONRequest performs a JSON API call. apiKey is attached as a Bearer
-// header when non-empty, so the same helper serves open and authenticated
-// servers.
+// pathSeg validates that s is safe to interpolate as a single URL path
+// segment. "/" would change routing, a bare dot-segment (".", "..", "...") is
+// resolved away by some proxies and could escape the endpoint namespace, and
+// "?" or "#" would introduce URL syntax into the opaque path. Everything else
+// is used as-is (URL.String escapes the reserved characters).
+func pathSeg(s string) (string, error) {
+	if s == "" || strings.ContainsAny(s, "/?#") || strings.Trim(s, ".") == "" {
+		return "", fmt.Errorf("invalid path segment %q: may not contain '/', '?' or '#' and must not be a bare dot segment (use a name without these characters, or operate locally)", s)
+	}
+	return s, nil
+}
+
+// doJSONRequest performs an authenticated JSON request against serverURL with
+// the given plain request path. The path is treated as an opaque escaped path
+// (no query string, no URL syntax) — dynamic segments must be validated with
+// pathSeg; queries go through doJSONRequestQuery.
 func doJSONRequest(method, serverURL, path, apiKey string, body any) (map[string]any, error) {
+	return doJSONAt(method, serverURL, &url.URL{Path: path}, apiKey, body)
+}
+
+// doJSONRequestQuery is doJSONRequest with an explicit query string, keeping
+// the path free of URL syntax.
+func doJSONRequestQuery(method, serverURL, path string, query url.Values, apiKey string, body any) (map[string]any, error) {
+	return doJSONAt(method, serverURL, &url.URL{Path: path, RawQuery: query.Encode()}, apiKey, body)
+}
+
+func doJSONAt(method, serverURL string, ref *url.URL, apiKey string, body any) (map[string]any, error) {
 	parsedURL, err := url.Parse(serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid server URL: %w", err)
@@ -33,7 +56,7 @@ func doJSONRequest(method, serverURL, path, apiKey string, body any) (map[string
 		reqBody = bytes.NewReader(jsonData)
 	}
 
-	req, err := http.NewRequest(method, parsedURL.ResolveReference(&url.URL{Path: path}).String(), reqBody)
+	req, err := http.NewRequest(method, parsedURL.ResolveReference(ref).String(), reqBody)
 	if err != nil {
 		return nil, err
 	}
@@ -102,8 +125,12 @@ func runTag(args []string, stdout io.Writer) error {
 		if remove {
 			method = http.MethodDelete
 		}
+		sid, err := pathSeg(sessionID)
+		if err != nil {
+			return err
+		}
 		if _, err := doJSONRequest(method, serverURL,
-			"/api/sessions/"+sessionID+"/tags",
+			"/api/sessions/"+sid+"/tags",
 			resolveAPIKey(flags),
 			map[string]any{"tags": tags}); err != nil {
 			return err
@@ -151,8 +178,12 @@ func runCategorize(args []string, stdout io.Writer) error {
 	category := positionals[1]
 
 	if serverURL, ok := flags["server"]; ok {
-		_, err := doJSONRequest(http.MethodPut, serverURL,
-			"/api/sessions/"+sessionID+"/category",
+		sid, err := pathSeg(sessionID)
+		if err != nil {
+			return err
+		}
+		_, err = doJSONRequest(http.MethodPut, serverURL,
+			"/api/sessions/"+sid+"/category",
 			resolveAPIKey(flags),
 			map[string]any{"category": category})
 		if err != nil {
@@ -190,8 +221,12 @@ func runProject(args []string, stdout io.Writer) error {
 	project := positionals[1]
 
 	if serverURL, ok := flags["server"]; ok {
-		_, err := doJSONRequest(http.MethodPut, serverURL,
-			"/api/sessions/"+sessionID+"/project",
+		sid, err := pathSeg(sessionID)
+		if err != nil {
+			return err
+		}
+		_, err = doJSONRequest(http.MethodPut, serverURL,
+			"/api/sessions/"+sid+"/project",
 			resolveAPIKey(flags),
 			map[string]any{"project": project})
 		if err != nil {
@@ -229,8 +264,12 @@ func runTitle(args []string, stdout io.Writer) error {
 	title := positionals[1]
 
 	if serverURL, ok := flags["server"]; ok {
-		_, err := doJSONRequest(http.MethodPut, serverURL,
-			"/api/sessions/"+sessionID+"/title",
+		sid, err := pathSeg(sessionID)
+		if err != nil {
+			return err
+		}
+		_, err = doJSONRequest(http.MethodPut, serverURL,
+			"/api/sessions/"+sid+"/title",
 			resolveAPIKey(flags),
 			map[string]any{"title": title})
 		if err != nil {

@@ -22,6 +22,13 @@ const (
 	AuditPreviewDeny   = "preview.deny"
 	AuditSessionCreate = "session.create"
 	AuditSessionDelete = "session.delete"
+
+	// Admin-API mutations (admin role required; see server/admin.go).
+	AuditUserAdd    = "user.add"
+	AuditUserRole   = "user.role"
+	AuditKeyIssue   = "key.issue"
+	AuditKeyRevoke  = "key.revoke"
+	AuditAuditPrune = "audit.prune"
 )
 
 // Audit outcomes.

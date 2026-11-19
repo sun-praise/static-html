@@ -27,8 +27,12 @@ func runShare(args []string, stdout io.Writer) error {
 	page := flags["page"]
 
 	if serverURL, ok := flags["server"]; ok {
+		sid, err := pathSeg(sessionID)
+		if err != nil {
+			return err
+		}
 		result, err := doJSONRequest(http.MethodPut, serverURL,
-			"/api/sessions/"+sessionID+"/shares",
+			"/api/sessions/"+sid+"/shares",
 			resolveAPIKey(flags),
 			map[string]any{"user": username, "path": page})
 		if err != nil {
@@ -82,11 +86,19 @@ func runUnshare(args []string, stdout io.Writer) error {
 	page := flags["page"]
 
 	if serverURL, ok := flags["server"]; ok {
-		target := "/api/sessions/" + sessionID + "/shares/" + username
-		if page != "" {
-			target += "?path=" + url.QueryEscape(page)
+		sid, err := pathSeg(sessionID)
+		if err != nil {
+			return err
 		}
-		result, err := doJSONRequest(http.MethodDelete, serverURL, target, resolveAPIKey(flags), nil)
+		user, err := pathSeg(username)
+		if err != nil {
+			return err
+		}
+		q := url.Values{}
+		if page != "" {
+			q.Set("path", page)
+		}
+		result, err := doJSONRequestQuery(http.MethodDelete, serverURL, "/api/sessions/"+sid+"/shares/"+user, q, resolveAPIKey(flags), nil)
 		if err != nil {
 			return err
 		}
@@ -151,8 +163,12 @@ func runShares(args []string, stdout io.Writer) error {
 	sessionID := positionals[0]
 
 	if serverURL, ok := flags["server"]; ok {
+		sid, err := pathSeg(sessionID)
+		if err != nil {
+			return err
+		}
 		result, err := doJSONRequest(http.MethodGet, serverURL,
-			"/api/sessions/"+sessionID+"/shares",
+			"/api/sessions/"+sid+"/shares",
 			resolveAPIKey(flags), nil)
 		if err != nil {
 			return err
