@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.8.0] - 2026-11-19
+
+### Added
+- Per-reader HTML annotations on preview pages (Closes #106): select text on any preview → bubble offers 「划线」(underline) or 「批注」(note); underlines take an optional tag, notes a comment — both stored server-side per session chain, so every version of a document shows the same annotation set and quotes re-anchor against the rendered version (quotes that no longer exist are flagged 「未在当前页面找到原文」 instead of breaking)
+- Annotation storage: `session_annotations` SQLite table (FK → sessions with CASCADE; soft-deleted sessions keep their data), scoped to the session **chain** with per-reader `owner_id` isolation — every viewer sees and manages only their own annotations; auth-disabled deployments share one pool. Chain-scoped inserts/lists/deletes, nanosecond timestamps keep insertion order = reading order
+- Annotation API: `GET/POST /api/sessions/{id}/annotations`, `DELETE /api/sessions/{id}/annotations/{aid}` — reads via `requireViewer`, deletes owner-only; with `--auth`, mutations authenticate with a Bearer key **or** the same-origin login cookie (CSRF-safe, same path as the share panel), so the browser UI works without exposing keys; request bodies capped at 64 KiB
+- Preview-page annotation UI: amber ✎ round button (with count badge) joins the existing bottom-right button stack; margin cards numbered by document order (hidden ≤1180px); drawer listing all annotations with locate / delete / Markdown export (title / source / quote / comment / tag / time — clipboard copy with `execCommand` fallback, `.md` download). Highlights render via the CSS Custom Highlight API — zero DOM changes; re-anchoring prefers occurrences whose surrounding text matches the stored prefix/suffix anchors
+- `endPointAt` extends a highlight one character past the last mapped position, so quotes ending at the very end of the document highlight fully
+
+### Fixed
+- Round-button residue on single-version sessions: the drawer stylesheet's `display:flex !important` overrode the script's plain inline `display` toggles — all script-side display switching now uses `setProperty(..., 'important')` (also fixes buttons not hiding while the drawer is open)
+
 ## [2.7.0] - 2026-11-19
 
 ### Added
