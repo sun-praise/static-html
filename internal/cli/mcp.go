@@ -137,7 +137,11 @@ func (c *mcpConfig) requireAdminFor(serverURL, apiKey string, remote bool) error
 		return nil
 	}
 
-	if apiKey == "" {
+	// Credentials are host-bound: the configured key is filled in only for
+	// LOCAL calls. A per-call server override intentionally arrives with
+	// apiKey == "" (resolveRemote), and re-attaching c.apiKey here would send
+	// the configured key to that other host.
+	if apiKey == "" && !remote {
 		apiKey = c.apiKey
 	}
 	if apiKey == "" {

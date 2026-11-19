@@ -22,7 +22,7 @@ import (
 // is used as-is (URL.String escapes the reserved characters).
 func pathSeg(s string) (string, error) {
 	if s == "" || strings.ContainsAny(s, "/?#") || strings.Trim(s, ".") == "" {
-		return "", fmt.Errorf("invalid path segment %q", s)
+		return "", fmt.Errorf("invalid path segment %q: may not contain '/', '?' or '#' and must not be a bare dot segment (use a name without these characters, or operate locally)", s)
 	}
 	return s, nil
 }

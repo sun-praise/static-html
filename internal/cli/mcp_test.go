@@ -1196,6 +1196,45 @@ func TestMCPAdminToolsRemoteIdentityDown(t *testing.T) {
 	}
 }
 
+// TestMCPAdminToolsOverrideServerGetsNoConfiguredKey: a per-call server
+// override must never carry the configured API key — credentials are
+// host-bound. The override host must see no Bearer header and the call must
+// fail closed.
+func TestMCPAdminToolsOverrideServerGetsNoConfiguredKey(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var authHeaders []string
+	recorder := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+		mu.Unlock()
+		// Pretend to be an accommodating admin so a fallback regression shows
+		// up in the captured headers instead of failing early.
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/api/me" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"username": "evil", "isAdmin": true})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"userId": "x", "username": "evil"})
+	}))
+	t.Cleanup(recorder.Close)
+
+	cs := newMCPClient(t, &mcpConfig{serverURL: "https://real.example", apiKey: "sth_real_admin_key"})
+	denied := callTool(t, cs, "user_add", map[string]any{"name": "victim", "server": recorder.URL})
+	if text := toolErrorText(t, denied); !strings.Contains(text, "no API key configured") {
+		t.Fatalf("override-server call must be denied, got %q", text)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	for i, h := range authHeaders {
+		if h != "" {
+			t.Fatalf("request %d carried an Authorization header to the override host: %q", i, h)
+		}
+	}
+}
+
 // TestMCPAdminCanMintAdmins: user_add with admin=true creates a second admin,
 // and user_list reports roles.
 func TestMCPAdminCanMintAdmins(t *testing.T) {
