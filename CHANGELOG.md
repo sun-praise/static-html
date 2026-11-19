@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.7.0] - 2026-11-19
 
 ### Added
 - MCP server support: `sth mcp [--db ...] [--server ...] [--api-key ...]` runs a Model Context Protocol server over stdio exposing the CLI functionality as up to 16 tools (4 admin-gated, see below) (`send`, `tag`, `categorize`, `project`, `title`, `list`, `search`, `delete`, `share`, `unshare`, `shares`, `user_add`, `user_issue_key`, `user_revoke_key`, `user_list`, `audit`). Dual-mode tools (tag/categorize/project/title/share family) keep the CLI's local-DB vs remote-server semantics; local-only tools (`list`/`search`/`delete`/`user_*`/`audit`) operate on the `--db` store. Long-running commands (`start`, `watch`) stay CLI-only. Built on the official `modelcontextprotocol/go-sdk` v1.0.0 (requires go ≥ 1.23, compatible with the existing go 1.24 CI)
