@@ -14,8 +14,8 @@ import (
 // doAnnotationJSON issues a JSON request through handler with optional
 // credentials — either a Bearer API key, or a login cookie pair (the
 // "sth_session=..." string returned by registerAndLogin) — and returns the
-// recorder.
-func doAnnotationJSON(t *testing.T, handler http.Handler, method, path, creds string, body any) *httptest.ResponseRecorder {
+// recorder. Extra headers (e.g. Origin) can be passed as a final map.
+func doAnnotationJSON(t *testing.T, handler http.Handler, method, path, creds string, body any, extraHeaders ...map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	var reader io.Reader
 	if body != nil {
@@ -31,6 +31,11 @@ func doAnnotationJSON(t *testing.T, handler http.Handler, method, path, creds st
 			req.Header.Set("Cookie", creds)
 		} else {
 			req.Header.Set("Authorization", "Bearer "+creds)
+		}
+	}
+	for _, headers := range extraHeaders {
+		for k, v := range headers {
+			req.Header.Set(k, v)
 		}
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -119,15 +124,30 @@ func TestAnnotationsAuthOn(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("cookie post: expected 201, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	rec = doAnnotationJSON(t, handler, http.MethodDelete, base+"/"+func() string {
-		var saved session.Annotation
-		if err := json.NewDecoder(rec.Body).Decode(&saved); err != nil {
-			t.Fatal(err)
-		}
-		return saved.ID
-	}(), aliceCookie, nil)
+	var cookieCreated session.Annotation
+	if err := json.NewDecoder(rec.Body).Decode(&cookieCreated); err != nil {
+		t.Fatal(err)
+	}
+	rec = doAnnotationJSON(t, handler, http.MethodDelete, base+"/"+cookieCreated.ID, aliceCookie, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("cookie delete: expected 200, got %d", rec.Code)
+	}
+
+	// Another reader's cookie cannot annotate the owner's session.
+	malloryCookie := registerAndLogin(t, srv, "mallory", "pw-mallory")
+	rec = doAnnotationJSON(t, handler, http.MethodPost, base, malloryCookie, map[string]string{
+		"kind": "underline", "quote": "非属主写入",
+	})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-owner cookie post: expected 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// The owner's cookie with a cross-site Origin is rejected (CSRF guard).
+	rec = doAnnotationJSON(t, handler, http.MethodPost, base, aliceCookie, map[string]string{
+		"kind": "underline", "quote": "跨站请求",
+	}, map[string]string{"Origin": "https://evil.example"})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin cookie post: expected 403, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -47,6 +47,11 @@ func (s *Server) handleListAnnotations(w http.ResponseWriter, r *http.Request) {
 	ownerID, _ := currentUser(r)
 	list, err := s.store.ListAnnotations(sessionID, ownerID)
 	if err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			// Raced with a concurrent delete after requireSession.
+			writeJSONError(w, http.StatusNotFound, "Session not found.")
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -96,6 +101,11 @@ func (s *Server) handleCreateAnnotation(w http.ResponseWriter, r *http.Request) 
 		Tag:     req.Tag,
 	})
 	if err != nil {
+		if errors.Is(err, session.ErrSessionNotFound) {
+			// Raced with a concurrent delete after requireSession.
+			writeJSONError(w, http.StatusNotFound, "Session not found.")
+			return
+		}
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -105,8 +115,8 @@ func (s *Server) handleCreateAnnotation(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleDeleteAnnotation(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
-	// Path shape: /api/sessions/{id}/annotations/{aid}. The annotation id is
-	// globally unique — sessionID here is only for the viewer check.
+	// Path shape: /api/sessions/{id}/annotations/{aid}. sessionID authorizes
+	// the viewer and scopes the delete to the session's chain.
 	sessionID, annotationID, ok := parseAnnotationTargetPath(r.URL.Path)
 	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid annotation path.")
@@ -128,12 +138,16 @@ func (s *Server) handleDeleteAnnotation(w http.ResponseWriter, r *http.Request) 
 	}
 
 	ownerID, _ := currentUser(r)
-	if err := s.store.DeleteAnnotation(ownerID, annotationID); err != nil {
-		if errors.Is(err, session.ErrAnnotationNotFound) {
+	if err := s.store.DeleteAnnotation(sessionID, ownerID, annotationID); err != nil {
+		switch {
+		case errors.Is(err, session.ErrAnnotationNotFound):
 			writeJSONError(w, http.StatusNotFound, "Annotation not found.")
-			return
+		case errors.Is(err, session.ErrSessionNotFound):
+			// Raced with a concurrent delete after requireSession.
+			writeJSONError(w, http.StatusNotFound, "Session not found.")
+		default:
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
 		}
-		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 

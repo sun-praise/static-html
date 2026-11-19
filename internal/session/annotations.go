@@ -198,13 +198,26 @@ func (s *Store) ListAnnotations(sessionID, ownerID string) ([]Annotation, error)
 	return out, rows.Err()
 }
 
-// DeleteAnnotation removes one annotation owned by ownerID. The annotation id
-// is globally unique; sessionID is only used upstream for authorization.
-func (s *Store) DeleteAnnotation(ownerID, annotationID string) error {
-	res, err := s.db.Exec(`
-		DELETE FROM session_annotations
-		WHERE annotation_id = ? AND owner_id = ?`,
-		annotationID, ownerID)
+// DeleteAnnotation removes one annotation owned by ownerID, scoped to the
+// chain of sessionID (or the session itself for legacy no-chain rows) so a
+// viewer of one chain can never delete across chains. Returns
+// ErrAnnotationNotFound when no matching row exists.
+func (s *Store) DeleteAnnotation(sessionID, ownerID, annotationID string) error {
+	chainID, err := s.chainIDOfSession(sessionID)
+	if err != nil {
+		return err
+	}
+	query := `DELETE FROM session_annotations
+		WHERE annotation_id = ? AND owner_id = ? AND `
+	args := []any{annotationID, ownerID}
+	if chainID != "" {
+		query += `chain_id = ?`
+		args = append(args, chainID)
+	} else {
+		query += `session_id = ? AND chain_id = ''`
+		args = append(args, sessionID)
+	}
+	res, err := s.db.Exec(query, args...)
 	if err != nil {
 		return err
 	}

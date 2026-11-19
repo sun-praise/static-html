@@ -155,6 +155,17 @@ const annotationJS = `<script>
     var m = idx.map[Math.max(0, Math.min(normOff, idx.map.length - 1))];
     return {node: m.node, offset: m.off};
   }
+  // End boundary for a highlight: quotes ending at the very end of the
+  // document have no map entry one past the last character, so extend to the
+  // character after the last mapped one instead of clamping (which would drop
+  // the final character from the highlight).
+  function endPointAt(idx, normOff){
+    if (normOff >= idx.map.length){
+      var last = idx.map[idx.map.length - 1];
+      return {node: last.node, offset: last.off + 1};
+    }
+    return pointAt(idx, normOff);
+  }
   // Locate the best match for a quote, preferring occurrences whose
   // surrounding text matches the stored prefix/suffix anchors. idx comes from
   // buildIndex and can be reused across annotations.
@@ -179,7 +190,7 @@ const annotationJS = `<script>
     var start = candidates[0], end = start + q.length;
     try {
       var range = document.createRange();
-      var sp = pointAt(idx, start), ep = pointAt(idx, end);
+      var sp = pointAt(idx, start), ep = endPointAt(idx, end);
       range.setStart(sp.node, sp.offset);
       range.setEnd(ep.node, ep.offset);
       return range;
@@ -252,7 +263,7 @@ const annotationJS = `<script>
       card.className = 'sth-ann-card';
       card.innerHTML = '<blockquote>' + esc(a.quote) + '</blockquote>' +
         (a.comment ? '<div class="sth-ann-cmt">' + esc(a.comment) + '</div>' : '') +
-        (!a._range && !a._ranges ? '<div class="sth-ann-missing">未在当前页面找到原文（可能已改版）</div>' : '') +
+        (!a._range ? '<div class="sth-ann-missing">未在当前页面找到原文（可能已改版）</div>' : '') +
         '<div class="sth-ann-meta"><i class="sth-ann-chip">' + esc(a.tag || '划线') + '</i><span>' + esc(fmtTime(a.createdAt)) + '</span>' +
         '<span class="sth-ann-acts"><button data-act="go">定位</button><button data-act="del">删除</button></span></div>';
       list.appendChild(card);

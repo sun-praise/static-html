@@ -94,7 +94,7 @@ func TestAnnotationsAreOwnerScoped(t *testing.T) {
 	}
 
 	// Bob cannot delete alice's annotation.
-	if err := store.DeleteAnnotation("bob", "whatever"); !errors.Is(err, ErrAnnotationNotFound) {
+	if err := store.DeleteAnnotation(s.ID, "bob", "whatever"); !errors.Is(err, ErrAnnotationNotFound) {
 		t.Fatalf("expected ErrAnnotationNotFound, got %v", err)
 	}
 
@@ -103,7 +103,7 @@ func TestAnnotationsAreOwnerScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.DeleteAnnotation("alice", aliceList[0].ID); err != nil {
+	if err := store.DeleteAnnotation(s.ID, "alice", aliceList[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	aliceList, err = store.ListAnnotations(s.ID, "alice")
