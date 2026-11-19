@@ -122,8 +122,10 @@ const annotationJS = `<script>
 
   /* ---------- anchoring ---------- */
 
-  // Index visible text nodes so a quote can be located across element
-  // boundaries. Our own UI is excluded from the search space.
+  // Index visible text so a quote can be located across element boundaries.
+  // Whitespace runs are collapsed to single spaces; every normalized
+  // character keeps a pointer to its original node+offset, so match offsets
+  // in the normalized text map back to exact Range positions.
   function skipped(el){
     return !el || !!el.closest('#sth-ann-fab,#sth-ann-drawer,.sth-ann-bubble,.sth-ann-editor,.sth-ann-overlay,#sth-ann-margin,script,style,noscript');
   }
@@ -134,40 +136,42 @@ const annotationJS = `<script>
         return n.nodeValue.replace(/\s+/g,'').length ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
       }
     });
-    var nodes = [], offsets = [], text = '';
+    var norm = '', map = [];
     while (walker.nextNode()){
-      nodes.push(walker.currentNode);
-      offsets.push(text.length);
-      text += walker.currentNode.nodeValue;
+      var v = walker.currentNode.nodeValue;
+      for (var i = 0; i < v.length; i++){
+        var ch = v[i];
+        if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n' || ch === '\f'){
+          if (norm.slice(-1) !== ' '){ norm += ' '; map.push({node: walker.currentNode, off: i}); }
+        } else {
+          norm += ch;
+          map.push({node: walker.currentNode, off: i});
+        }
+      }
     }
-    return {nodes: nodes, offsets: offsets, text: text};
+    return {norm: norm, map: map};
   }
-  function offsetToPoint(idx, off){
-    var lo = 0, hi = idx.nodes.length - 1;
-    while (lo < hi){
-      var mid = (lo + hi + 1) >> 1;
-      if (idx.offsets[mid] <= off) lo = mid; else hi = mid - 1;
-    }
-    return {node: idx.nodes[lo], offset: off - idx.offsets[lo]};
+  function pointAt(idx, normOff){
+    var m = idx.map[Math.max(0, Math.min(normOff, idx.map.length - 1))];
+    return {node: m.node, offset: m.off};
   }
   // Locate the best match for a quote, preferring occurrences whose
   // surrounding text matches the stored prefix/suffix anchors.
   function locateQuote(a){
     var idx = buildIndex();
     var q = a.quote.replace(/\s+/g,' ').trim();
-    var norm = idx.text.replace(/[ \t\r\n\f]+/g,' ');
     var candidates = [], pos = -1;
-    while ((pos = norm.indexOf(q, pos + 1)) !== -1) candidates.push(pos);
+    while ((pos = idx.norm.indexOf(q, pos + 1)) !== -1) candidates.push(pos);
     if (!candidates.length) return null;
     function score(p){
       var s = 0;
       if (a.prefix){
         var pre = a.prefix.replace(/\s+/g,' ').trim().slice(-24);
-        if (pre && norm.slice(Math.max(0, p - pre.length), p).indexOf(pre) !== -1) s += 2;
+        if (pre && idx.norm.slice(Math.max(0, p - pre.length), p).indexOf(pre) !== -1) s += 2;
       }
       if (a.suffix){
         var suf = a.suffix.replace(/\s+/g,' ').trim().slice(0, 24);
-        if (suf && norm.slice(p + q.length, p + q.length + suf.length).indexOf(suf) !== -1) s += 2;
+        if (suf && idx.norm.slice(p + q.length, p + q.length + suf.length).indexOf(suf) !== -1) s += 2;
       }
       return s;
     }
@@ -175,7 +179,7 @@ const annotationJS = `<script>
     var start = candidates[0], end = start + q.length;
     try {
       var range = document.createRange();
-      var sp = offsetToPoint(idx, start), ep = offsetToPoint(idx, end);
+      var sp = pointAt(idx, start), ep = pointAt(idx, end);
       range.setStart(sp.node, sp.offset);
       range.setEnd(ep.node, ep.offset);
       return range;
@@ -193,13 +197,12 @@ const annotationJS = `<script>
   /* ---------- rendering ---------- */
 
   function eachRange(a, fn){
-    if (a._ranges && a._ranges.length) { a._ranges.forEach(fn); return; }
     if (a._range) fn(a._range);
   }
   function renderBadge(){
     var b = document.getElementById('sth-ann-badge');
     b.textContent = String(anns.length);
-    b.style.display = anns.length ? 'block' : 'none';
+    b.style.setProperty('display', anns.length ? 'block' : 'none', 'important');
     var c = document.getElementById('sth-ann-count');
     if (c) c.textContent = anns.length + ' 条';
   }
@@ -216,18 +219,20 @@ const annotationJS = `<script>
         }
       });
       if (top === null) return;
-      if (top < lastBottom + 12) top = lastBottom + 12;
       var card = document.createElement('div');
       card.className = 'sth-ann-mcard';
       card.setAttribute('data-id', a.id);
       card.innerHTML = '<span class="sth-ann-num">' + (i + 1) + '</span><span class="sth-ann-mtag">' + esc(a.tag || '划线') + '</span>' +
         '<span class="sth-ann-macts"><button data-act="go">定位</button><button data-act="del">删除</button></span>' +
         '<div class="sth-ann-mtext">' + (a.comment ? esc(a.comment) : '<i style="color:#9ca3af">（仅划线）</i>') + '</div>';
-      card.style.top = top + 'px';
-      lastBottom = top + card.offsetHeight + 12;
-      box.appendChild(card);
       card.querySelector('[data-act=go]').addEventListener('click', function(){ scrollToAnn(a); });
       card.querySelector('[data-act=del]').addEventListener('click', function(){ deleteAnnotation(a); });
+      // Append before measuring: detached nodes report offsetHeight = 0.
+      box.appendChild(card);
+      var h = card.offsetHeight;
+      if (top < lastBottom + 12) top = lastBottom + 12;
+      lastBottom = top + h + 12;
+      card.style.top = top + 'px';
     });
   }
   function renderList(){
@@ -384,9 +389,11 @@ const annotationJS = `<script>
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({kind: comment ? 'note' : 'underline', quote: p.text, prefix: p.prefix, suffix: p.suffix, comment: comment, tag: tag})
       }).then(function(r){
+        if (r.status === 401){ toast('标注需要登录：请先登录本页再标注'); return; }
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       }).then(function(saved){
+        if (!saved) return;
         saved._range = p.range;
         anns.push(saved);
         renderAll();
@@ -500,8 +507,24 @@ const annotationJS = `<script>
   function loadAnnotations(){
     loadFailed = false;
     fetch('/api/sessions/' + encodeURIComponent(sid) + '/annotations', {credentials: 'same-origin'})
-      .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(r){
+        if (r.status === 401){
+          // Auth-enabled deployment: annotations require a login. Stay quiet
+          // (the page itself is still readable) and explain in the drawer.
+          anns = [];
+          renderBadge();
+          renderHighlights();
+          renderMargin();
+          renderList();
+          document.getElementById('sth-ann-list').innerHTML =
+            '<p class="sth-ann-hint">标注需要登录后使用：登录并刷新本页即可开始。</p>';
+          return null;
+        }
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
       .then(function(data){
+        if (data === null) return;
         anns = data.annotations || [];
         anns.forEach(function(a){ a._range = locateQuote(a); });
         renderAll();

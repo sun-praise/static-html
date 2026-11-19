@@ -94,7 +94,7 @@ func TestAnnotationsAreOwnerScoped(t *testing.T) {
 	}
 
 	// Bob cannot delete alice's annotation.
-	if err := store.DeleteAnnotation(s.ID, "bob", "whatever"); !errors.Is(err, ErrAnnotationNotFound) {
+	if err := store.DeleteAnnotation("bob", "whatever"); !errors.Is(err, ErrAnnotationNotFound) {
 		t.Fatalf("expected ErrAnnotationNotFound, got %v", err)
 	}
 
@@ -103,7 +103,7 @@ func TestAnnotationsAreOwnerScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.DeleteAnnotation(s.ID, "alice", aliceList[0].ID); err != nil {
+	if err := store.DeleteAnnotation("alice", aliceList[0].ID); err != nil {
 		t.Fatal(err)
 	}
 	aliceList, err = store.ListAnnotations(s.ID, "alice")
@@ -159,18 +159,67 @@ func TestAnnotationsSurviveSoftDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Sessions are soft-deleted (deleted_at marker); the row stays so its
-	// annotations stay too. Hard deletes (none today) would cascade.
+	// Sessions are soft-deleted (deleted_at marker) and their preview page
+	// 404s afterwards — annotation listing follows suit with
+	// ErrSessionNotFound. The rows themselves survive any hard delete.
 	if err := store.SoftDelete(s.ID); err != nil {
 		t.Fatal(err)
 	}
 
-	list, err := store.ListAnnotations(s.ID, "alice")
+	if _, err := store.ListAnnotations(s.ID, "alice"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("expected ErrSessionNotFound after soft delete, got %v", err)
+	}
+	// The stored rows survive; hard deletion (none today) would cascade.
+	var n int
+	if err := store.db.QueryRow(
+		`SELECT COUNT(*) FROM session_annotations WHERE annotation_id = ?`, created.ID,
+	).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("expected annotation row to survive soft delete, got %d", n)
+	}
+}
+
+func TestAnnotationsCrossVersionVisibility(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t)
+	s1 := mustCreateSession(t, store)
+	s2 := mustCreateSession(t, store)
+
+	// Both sessions join the same chain (same project + entry file).
+	if _, _, err := store.LinkToChain(s1.ID, "proj", "demo.html", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.LinkToChain(s2.ID, "proj", "demo.html", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.AddAnnotation(s1.ID, "alice", sampleAnnotation(AnnotationKindUnderline)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Annotations belong to the chain: v2 sees what was annotated on v1.
+	list, err := store.ListAnnotations(s2.ID, "alice")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0].ID != created.ID {
-		t.Fatalf("expected annotations to survive soft delete, got %+v", list)
+	if len(list) != 1 {
+		t.Fatalf("expected 1 annotation visible from v2, got %d", len(list))
+	}
+
+	// A different chain does not see it.
+	s3 := mustCreateSession(t, store)
+	if _, _, err := store.LinkToChain(s3.ID, "other", "demo.html", ""); err != nil {
+		t.Fatal(err)
+	}
+	list, err = store.ListAnnotations(s3.ID, "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("expected 0 annotations on unrelated chain, got %d", len(list))
 	}
 }
 

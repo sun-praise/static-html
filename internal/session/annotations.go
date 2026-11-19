@@ -1,18 +1,21 @@
 package session
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
 
-// Annotations are reader notes attached to a session: a highlighted quote
-// (anchor) plus optional comment and tag. They live across versions of a
-// chain — each session row owns its own set, so switching versions switches
-// annotation sets with it. owner_id separates readers: every viewer sees and
-// manages only their own annotations; empty owner (auth disabled) is the
-// shared pool.
+// Annotations are reader notes attached to a preview document. They anchor to
+// a **chain**, not to a single session: every version of a chain shows the
+// same annotation set, and the front end re-anchors each quote against the
+// version it is rendering (quotes that no longer exist surface as "missing").
+// owner_id separates readers: every viewer sees and manages only their own
+// annotations; empty owner (auth disabled / anonymous preview deployments) is
+// the shared pool. Sessions without a chain (rare, legacy rows) fall back to
+// per-session scoping.
 const (
 	AnnotationKindUnderline = "underline"
 	AnnotationKindNote      = "note"
@@ -41,12 +44,13 @@ type Annotation struct {
 
 // initAnnotations creates the annotation table. Called from the store's init
 // chain; FK pragma is enabled there so CASCADE removes annotations together
-// with their session.
+// with their chain.
 func (s *Store) initAnnotations() error {
 	_, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS session_annotations (
 			annotation_id TEXT PRIMARY KEY,
 			session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+			chain_id TEXT NOT NULL DEFAULT '',
 			owner_id TEXT NOT NULL DEFAULT '',
 			kind TEXT NOT NULL CHECK(kind IN ('underline','note')),
 			quote TEXT NOT NULL,
@@ -56,20 +60,17 @@ func (s *Store) initAnnotations() error {
 			tag TEXT NOT NULL DEFAULT '',
 			created_at_nano INTEGER NOT NULL
 		);
-		CREATE INDEX IF NOT EXISTS idx_session_annotations_session
-		ON session_annotations(session_id, created_at_nano);
+		CREATE INDEX IF NOT EXISTS idx_session_annotations_chain
+		ON session_annotations(chain_id, owner_id, created_at_nano);
 	`)
 	return err
 }
 
 func clampString(value string, max int) string {
 	value = strings.TrimSpace(value)
-	if len(value) > max {
-		// Trim to a rune boundary so multi-byte text is not cut mid-character.
-		runes := []rune(value)
-		if len(runes) > max {
-			value = string(runes[:max])
-		}
+	runes := []rune(value)
+	if len(runes) > max {
+		value = string(runes[:max])
 	}
 	return value
 }
@@ -95,10 +96,33 @@ func (a *Annotation) validate() error {
 	return nil
 }
 
+// chainIDOfSession resolves the chain a session belongs to. Sessions are
+// soft-deletable rows; soft-deleted ones report no chain like missing ones.
+// Sessions without chain membership return "" (per-session fallback).
+func (s *Store) chainIDOfSession(sessionID string) (string, error) {
+	var chainID sql.NullString
+	err := s.db.QueryRow(
+		`SELECT chain_id FROM sessions WHERE session_id = ? AND deleted_at IS NULL`,
+		sessionID,
+	).Scan(&chainID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrSessionNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return chainID.String, nil
+}
+
 // AddAnnotation stores a new annotation and returns the persisted record with
-// its generated ID and timestamp.
+// its generated ID and timestamp. The annotation is attached to the session's
+// chain so every version of the document sees the same set.
 func (s *Store) AddAnnotation(sessionID, ownerID string, in Annotation) (Annotation, error) {
 	if err := in.validate(); err != nil {
+		return Annotation{}, err
+	}
+	chainID, err := s.chainIDOfSession(sessionID)
+	if err != nil {
 		return Annotation{}, err
 	}
 
@@ -112,9 +136,9 @@ func (s *Store) AddAnnotation(sessionID, ownerID string, in Annotation) (Annotat
 
 	if _, err := s.db.Exec(`
 		INSERT INTO session_annotations
-			(annotation_id, session_id, owner_id, kind, quote, prefix, suffix, comment, tag, created_at_nano)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, sessionID, ownerID, in.Kind, in.Quote, in.Prefix, in.Suffix, in.Comment, in.Tag, now,
+			(annotation_id, session_id, chain_id, owner_id, kind, quote, prefix, suffix, comment, tag, created_at_nano)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, sessionID, chainID, ownerID, in.Kind, in.Quote, in.Prefix, in.Suffix, in.Comment, in.Tag, now,
 	); err != nil {
 		return Annotation{}, err
 	}
@@ -132,15 +156,30 @@ func (s *Store) AddAnnotation(sessionID, ownerID string, in Annotation) (Annotat
 	}, nil
 }
 
-// ListAnnotations returns the owner's annotations for a session, oldest first
-// (document order matches reading order).
+// ListAnnotations returns the owner's annotations for the chain the session
+// belongs to, oldest first (document order matches reading order). Sessions
+// without chain membership fall back to their own rows.
 func (s *Store) ListAnnotations(sessionID, ownerID string) ([]Annotation, error) {
-	rows, err := s.db.Query(`
-		SELECT annotation_id, kind, quote, prefix, suffix, comment, tag, created_at_nano
+	chainID, err := s.chainIDOfSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
+		SELECT annotation_id, session_id, kind, quote, prefix, suffix, comment, tag, created_at_nano
 		FROM session_annotations
-		WHERE session_id = ? AND owner_id = ?
-		ORDER BY created_at_nano ASC, annotation_id ASC`,
-		sessionID, ownerID)
+		WHERE owner_id = ? AND `
+	args := []any{ownerID}
+	if chainID != "" {
+		query += `chain_id = ? `
+		args = append(args, chainID)
+	} else {
+		query += `session_id = ? AND chain_id = '' `
+		args = append(args, sessionID)
+	}
+	query += `ORDER BY created_at_nano ASC, annotation_id ASC`
+
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -149,23 +188,23 @@ func (s *Store) ListAnnotations(sessionID, ownerID string) ([]Annotation, error)
 	var out []Annotation
 	for rows.Next() {
 		var a Annotation
-		var unix int64
-		if err := rows.Scan(&a.ID, &a.Kind, &a.Quote, &a.Prefix, &a.Suffix, &a.Comment, &a.Tag, &unix); err != nil {
+		var nano int64
+		if err := rows.Scan(&a.ID, &a.SessionID, &a.Kind, &a.Quote, &a.Prefix, &a.Suffix, &a.Comment, &a.Tag, &nano); err != nil {
 			return nil, err
 		}
-		a.SessionID = sessionID
-		a.CreatedAt = time.Unix(0, unix).UTC().Format(time.RFC3339)
+		a.CreatedAt = time.Unix(0, nano).UTC().Format(time.RFC3339)
 		out = append(out, a)
 	}
 	return out, rows.Err()
 }
 
-// DeleteAnnotation removes one annotation owned by ownerID on the session.
-func (s *Store) DeleteAnnotation(sessionID, ownerID, annotationID string) error {
+// DeleteAnnotation removes one annotation owned by ownerID. The annotation id
+// is globally unique; sessionID is only used upstream for authorization.
+func (s *Store) DeleteAnnotation(ownerID, annotationID string) error {
 	res, err := s.db.Exec(`
 		DELETE FROM session_annotations
-		WHERE annotation_id = ? AND session_id = ? AND owner_id = ?`,
-		annotationID, sessionID, ownerID)
+		WHERE annotation_id = ? AND owner_id = ?`,
+		annotationID, ownerID)
 	if err != nil {
 		return err
 	}
@@ -175,15 +214,4 @@ func (s *Store) DeleteAnnotation(sessionID, ownerID, annotationID string) error 
 		return ErrAnnotationNotFound
 	}
 	return nil
-}
-
-// CountAnnotations returns how many annotations the owner has on a session.
-// Used by the version timeline to badge each version.
-func (s *Store) CountAnnotations(sessionID, ownerID string) (int, error) {
-	var n int
-	err := s.db.QueryRow(`
-		SELECT COUNT(*) FROM session_annotations
-		WHERE session_id = ? AND owner_id = ?`,
-		sessionID, ownerID).Scan(&n)
-	return n, err
 }

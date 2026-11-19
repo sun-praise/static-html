@@ -1,0 +1,147 @@
+package server
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/sun-praise/static-html/internal/session"
+)
+
+// doAnnotationJSON issues a JSON request through handler with an optional
+// Bearer key and returns the recorder.
+func doAnnotationJSON(t *testing.T, handler http.Handler, method, path, bearer string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader = strings.NewReader(string(raw))
+	}
+	req := httptest.NewRequest(method, path, reader)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestAnnotationsAuthOn: with --auth enabled and previews protected,
+// annotation reads and writes require the session owner's Bearer key;
+// anonymous requests are rejected.
+func TestAnnotationsAuthOn(t *testing.T) {
+	t.Parallel()
+
+	srv, store := newAuthServer(t, true, true)
+	alice, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliceKey, _, err := store.IssueAPIKey(alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := store.Create("/tmp/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// In a real deployment the uploader owns the session.
+	if err := store.SetSessionOwner(sess.ID, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	base := "/api/sessions/" + sess.ID + "/annotations"
+	handler := srv.httpServer.Handler
+
+	// Anonymous write is rejected (mutating path is Bearer-only).
+	if rec := doAnnotationJSON(t, handler, http.MethodPost, base, "", map[string]string{
+		"kind": "underline", "quote": "q",
+	}); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous post: expected 401, got %d", rec.Code)
+	}
+
+	// Owner write via Bearer succeeds.
+	rec := doAnnotationJSON(t, handler, http.MethodPost, base, aliceKey, map[string]string{
+		"kind": "underline", "quote": "预览链接只是临时快照", "tag": "需求",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("bearer post: expected 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var created session.Annotation
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	// Owner list works.
+	rec = doAnnotationJSON(t, handler, http.MethodGet, base, aliceKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bearer list: expected 200, got %d", rec.Code)
+	}
+	var list struct {
+		Annotations []session.Annotation `json:"annotations"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Annotations) != 1 {
+		t.Fatalf("expected 1 annotation, got %d", len(list.Annotations))
+	}
+
+	// Owner delete via Bearer succeeds.
+	rec = doAnnotationJSON(t, handler, http.MethodDelete, base+"/"+created.ID, aliceKey, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bearer delete: expected 200, got %d", rec.Code)
+	}
+}
+
+// TestAnnotationsRequireLoginEvenWhenPreviewsOpen: with auth enabled but
+// previews unprotected the page is anonymous, yet annotation endpoints still
+// demand a Bearer key — the injected UI degrades to a "log in to annotate"
+// hint instead of failing loudly.
+func TestAnnotationsRequireLoginEvenWhenPreviewsOpen(t *testing.T) {
+	t.Parallel()
+
+	srv, store := newAuthServer(t, true, false)
+	alice, err := store.CreateUser("alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliceKey, _, err := store.IssueAPIKey(alice.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sess, err := store.Create("/tmp/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSessionOwner(sess.ID, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	base := "/api/sessions/" + sess.ID + "/annotations"
+	handler := srv.httpServer.Handler
+
+	if rec := doAnnotationJSON(t, handler, http.MethodPost, base, "", map[string]string{
+		"kind": "underline", "quote": "匿名请求",
+	}); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous post: expected 401, got %d", rec.Code)
+	}
+	if rec := doAnnotationJSON(t, handler, http.MethodGet, base, "", nil); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous list: expected 401, got %d", rec.Code)
+	}
+
+	// The owner's key works even though the preview page is open.
+	rec := doAnnotationJSON(t, handler, http.MethodPost, base, aliceKey, map[string]string{
+		"kind": "underline", "quote": "alice 的个人标注",
+	})
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("bearer post: expected 201, got %d", rec.Code)
+	}
+}

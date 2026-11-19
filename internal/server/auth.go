@@ -60,12 +60,12 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		// Mutating requests: Bearer only (CSRF-safe). The session cookie is
 		// intentionally NOT consulted, so a stolen/leaked cookie cannot be
-		// used to perform writes via a cross-site request. Exception: share
-		// management also accepts the login cookie, because the home-page
-		// share panel is a browser feature (see requireBearerOrCookie for
+		// used to perform writes via a cross-site request. Exceptions: share
+		// management and annotation mutations also accept the login cookie,
+		// because both are browser features (see requireBearerOrCookie for
 		// why that stays CSRF-safe).
 		if isMutatingMethod(r.Method) {
-			if isShareManagementPath(r.Method, r.URL.Path) {
+			if isShareManagementPath(r.Method, r.URL.Path) || isAnnotationMutationPath(r.Method, r.URL.Path) {
 				s.requireBearerOrCookie(w, r, next)
 				return
 			}
@@ -124,6 +124,23 @@ func (s *Server) requireBearer(w http.ResponseWriter, r *http.Request, next http
 	}
 	ctx := context.WithValue(r.Context(), userCtxKey, uid)
 	next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// isAnnotationMutationPath reports whether a mutating request targets the
+// annotation API — a browser feature (the preview-page annotation UI), so it
+// may authenticate with the login cookie when previews are protected.
+func isAnnotationMutationPath(method, path string) bool {
+	if method != http.MethodPost && method != http.MethodDelete {
+		return false
+	}
+	if !strings.HasPrefix(path, "/api/sessions/") {
+		return false
+	}
+	if method == http.MethodPost {
+		return strings.HasSuffix(path, "/annotations")
+	}
+	_, _, ok := parseAnnotationTargetPath(path)
+	return ok
 }
 
 // isShareManagementPath reports whether a mutating request targets the

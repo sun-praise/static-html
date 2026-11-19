@@ -79,6 +79,7 @@ func (s *Server) handleCreateAnnotation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var req annotationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "Request body must be valid JSON.")
@@ -104,14 +105,13 @@ func (s *Server) handleCreateAnnotation(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) handleDeleteAnnotation(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
-	// Path shape: /api/sessions/{id}/annotations/{aid}
-	rest := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
-	parts := strings.Split(rest, "/")
-	if len(parts) != 3 || parts[0] == "" || parts[1] != "annotations" || parts[2] == "" {
+	// Path shape: /api/sessions/{id}/annotations/{aid}. The annotation id is
+	// globally unique — sessionID here is only for the viewer check.
+	sessionID, annotationID, ok := parseAnnotationTargetPath(r.URL.Path)
+	if !ok {
 		writeJSONError(w, http.StatusBadRequest, "Invalid annotation path.")
 		return
 	}
-	sessionID, annotationID := parts[0], parts[2]
 
 	_, found, err := s.requireSession(sessionID)
 	if err != nil {
@@ -128,7 +128,7 @@ func (s *Server) handleDeleteAnnotation(w http.ResponseWriter, r *http.Request) 
 	}
 
 	ownerID, _ := currentUser(r)
-	if err := s.store.DeleteAnnotation(sessionID, ownerID, annotationID); err != nil {
+	if err := s.store.DeleteAnnotation(ownerID, annotationID); err != nil {
 		if errors.Is(err, session.ErrAnnotationNotFound) {
 			writeJSONError(w, http.StatusNotFound, "Annotation not found.")
 			return
@@ -140,10 +140,18 @@ func (s *Server) handleDeleteAnnotation(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
-// isAnnotationTargetPath reports whether the path targets a single annotation:
-// /api/sessions/{id}/annotations/{aid}
-func isAnnotationTargetPath(urlPath string) bool {
+// parseAnnotationTargetPath splits /api/sessions/{id}/annotations/{aid}.
+func parseAnnotationTargetPath(urlPath string) (sessionID, annotationID string, ok bool) {
 	rest := strings.TrimPrefix(urlPath, "/api/sessions/")
 	parts := strings.Split(rest, "/")
-	return len(parts) == 3 && parts[0] != "" && parts[1] == "annotations" && parts[2] != ""
+	if len(parts) != 3 || parts[0] == "" || parts[1] != "annotations" || parts[2] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[2], true
+}
+
+// isAnnotationTargetPath reports whether the path targets a single annotation.
+func isAnnotationTargetPath(urlPath string) bool {
+	_, _, ok := parseAnnotationTargetPath(urlPath)
+	return ok
 }
